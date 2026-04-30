@@ -19,7 +19,7 @@
 
 // sdSyllable 공통 파라미터 — 버전마다 num, radius, k만 다름
 function makeSdSyllable({ num, radius, k, useCho = false, callArgs = '' }) {
-  return `
+    return `
 float sdSyllable(vec3 p, int idx, float growT) {
   vec3  start  = u_start[idx];
   ${useCho ? 'vec3  cho    = u_cho[idx];' : ''}
@@ -58,12 +58,12 @@ float sdSyllable(vec3 p, int idx, float growT) {
 // ── 버전별 정의 ───────────────────────────────────────────────────────────────
 
 export const PATH_FUNCTIONS = {
-
-  // ── 1: t 분리 (진행 + 진동 독립) ───────────────────────────────────────────
-  1: {
-    name: 'v1_t_split',
-    src: `
-vec3 syllablePath(vec3 start, float f1, float f2, float f3,
+    // ── 1: t 분리 (진행 + 진동 독립) ───────────────────────────────────────────
+    1: {
+        name: 'v1_t_split',
+        src:
+            `
+vec3 syllablePath(vec3 start, vec3 cho, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
   vec3 base  = mix(start, start, t);  // end가 필요하면 uniform에서 직접 참조
   float s    = 1.0 / 3200.0;
@@ -75,14 +75,14 @@ vec3 syllablePath(vec3 start, float f1, float f2, float f3,
   );
   return base + offset;
 }
-` + makeSdSyllable({ num: '100.0', radius: '0.008', k: '0.08',
-      callArgs: 'start, f1, f2, f3, amp' }),
-  },
+` + makeSdSyllable({ num: '100.0', radius: '0.008', k: '0.08', callArgs: 'start, f1, f2, f3, amp' }),
+    },
 
-  // ── 2: start 기준 ±amp 진동 ─────────────────────────────────────────────────
-  2: {
-    name: 'v2_start_vibrate',
-    src: `
+    // ── 2: start 기준 ±amp 진동 ─────────────────────────────────────────────────
+    2: {
+        name: 'v2_start_vibrate',
+        src:
+            `
 vec3 syllablePath(vec3 start, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
   float s    = 1.0 / 3200.0;
@@ -93,14 +93,14 @@ vec3 syllablePath(vec3 start, float f1, float f2, float f3,
     start.z + amp * sin(f3 * s * trad) * 0.005
   );
 }
-` + makeSdSyllable({ num: '200.0', radius: '0.005', k: '0.08',
-      callArgs: 'start, f1, f2, f3, amp' }),
-  },
+` + makeSdSyllable({ num: '200.0', radius: '0.005', k: '0.08', callArgs: 'start, f1, f2, f3, amp' }),
+    },
 
-  // ── 3: sin 0~1 양수 방향 누적 ───────────────────────────────────────────────
-  3: {
-    name: 'v3_positive',
-    src: `
+    // ── 3: sin 0~1 양수 방향 누적 ───────────────────────────────────────────────
+    3: {
+        name: 'v3_positive',
+        src:
+            `
 vec3 syllablePath(vec3 start, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
   float s    = 1.0 / 3200.0;
@@ -111,14 +111,14 @@ vec3 syllablePath(vec3 start, float f1, float f2, float f3,
     start.z + amp * (sin(f3 * s * trad) + 1.0) * 0.5 * 0.005
   );
 }
-` + makeSdSyllable({ num: '100.0', radius: '0.005', k: '0.08',
-      callArgs: 'start, f1, f2, f3, amp' }),
-  },
+` + makeSdSyllable({ num: '100.0', radius: '0.005', k: '0.08', callArgs: 'start, f1, f2, f3, amp' }),
+    },
 
-  // ── 4: 에피사이클 기본 (2D) ─────────────────────────────────────────────────
-  4: {
-    name: 'epicycle_basic',
-    src: `
+    // ── 4: 에피사이클 기본 (2D) ─────────────────────────────────────────────────
+    4: {
+        name: 'epicycle_basic',
+        src:
+            `
 vec3 syllablePath(vec3 start, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
   float s     = 1.0 / 3200.0;
@@ -136,14 +136,14 @@ vec3 syllablePath(vec3 start, float f1, float f2, float f3,
 
   return vec3(start.x + x, start.y + y, start.z);
 }
-` + makeSdSyllable({ num: '60.0', radius: '0.005', k: '0.08',
-      callArgs: 'start, f1, f2, f3, amp' }),
-  },
+` + makeSdSyllable({ num: '60.0', radius: '0.005', k: '0.08', callArgs: 'start, f1, f2, f3, amp' }),
+    },
 
-  // ── 5: 에피사이클 + phase/방향반전 (초성 데이터 활용) ───────────────────────
-  5: {
-    name: 'epicycle_phase',
-    src: `
+    // ── 5: 에피사이클 + phase/방향반전 (초성 데이터 활용) ───────────────────────
+    5: {
+        name: 'epicycle_phase',
+        src:
+            `
 vec3 syllablePath(vec3 start, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
   float s     = 1.0 / 3200.0;
@@ -167,14 +167,14 @@ vec3 syllablePath(vec3 start, float f1, float f2, float f3,
 
   return vec3(start.x + x, start.y + y, start.z);
 }
-` + makeSdSyllable({ num: '100.0', radius: '0.005', k: '0.08',
-      callArgs: 'start, f1, f2, f3, amp' }),
-  },
+` + makeSdSyllable({ num: '100.0', radius: '0.005', k: '0.08', callArgs: 'start, f1, f2, f3, amp' }),
+    },
 
-  // ── 6: 에피사이클 tilt (각 disk가 다른 평면) ────────────────────────────────
-  6: {
-    name: 'epicycle_tilt',
-    src: `
+    // ── 6: 에피사이클 tilt (각 disk가 다른 평면) ────────────────────────────────
+    6: {
+        name: 'epicycle_tilt',
+        src:
+            `
 vec3 tiltedEpicircle(float r, float freq, float angle, float tilt) {
   float a = freq * (1.0 / 3200.0) * angle;
   return vec3(r * cos(a), r * sin(a) * cos(tilt), r * sin(a) * sin(tilt));
@@ -193,44 +193,42 @@ vec3 syllablePath(vec3 start, float f1, float f2, float f3,
 
   return start + ep1 + ep2 + ep3;
 }
-` + makeSdSyllable({ num: '100.0', radius: '0.005', k: '0.08',
-      callArgs: 'start, f1, f2, f3, amp' }),
-  },
+` + makeSdSyllable({ num: '100.0', radius: '0.005', k: '0.08', callArgs: 'start, f1, f2, f3, amp' }),
+    },
 
-  // ── 7: 행성 궤도식 — 현재 기본값 ────────────────────────────────────────────
-  7: {
-    name: 'orbital',
-    src: `
+    // ── 7: 행성 궤도식 — 현재 기본값 ────────────────────────────────────────────
+    7: {
+        name: 'orbital',
+        src:
+            `
 vec3 orbitalPoint(float r, float freq, float angle, float theta, float phi) {
-  vec3 axis = vec3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
-  vec3 up   = abs(axis.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+  vec3 axis = vec3(sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi));
+  vec3 up   = abs(axis.z) < 0.99 ? vec3(0,0,1) : vec3(1,0,0);
   vec3 u    = normalize(cross(axis, up));
   vec3 v    = cross(axis, u);
-  float a   = freq * (1.0 / 3200.0) * angle;
-  return r * (cos(a) * u + sin(a) * v);
+  float a   = freq * (1.0/3200.0) * angle;
+  return r * (cos(a)*u + sin(a)*v);
 }
 
-vec3 syllablePath(vec3 start, float f1, float f2, float f3,
+vec3 syllablePath(vec3 start, vec3 cho, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
   float angle = t * TWO_PI * 3.0;
-  float r1    = amp * (1.0 / 1.75);
-  float r2    = r1 * 0.5;
-  float r3    = r1 * 0.25;
+  float r1 = amp*(1.0/1.75), r2=r1*0.5, r3=r1*0.25;
 
-  vec3 ep1 = orbitalPoint(r1, f1, angle, 0.0,         0.0);
-  vec3 ep2 = orbitalPoint(r2, f2, angle, PI * 0.667,  PI * 0.333);
-  vec3 ep3 = orbitalPoint(r3, f3, angle, PI * 1.333,  PI * 0.667);
+  vec3 ep1 = orbitalPoint(r1, f1, angle, cho.x * TWO_PI,           cho.y * PI);
+  vec3 ep2 = orbitalPoint(r2, f2, angle, cho.y * TWO_PI + yang*PI, cho.z * PI);
+  vec3 ep3 = orbitalPoint(r3, f3, angle, cho.z * TWO_PI + diph*PI, yang  * PI);
 
   return start + ep1 + ep2 + ep3;
 }
-` + makeSdSyllable({ num: '100.0', radius: '0.01', k: '0.08',
-      callArgs: 'start, f1, f2, f3, amp' }),
-  },
+` + makeSdSyllable({ num: '30.0', radius: '0.01', k: '0.12', useCho: true, callArgs: 'start, cho, f1, f2, f3, amp' }),
+    },
 
-  // ── 8: FM 변조 ───────────────────────────────────────────────────────────────
-  8: {
-    name: 'fm',
-    src: `
+    // ── 8: FM 변조 ───────────────────────────────────────────────────────────────
+    8: {
+        name: 'fm',
+        src:
+            `
 vec3 syllablePath(vec3 start, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
   float s     = 1.0 / 3200.0;
@@ -251,8 +249,6 @@ vec3 syllablePath(vec3 start, float f1, float f2, float f3,
 
   return vec3(start.x + x * sc, start.y + y * sc, start.z + z * sc);
 }
-` + makeSdSyllable({ num: '100.0', radius: '0.004', k: '0.2',
-      callArgs: 'start, f1, f2, f3, amp' }),
-  },
-
+` + makeSdSyllable({ num: '100.0', radius: '0.004', k: '0.2', callArgs: 'start, f1, f2, f3, amp' }),
+    },
 };

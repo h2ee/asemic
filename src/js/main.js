@@ -339,7 +339,7 @@ function Init() {
 
         uniforms.u_time.value = clock.getElapsedTime();
         const elapsed = clock.getElapsedTime() - growStart;
-        const rawT = Math.min(elapsed / 4.0, 1.0);
+        const rawT = Math.min(elapsed / 2.0, 1.0);
         uniforms.u_growT.value = rawT;
 
         if (baked) return;

@@ -13,7 +13,7 @@
 
 import { PATH_FUNCTIONS } from './pathFunctions.js';
 
-const PATH_MODE = 7;  // ← 여기 숫자만 바꾸면 됨
+const PATH_MODE = 7; // ← 여기 숫자만 바꾸면 됨
 
 const { name, src } = PATH_FUNCTIONS[PATH_MODE];
 
