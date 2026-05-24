@@ -138,48 +138,6 @@ void main() {
 }
 `;
 
-// ── 음절 위치 + sminK 계산 ────────────────────────────────────────────────────
-function calcLayout(syllables) {
-    const count = syllables.length;
-    if (count === 0) return { positions: [], radius: 0.15, sminK: 0.08 };
-
-    const words = [];
-    let cur = [];
-    for (const syl of syllables) {
-        if (cur.length > 0 && syl.wordId !== cur[cur.length - 1].wordId) {
-            words.push(cur);
-            cur = [];
-        }
-        cur.push(syl);
-    }
-    if (cur.length > 0) words.push(cur);
-
-    const step = Math.min(0.16, 0.8 / Math.max(count, 1));
-    const sylGap = step;
-    const sminK = step * 2.0;
-    const wordGap = sminK * 1.02;
-
-    let totalWidth = 0;
-    for (let w = 0; w < words.length; w++) {
-        totalWidth += (words[w].length - 1) * sylGap;
-        if (w < words.length - 1) totalWidth += wordGap;
-    }
-
-    let x = 0.5 - totalWidth / 2;
-    const y = 0.5;
-    const positions = new Array(count);
-    let idx = 0;
-    for (let w = 0; w < words.length; w++) {
-        for (let s = 0; s < words[w].length; s++) {
-            positions[idx++] = [x, y];
-            x += sylGap;
-        }
-        x += wordGap - sylGap;
-    }
-
-    return { positions, radius: step * 0.9, sminK };
-}
-
 // ── Hz → m/n (복잡도: M_MAX/N_MAX로 상한 조절) ───────────────────────────────
 function f1ToM(f1Hz, choX = 0.5) {
     const range = M_MAX - 1.0;
@@ -234,6 +192,7 @@ export class SoraReceiver {
         this._sylCount = 0;
         this._radius = 0.14;
         this._sminK = 0.08;
+        this.lineHeightRatio = 1.5;
     }
 
     async init(canvas) {
@@ -287,17 +246,24 @@ export class SoraReceiver {
         this._raf = requestAnimationFrame(this._animate);
     }
 
-    update(syllables, JAMO) {
+    // @param sylItems   isSpace 제외 음절 배열 (main.js calcTextboxLayout 결과)
+    // @param positions  0~1 uv 위치 배열 (sylItems 와 1:1 대응)
+    // @param JAMO       자모 데이터
+    update(sylItems, positions, JAMO) {
         if (!JAMO) return;
-        const count = Math.min(syllables?.length ?? 0, MAX_SYL);
+        const count = Math.min(sylItems?.length ?? 0, MAX_SYL);
         const nowSec = (performance.now() - this._startT) / 1000;
 
-        const { positions, radius, sminK } = calcLayout(syllables.slice(0, count));
-        this._radius = radius;
-        this._sminK = sminK;
+        // sminK: 음절 간격에서 계산 (positions 배열로부터 평균 간격 추정)
+        // 위치는 이미 main에서 계산됐으므로 여기선 단순 추정값 사용
+        const avgStep = count > 1 ? Math.abs(positions[1][0] - positions[0][0]) : 0.12;
+        this._sminK = Math.max(0.04, avgStep * 1.8);
+        this._radius = Math.max(0.04, avgStep * 0.85);
 
         for (let i = 0; i < count; i++) {
-            const syl = syllables[i];
+            const syl = sylItems[i];
+            const pos = positions[i] ?? [0.5, 0.5];
+
             const jungEntry = JAMO[syl.jung];
             const choEntry = JAMO[syl.cho]?.cho;
             if (!jungEntry?.pos) continue;
@@ -315,7 +281,7 @@ export class SoraReceiver {
                 this._morphStart[i] = nowSec;
             }
             this._waveStart[i] = nowSec;
-            this._positions[i] = positions[i] ?? [0.5, 0.5];
+            this._positions[i] = pos;
         }
         this._sylCount = count;
     }
