@@ -99,6 +99,7 @@ export class AlienReceiver {
             u_yangseong: { value: 0 },
             u_diphthong: { value: 0 },
             u_growT: { value: 0 },
+            u_materialMode: { value: 0 },  // 0=crosshatch, 1=metal, 2=glass
         };
         this._growScene = this._makeQuadScene(vertSrc, growFrag, this._growUniforms);
 
@@ -115,6 +116,7 @@ export class AlienReceiver {
         this._dispUniforms = {
             u_accumTex: { value: this._accumTarget.texture },
             u_resolution: { value: new THREE.Vector2(rW, rH) },
+            u_dispMatMode: { value: 0 },
         };
         this._dispScene = this._makeQuadScene(vertSrc, dispFrag, this._dispUniforms);
 
@@ -210,6 +212,16 @@ export class AlienReceiver {
     }
 
     // ── 공개 유틸 ─────────────────────────────────────────────────────────────────
+
+    // materialMode 전환 (0=crosshatch, 1=metal, 2=glass)
+    setMaterialMode(mode) {
+        if (this._growUniforms) {
+            this._growUniforms.u_materialMode.value = mode;
+        }
+        if (this._dispUniforms) {
+            this._dispUniforms.u_dispMatMode.value = mode;
+        }
+    }
 
     // 큐가 빌 때까지 대기 후 2프레임 더 기다려 마지막 bake 확정
     flushQueue() {

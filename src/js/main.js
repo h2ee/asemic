@@ -279,6 +279,47 @@ function buildUI(rm, getState) {
         });
         container.appendChild(btn);
     }
+
+    // ── material mode 전환 (alien 전용) ───────────────────────────────
+    const sep = document.createElement('span');
+    sep.textContent = '|';
+    Object.assign(sep.style, { color: '#555', fontSize: '14px' });
+    container.appendChild(sep);
+
+    const matModes = [
+        { mode: 0, label: '🙿' }, // crosshatch
+        { mode: 1, label: '🔗' }, // metal
+        { mode: 2, label: '🥛' }, // glass
+    ];
+    let currentMat = 0; // default: crosshatch
+    const matBtns = [];
+
+    for (const { mode, label } of matModes) {
+        const btn = document.createElement('button');
+        btn.textContent = label;
+        btn.title = ['crosshatch', 'metal', 'glass'][mode];
+        Object.assign(btn.style, {
+            padding: '4px 10px',
+            fontSize: '16px',
+            background: mode === 0 ? '#3a3a5c' : 'transparent',
+            color: '#fff',
+            border: '1px solid #555',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            transition: 'background 0.2s',
+        });
+        btn.addEventListener('click', () => {
+            currentMat = mode;
+            const alien = rm.current;
+            if (alien?.setMaterialMode) alien.setMaterialMode(mode);
+            matBtns.forEach((b, i) => {
+                b.style.background = i === mode ? '#3a3a5c' : 'transparent';
+            });
+        });
+        matBtns.push(btn);
+        container.appendChild(btn);
+    }
+
     document.body.appendChild(container);
 }
 
@@ -311,7 +352,7 @@ function buildInput(onInput, onSubmit) {
     });
 
     const btn = document.createElement('button');
-    btn.textContent = '전송';
+    btn.textContent = 'bake';
     Object.assign(btn.style, {
         padding: '10px 18px',
         fontSize: '15px',
@@ -367,7 +408,7 @@ async function Init() {
 
     const history = buildHistory();
 
-    const sylSize = 40;
+    // sylSize: 수신자별로 receiver.sylSize 에서 읽음 (기본값 55)
     let _sylItems = [];
     let _positions = [];
     let _allItems = [];
@@ -376,6 +417,7 @@ async function Init() {
     function reLayout(items) {
         const W = window.innerWidth;
         const H = window.innerHeight;
+        const sylSize = rm.current?.sylSize ?? 55;
         const lineHeightRatio = rm.current?.lineHeightRatio ?? 1.3;
         const { positions, sylItems } = calcTextboxLayout(items, sylSize, W, H, lineHeightRatio, _submitOffsetY);
         _sylItems = sylItems;
@@ -393,6 +435,7 @@ async function Init() {
 
         const W = window.innerWidth;
         const H = window.innerHeight;
+        const sylSize = rm.current?.sylSize ?? 55;
         const lineHeightRatio = rm.current?.lineHeightRatio ?? 1.3;
         const { lastY } = calcTextboxLayout(_allItems, sylSize, W, H, lineHeightRatio, _submitOffsetY);
         const capHeight = Math.round(lastY + sylSize * lineHeightRatio * 1.5);
@@ -418,7 +461,7 @@ async function Init() {
         },
     );
 
-    buildUI(rm, () => ({ sylItems: _sylItems, positions: _positions, sylSize }));
+    buildUI(rm, () => ({ sylItems: _sylItems, positions: _positions, sylSize: rm.current?.sylSize ?? 55 }));
 
     window.addEventListener('resize', () => reLayout(_allItems));
 }

@@ -22,12 +22,12 @@ vec3 orbitalPoint(float r, float freq, float angle, float theta, float phi, floa
 
 vec3 syllablePath(vec3 start, vec3 center, vec3 cho, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
-  float angle = t * TWO_PI * 5.; // 에피사이클 회전 3.0 ~12. 실험 중
-  float r1 = amp*(1.0/1.75), r2=r1*0.75, r3=r1*0.25;
+  float angle = t * TWO_PI * 6.0; // 에피사이클 회전 3.0 ~12.
+  float r1 = amp*(1.0/1.75), r2=r1*0.5, r3=r1*0.25;
 
-  vec3 ep1 = orbitalPoint(r1, f1, angle, cho.x * TWO_PI,           cho.y * PI, 0.5);
-  vec3 ep2 = orbitalPoint(r2, f2, angle, cho.y * TWO_PI + yang*PI, cho.z * PI, 0.25);
-  vec3 ep3 = orbitalPoint(r3, f3, angle, cho.z * TWO_PI + diph*PI, yang  * PI, 0.95);
+  vec3 ep1 = orbitalPoint(r1, f1, angle, cho.x * TWO_PI,           cho.y * PI, 0.03); //0.3
+  vec3 ep2 = orbitalPoint(r2, f2, angle, cho.y * TWO_PI + yang*PI, cho.z * PI, 0.25); //0.25
+  vec3 ep3 = orbitalPoint(r3, f3, angle, cho.z * TWO_PI + diph*PI, yang  * PI, 0.65); //0.95
 
   return center + ep1 + ep2 + ep3;
 }
