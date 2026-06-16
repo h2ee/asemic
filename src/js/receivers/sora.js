@@ -2,6 +2,7 @@
 // WebGL2 / GLSL ES 3.0
 //
 // 구조: 클라드니 = 주기적 SDF → smin()으로 음절 합산
+//   - 진폭이 0이라 모래가 모이는 부분 = 거리 0 : 거리 기반 형태
 //   - 각 음절이 chladniPolar 기반 SDF 필드
 //   - smin(IQ quadratic)으로 같은 단어 음절들을 메타볼처럼 합산
 //   - 단어 간격 > smin 반경 → 자연스럽게 끊김 (별도 차단 없음)
@@ -116,10 +117,11 @@ float sylSDF(int i, vec2 p, float aspect) {
   float d = chladniVal(m, n, theta, r);
   d *= 1.0 + waveAmp * 0.4;
 
-  // sine 방식 (3D의 sin(p.y*10.0)*0.1 과 동일한 구조)
+  // sine 방식
   float disp = sin(r * 12.0 + theta * 2.0) * 0.9; //0.4, 1.4
   //noise 방식 (rand 활용)
   float disp2 = rand(vec3(floor(delta * 270.0), 0.0)) * 0.05;
+  // 선에 필압 같은 효과
   float disp3 = cos(r * 2.0 + theta * 2.0) * 0.48;
 
   d += disp;
@@ -127,7 +129,7 @@ float sylSDF(int i, vec2 p, float aspect) {
   d += disp3;
 
   float outside = max(0.0, r*0.9 - 1.0) * 2.0; //r*2.0, 0.8
-  return d + outside + 0.2;
+  return d + outside + 0.2; // offset (실험 중)
 }
 
 // ── 컬러 등고선 ─────────────────────────────────────────────────────────────
@@ -167,6 +169,7 @@ vec3 heatmap2(float t, float choX, float choZ) {
   }
 }
 
+//현재 사용
 vec3 heatmap3(float t, float choX, float choZ) {
   vec3  hue   = hue2rgb(choX * 1.82); // 1.82
   float vivid = 0.05 + choZ * 0.50;
@@ -176,7 +179,7 @@ vec3 heatmap3(float t, float choX, float choZ) {
   if (t < midT) {
     return mix(dark, peak, t / midT);
   } else {
-    return mix(peak, vec3(1.0), (t - midT) / 0.65);
+    return mix(peak, vec3(0.9804, 0.9882, 1.0), (t - midT) / 0.65); // #bg color (조절 1)
   }
 }
 
@@ -187,6 +190,7 @@ void main() {
   vec2  uv     = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y) / u_resolution;
   float aspect = u_resolution.x / u_resolution.y;
 
+  // 그레인 - 현재 사용 안함
   float shk_a = rand(vec3(uv, .0)) * 2. * PI;
   float shk_r = rand(vec3(uv, 1.)) * .005;
   vec2 shk = vec2(cos(shk_a), sin(shk_a)) * shk_r;
@@ -243,7 +247,7 @@ void main() {
 
   // ── 컬러 등고선 ──────────────────────────────────────────────────────────
   // d=0: 마디선, d 클수록 → 흰 배경
-  // 1.2 스케일: 등온선 폭 조절 (높일수록 색 띠가 좁아짐)
+  // 3.0 스케일: 등온선 폭 조절 (높일수록 색 띠가 좁아짐)
   float t   = clamp(d * 3.0, 0.0, 1.0);
   vec3  col = heatmap3(t, choXAcc, choZAcc);
 
@@ -251,16 +255,14 @@ void main() {
   col = col * (0.82 + 0.18 * diff);
   col = clamp(col + spec * 0.12, 0.0, 1.0);
 
-  // ── (참고용 보류) 흑백 등고선 방식 ──────────────────────────────────────
+  // ── 흑백 등고선 ──────────────────────────────────────
   float fw      = fwidth(d) * 0.8;
   float lineStr = 1.0 - smoothstep(0.0, fw, abs(d));
   float band    = abs(fract(d * 1.5) - 0.5) * 2.0;
   float bandStr = (1.0 - smoothstep(0.0, fw * 2.0, band)) * 0.18;
   float dark    = clamp(lineStr + bandStr, 0.0, 1.0);
   dark = lineStr; // 등고선만
-  //vec3 tint = darkToColor(choXAcc);
-  //col = vec3(1.0) - dark * (vec3(1.0) - tint);
-  // heatmap 위에 검은 등고선
+  // heatmap 위에 검은 등고선 오버레이
   col = mix(col, vec3(0.0), dark);
   // ────────────────────────────────────────────────────────────────────────
 
@@ -324,7 +326,7 @@ export class SoraReceiver {
         this._frozen = Array(MAX_SYL).fill(false);
         this._wordPositions = new Map(); // wordId → [x, y]
         this._wordRadii = new Map(); // wordId → radius (한 번 배정 후 유지)
-        this.sylSize = 150; // per-receiver sylSize
+        this.sylSize = 150; // per-receiver sylSize : #fontSize
         this._sylCount = 0;
         this._sminK = 0.06;
         this.lineHeightRatio = 1.5;
@@ -489,7 +491,7 @@ export class SoraReceiver {
         const l = this._locs;
 
         gl.viewport(0, 0, this._canvas.width, this._canvas.height);
-        gl.clearColor(1, 1, 1, 1);
+        gl.clearColor(0.9804, 0.9882, 1, 0); // #bg color (조절 2)
         gl.clear(gl.COLOR_BUFFER_BIT);
 
         gl.uniform2f(l.res, this._canvas.width, this._canvas.height);

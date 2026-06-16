@@ -1,4 +1,6 @@
-// ── alien.js ──────────────────────────────────────────────────────────────────
+// ── mycelium.js ───────────────────────────────────────────────────────────────
+// alien.js 기반 — 균사체(곰팡이) 수신자
+//
 // 2-pass 렌더링:
 //   [Pass 1] grow 중인 음절 1개만 레이마칭 → growTarget
 //   [Pass 2] growTarget + bckbuffer 합성   → accumTarget (ping-pong)
@@ -10,41 +12,46 @@
 // grow queue: 음절이 빠르게 입력돼도 순서대로 하나씩 처리.
 //   instant:true  → growT=1로 한 프레임에 즉시 bake (삭제 후 재구움용)
 //   instant:false → grow 애니메이션
+//
+// ── alien.js 대비 변경점 ─────────────────────────────────────────────────────
+//  1. syllablePath에 ep4(작은 에피사이클) 추가 — 균사 끝부분 미세 흔들림/잔가지
+//  2. taper에 노이즈 기반 불규칙성 추가 — 매듭처럼 굵기가 불균일한 균사
+//  3. map()에 lump(혹) 추가 — 경로 위 랜덤 위치에 작은 구, g_matID로 body/lump 구분
+//  4. mode2(금속) 색 파이프라인을 body/lump로 분리(옵션 A: 현재는 동일색)
+//     + mode1의 rim 항을 검은 edge glow로 재사용
+//  5. 연결 실 / mother tree 허브 로직 — 음절당 최대 2개, 허브 중복 없이 선택
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as THREE from 'three';
 
 // ── 경로 함수 (syllablePath) ──────────────────────────────────────────────────
-// 이전: pathFunctions.js PATH_FUNCTIONS[7] (orbital) 에서 이동
-//
-// 실험용 경로 함수들은 pathFunctions.js에 기록 보존됨
-// ─────────────────────────────────────────────────────────────────────────────
 const pathSrc = `
 vec3 orbitalPoint(float r, float freq, float angle, float theta, float phi, float e) {
   vec3 axis = vec3(sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi));
   vec3 up   = abs(axis.z) < 0.99 ? vec3(0,0,1) : vec3(1,0,0);
   vec3 u    = normalize(cross(axis, up));
-  vec3 v    = cross(axis, u);
+  vec3 v    = cross(axis, u) * 1.2;  // #임의 조정
   float a   = freq * (1.0/3200.0) * angle;
   return r * cos(a)*u + r*(1.0-e) * sin(a)*v;
 }
 
 vec3 syllablePath(vec3 start, vec3 center, vec3 cho, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
-  float angle = t * TWO_PI * 7.0; // 에피사이클 회전 3.0 ~12.
+  float angle = t * TWO_PI * 5.0; // 에피사이클 회전 3.0 ~12. default 7
   float r1 = amp*(1.0/1.75), r2=r1*0.5, r3=r1*0.25;
 
   vec3 ep1 = orbitalPoint(r1, f1, angle, cho.x * TWO_PI,           cho.y * PI, 0.03); //0.3
   vec3 ep2 = orbitalPoint(r2, f2, angle, cho.y * TWO_PI + yang*PI, cho.z * PI, 0.25); //0.25
   vec3 ep3 = orbitalPoint(r3, f3, angle, cho.z * TWO_PI + diph*PI, yang  * PI, 0.65); //0.95
 
-  return center + ep1 + ep2 + ep3;
+  // ep4: 작은 에피사이클 — 균사 끝부분의 미세 흔들림/잔가지 느낌 (mycelium 전용 추가)
+  vec3 ep4 = orbitalPoint(r3*0.4, f1*1.7, angle*1.3, cho.x*PI, cho.z*TWO_PI, 0.99);
+
+  return center + ep1 + ep2 + ep3 - ep4*1.3; //임의 조정
 }
 `;
 
 // ── 셰이더 ────────────────────────────────────────────────────────────────────
-// 이전: shader.js 에서 이동
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ── 공통 vert ─────────────────────────────────────────────────────────────────
 const vertSrc = `
@@ -57,7 +64,7 @@ void main() {
 
 // ── 공통 SDF/유틸 + 경로함수 (growFrag에서만 사용) ───────────────────────────
 const sdfSrc = `
-#define MAX_STEPS 30
+#define MAX_STEPS 20
 #define MAX_DIST  20.0
 #define EPS       5e-3
 #define PI        3.14159
@@ -77,16 +84,21 @@ uniform vec3  u_center;
 uniform vec3  u_cho;
 uniform vec3  u_end;
 uniform vec3  u_jung;
+uniform vec3  u_hubCenters[2]; // mother tree 허브 center들 (연결 실 타겟, 최대 2개)
+uniform float u_connCount;     // 활성 연결 개수 (0~2)
 uniform float u_amp;
 uniform float u_yangseong;
 uniform float u_diphthong;
 uniform float u_growT;
 uniform int   u_materialMode;  // 0=crosshatch, 1=태양, 2=금속
 
+// 재질 ID: 0=경로(body), 1=혹(lump) — map()에서 기록, growFrag 컬러링에서 사용
+float g_matID;
+
 float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
   vec3 pa = p - a, ba = b - a;
   float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  return length(pa - ba * (h*0.9)) - r; //약간 끊김
+  return length(pa - ba * (h*1.0)) - r; //약간 끊김 0.95
 }
 
 // HSL → RGB
@@ -153,8 +165,8 @@ float map(vec3 p) {
   float yang = u_yangseong;
   float diph = u_diphthong;
   float num  = 150.0;
-  float k    = 0.02; //0.06
-  float rad  = 0.01; // 0.02
+  float k    = 0.08; //0.06
+  float rad  = 0.007; // 0.02
   float d    = MAX_DIST;
 
   for (int i = 0; i < int(num); i++) {
@@ -167,35 +179,122 @@ float map(vec3 p) {
     float pull = step(0.99, u_growT);
     b = mix(b, u_center + u_end, pull * step(u_growT - 0.001, t1));
 
-    // 납작한 캡슐 트릭 (불안정)
+    // 납작한 캡슐 트릭 (불안정) 지금 사용 안하는 중 - 적용 시 필기체 같은 비주얼 나옴.
     vec3 twistedP = opTwistPoint(p);
-    twistedP *= 0.7;
-    twistedP.y = twistedP.y + 4.0;
-    twistedP.xz = twistedP.xz * 1.2;
+    twistedP *= 0.85;
+    twistedP.y = twistedP.y + 4.0; //4
+    twistedP.xz = twistedP.xz * 1.1;
     float twistedCapsule = sdCapsule(twistedP, a, b, rad);
     //d = opSmoothUnion(d, twistedCapsule, k);
     
-
+    //thinD 얇은 점선 같은 똑같은 경로 옆에 하나 더 그리는 것 - 그냥 밀도용
     //p.x = p.x * 0.999;
     vec3 p1 = p;
     p1 = (p1 - a) * 45.0;
-    float thinD = opSmoothUnion(d, sdCapsule(p1, a, b, 0.4), 0.008);
-
+    float thinD = opSmoothUnion(d, sdCapsule(p1, a, b, 0.8), 0.008);
+    
     // taper: 경로 중간(t=0.5)에서 가장 굵고 양 끝에서 얇아짐
-    float taper = 0.3 + 0.7 * sin(t0 * PI);  // 0.3~1.0 범위
+    // + 노이즈로 불규칙한 굵기 변화 추가 (균사 매듭/잘록함 느낌, mycelium 전용)
+    float taperBase  = 0.7 + 0.3 * sin(t0 * PI);  // 0.3~1.0 범위
+    float taperNoise = 0.8 + 0.6 * noise(vec3(t0 * 18.0, u_cho.x * 7.0, u_cho.z * 3.0));
+    float taper = taperBase * taperNoise;
     float d1 = sdCapsule(p, a, b, rad * taper);
 
-    float d2 = sin(p.y * 10.0) * 0.1 * 0.1; //for 태양 material
-    //float d2 = 0.008 * noise(p * 105.0); //진폭(돌출) 0.03, 주파수(촘촘함 정도) 80.0인 노이즈 --> for 노이즈 material
-    float displaced = d1 + d2;
+    float d2 = sin(p.y * 10.0) * 0.1 * 0.175-0.0155; //for 태양 material
+    float d3 = 0.008 * noise(p * 95.0); //진폭(돌출) 0.03, 주파수(촘촘함 정도) 80.0인 노이즈 --> for 노이즈 material
+    float displaced = d1 + d2 + d3;
 
     d = opSmoothUnion(d, displaced, k);
     //d = opSmoothUnion(d, sdCapsule(p, a, b, rad), k); //displacement 없는 기본 캡슐
+    
     d = min(d, thinD); //얇은 부분 추가
     
   }
+
+  // ── lump (혹) — 경로 위 임의 위치에 작은 구를 붙여 포자/혹 같은 질감 추가 ──
+  // 자모값을 시드로 사용해 음절마다 분포가 달라짐.
+  // u_growT에 맞춰 점진적으로 등장(이미 그려진 경로 범위 내에서만).
+  // -- connection thread (mother tree hub) --
+  // trigger: tense consonant (cho.z>=0.65) / yeonum (prev jong + cur cho==ieung) / 종성 존재
+  // grows together with pull, at growT>=0.99, thinner than body
+  float seed = u_cho.x * 13.7 + u_cho.z * 5.3 + f1 * 0.01;
+  float numLumps = 20.0 + u_cho.z * 34.0; // lump 개수
+  float dLump = MAX_DIST;
+
+  vec3 placed[54];
+  int  placedCount = 0;
+
+  for (int c = 0; c < 2; c++) {
+    if (float(c) >= u_connCount) break;
+    float connOn = step(0.99, u_growT);
+    if (connOn > 0.5) {
+        vec3 hub = u_hubCenters[c];
+        float cSeed = seed + float(c) * 7.0; // 두 연결선이 다르게 휘도록 시드 분리
+
+        vec3 mid = mix(u_center, hub, 0.5);
+        mid += vec3(hash(vec3(cSeed, 1.0, 2.0)) - 0.5, hash(vec3(cSeed, 3.0, 4.0)) - 0.5, 0.0) * 0.8; // 0.3 = 휘어짐 강도, 조절 포인트
+
+        float dConn = min(
+            sdCapsule(p, u_center, mid, rad * 1.8),
+            sdCapsule(p, mid, hub, rad * 0.3)
+        );
+
+        // 타겟 쪽 작은 앵커 — 실이 여기로 "녹아드는" 느낌
+        float dAnchor = sdSphere(p - hub, rad * 0.2);
+        dConn = opSmoothUnion(dConn, dAnchor, k * 1.6); // 앵커 쪽 melt 강도
+
+        d = opSmoothUnion(d, dConn, k * 1.4);
+    }
+  }
+
+  for (int j = 0; j < 54; j++) {
+    if (float(j) >= numLumps * u_growT) break;
+    float fj = float(j) * 91.7;
+
+    // 문제2: 무작위 lt 대신 j마다 구간을 나눠 고르게 분산 (stratified) + 약간의 지터
+    float jitter = hash(vec3(fj + seed * 3.1, seed, fj * 0.37));
+    float lt = (float(j) + 0.15 + jitter * 0.05) / numLumps;
+    if (lt > u_growT) continue; // 아직 도달 안 한 위치 — 스킵 (트레일 방지)
+
+    float dt = 0.01;
+    vec3 pathPos = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, lt, yang, diph);
+
+    // tangent 기반 프레임 대신, 월드 기준 랜덤 방향 + 위/아래 알터네이션
+    // side: 위(+y) / 아래(-y) 절반씩 분배
+    float side = hash(vec3(fj * 1.7 + seed, fj, seed * 0.9)) > 0.5 ? 1.0 : -1.0;
+    vec3 perpDir = normalize(vec3(
+      hash(vec3(fj * 2.3 + seed, 1.0, fj)) * 2.0 - 1.0,
+      side * (0.6 + 0.4 * hash(vec3(fj * 4.1 + seed, 2.0, fj))), // 위/아래 쪽으로 치우침
+      hash(vec3(fj * 5.1 + seed, 3.0, fj)) * 2.0 - 1.0
+    ));
+
+// lump 크기
+    // 문제1: 본체 표면 반경 추정에 smooth-union bulge(k) 보정 추가
+    // taper에 노이즈도 반영해 실제 map()의 d1 반경과 더 가깝게
+    float taperBaseAtLt  = 0.1 + 0.9 * sin(lt * PI);
+    float taperNoiseAtLt = 0.85 + 0.05 * noise(vec3(lt * 18.0, u_cho.x * 7.0, u_cho.z * 3.0));
+    float bodyR = rad * taperBaseAtLt * taperNoiseAtLt + k * 0.75; // k*0.5: 관절 bulge 보정
+
+    float lumpR  = rad * (1.0 + hash(vec3(fj * 13.7 + seed, seed, 1.0)) * 1.8) * 2.2; // 크기 0.8배
+    // lump 중심을 본체 표면 근처에 배치 → 절반은 묻히고 절반은 튀어나오는 혹 형태
+    vec3 lumpPos = pathPos + perpDir * bodyR;
+
+    placed[placedCount] = lumpPos;
+    placedCount++;
+
+    float dl = sdSphere(p - lumpPos, lumpR);
+    dLump = min(dLump, dl);
+  }
+
+  // body(d)와 lump(dLump) 블렌딩 + 재질 ID(g_matID) 계산
+  float lumpK = 0.012;
+  float h = clamp(0.5 + 0.5 * (dLump - d) / lumpK, 0.0, 1.0);
+  g_matID = 1.0 - h; // 0=경로(body), 1=혹(lump)
+  d = mix(dLump, d, h) - lumpK * h * (1.0 - h);
+
   return d;
 }
+
 
 float raymarch(vec3 ro, vec3 rd) {
   float t = 0.0;
@@ -266,7 +365,10 @@ void main() {
   }
 
   vec3 pos = u_ro + rd * t;
+
   vec3 nor = estimateNormal(pos);
+  // 표면 지점에서의 재질 ID(g_matID) 확정 (estimateNormal의 마지막 호출값은 오프셋 지점이므로 재계산)
+  float _surfD = map(pos);
 
   vec3 V      = normalize(-rd);
   vec3 choCol = u_cho;//choToColor(u_cho);
@@ -316,15 +418,34 @@ void main() {
     // 외곽 발광 (코로나 루프 끝부분)
     col += rim * rim * vec3(1.0, 0.4, 0.0) * flareStr * 0.9;
   } else if (u_materialMode == 2) {
-    // ── Mode 2: 금속 ─────────────────────────────────────────────────────
+    // ── Mode 2: 금속 (mycelium 기본) ──────────────────────────────────────
 
-    vec3 L = vec3(1., 1., 0.8);
+    //vec3 L = vec3(1., 1., 0.8);
+
+    vec3 L = vec3(1.0, -1.0, -0.2);
+    float shk_a = rand(vec3(uv, .0)) * 1.2 * PI;
+    float shk_r = rand(vec3(uv, 1.)) * 1.;
+    vec2 shk = vec2(cos(shk_a), sin(shk_a)) * shk_r;
+    L.xz += shk;
+
     float diff      = max(dot(nor, L), 0.0);
     float toonSteps = 4.0;
     float diffQ     = floor(diff * toonSteps) / toonSteps;
     float band      = floor(diffQ * (toonSteps - 1.0) + 1e-3);
-    col = vec3(0.999) * (0.75 + 0.25 * diff);
-    col = mix(choCol, col, (toonSteps - 1.0) - band)*1.2;
+    vec3 baseCol = vec3(0.999) * (0.85 + 0.15 * diff);
+    vec3 monoCol = mix(vec3(0.48), baseCol, (toonSteps - 1.0) - band) * 1.2 + 0.3;
+    baseCol = mix(choCol, baseCol, (toonSteps - 1.0) - band) * 1.2;
+
+    // 경로(body) / 혹(lump) 색 분리 — 옵션 A: 현재는 동일색,
+    // 추후 lumpCol만 따로 조정해 혹에 강조색 부여 가능
+    vec3 bodyCol = monoCol;
+    vec3 lumpCol = baseCol * 0.95;
+    col = mix(bodyCol, lumpCol, g_matID);
+
+    // 외곽 발광 (mode1의 rim 항 재사용) — 검은 edge glow로 적용
+    float rim = pow(1.0 - max(dot(nor, V), 0.0), 1.2);
+    float flareStr = 1.4;//0.6 + choCol.z * 0.8;
+    col = mix(col, vec3(0.0), rim * rim * flareStr * 1.2);
   }
 
   gl_FragColor = vec4(col, 1.0);
@@ -374,7 +495,7 @@ void main() {
     gl_FragColor = vec4(mix(vec3(0.0), acc.rgb, acc.a), 1.0);
     return;
   }
-
+/*
   // ── SSR (스크린스페이스 반사) ─────────────────────────────────────────
   // accumTarget 밝기 기울기로 2D 법선 근사
   vec2 texel = 1.0 / u_resolution;
@@ -404,22 +525,24 @@ void main() {
 
   // 가장자리에서 반사색 합성
   vec3 col = base + refl * edgeness * onGlyph * 0.95;
+*/
+  gl_FragColor = vec4(mix(vec3(0.7), acc.rgb, acc.a), 1.0);// #bg color = vec3(1.0)
+  //gl_FragColor = vec4(col, 1.0);
 
-  gl_FragColor = vec4(col, 1.0);
 }
 `;
 
-// ── AlienReceiver ─────────────────────────────────────────────────────────────
+// ── MyceliumReceiver ──────────────────────────────────────────────────────────
 
-export class AlienReceiver {
+export class MyceliumReceiver {
     constructor() {
         this._renderer = null;
         this._clock = null;
         this._raf = null;
         this._lastTime = 0;
-        this._FRAME_INTERVAL = 1000 / 24;
+        this._FRAME_INTERVAL = 1000 / 24; // #frameRate
 
-        this._camPos = new THREE.Vector3(0, 0.5, 5);
+        this._camPos = new THREE.Vector3(0.3, 0.5, 7); //#camera pos | preset: zoom(-0.7, 0.9, 4) default(0.3, 0.5, 7)
         this._camTarget = new THREE.Vector3(0, 0, 0);
 
         this._growTarget = null;
@@ -441,9 +564,19 @@ export class AlienReceiver {
         this._growStart = 0;
         this._isFirstGlyph = true;
         this._prevSylCount = 0;
-        this._forceComplete = false; // 현재 grow 중인 음절을 즉시 완료할 플래그
+        this._forceComplete = false; // single-flag: force current syllable to growT=1
+
+        // hub state: syllable index -> { center: Vector3, connections: number }
+        // 트리거: 자음이 비음/유음이 아니면(파열/파찰/마찰), 다음 음절로 넘어가는 순간 무조건 허브로 등록
+        this._hubs = new Map();
 
         this.lineHeightRatio = 4.0;
+        this.sylSize = 100; // per-receiver sylSize : #fontSize (alien 기본 fallback=55보다 크게)
+        this.wrapStep = 200; // 자간(px)
+        this.wrapMargin = 0;
+        // 카메라(0.7, 0.5, 7) 오프셋으로 화면이 압축되어 보이는 것 보정
+        // x=1.0이면 보정 없음. 1.3~1.6 사이에서 화면을 꽉 채우는 값을 찾아서 조절
+        this.layoutScale = { x: 1.28, y: 1.0 };
     }
 
     // ── Receiver 인터페이스 ──────────────────────────────────────────────────────
@@ -451,7 +584,7 @@ export class AlienReceiver {
     async init(canvas) {
         const W = window.innerWidth;
         const H = window.innerHeight;
-        const dpr = Math.min(window.devicePixelRatio, 1);
+        const dpr = Math.min(window.devicePixelRatio, 2.0); // # pixel density DPR
 
         this._renderer = new THREE.WebGLRenderer({ antialias: true, canvas: canvas ?? undefined });
         this._renderer.setSize(W, H);
@@ -491,6 +624,8 @@ export class AlienReceiver {
             u_cho: { value: new THREE.Vector3() },
             u_end: { value: new THREE.Vector3() },
             u_jung: { value: new THREE.Vector3() },
+            u_hubCenters: { value: [new THREE.Vector3(), new THREE.Vector3()] },
+            u_connCount: { value: 0 },
             u_amp: { value: 0 },
             u_yangseong: { value: 0 },
             u_diphthong: { value: 0 },
@@ -545,7 +680,7 @@ export class AlienReceiver {
         this._dequeue();
     }
 
-    update(uniformData, newSylCount = 0) {
+    update(uniformData, newSylCount = 0, sylItems = null) {
         if (!uniformData) return;
         const { starts, centers, chos, ends, jungs, amps, yangseong, diphthong, confirmed } = uniformData;
         const prevCount = this._prevSylCount;
@@ -554,6 +689,7 @@ export class AlienReceiver {
             this._queue = [];
             this._growing = false;
             this._isFirstGlyph = true;
+            this._hubs = new Map(); // index shifted -> reset hub state
             for (let i = 0; i < newSylCount; i++) {
                 this._queue.push(
                     this._makeItem(
@@ -571,6 +707,30 @@ export class AlienReceiver {
             }
         } else {
             for (let i = prevCount; i < newSylCount; i++) {
+                // 이전 음절(i-1)이 확정됨 — 자음이 비음/유음이 아니면(파열/파찰/마찰) 무조건 허브로 등록
+                if (i > 0) {
+                    this._maybeRegisterHub(i - 1, uniformData);
+                }
+
+                // connection thread trigger — 된/거센소리, 연음, 종성 존재 중 만족 개수에 따라 연결 0~2개
+                let hubCenters = [];
+                if (sylItems && sylItems[i]) {
+                    const cho = chos[i];
+                    const tense = cho.z >= 0.65; // 된소리(0.67) + 거센소리(1.0)
+                    const prevSyl = sylItems[i - 1];
+                    const curSyl = sylItems[i];
+                    const yeonum = i > 0 && !!prevSyl?.jong && curSyl.cho === 'ㅇ';
+                    const hasJong = !!curSyl.jong;
+
+                    const triggerCount = [tense, yeonum, hasJong].filter(Boolean).length;
+                    const desired = triggerCount >= 2 ? 2 : triggerCount >= 1 ? 1 : 0;
+
+                    if (desired > 0) {
+                        const targets = this._pickHubTargets(desired);
+                        hubCenters = targets.map(t => t.center);
+                    }
+                }
+
                 const isInstant = confirmed ? confirmed[i] : false;
                 this._queue.push(
                     this._makeItem(
@@ -583,6 +743,8 @@ export class AlienReceiver {
                         yangseong[i],
                         diphthong[i],
                         isInstant,
+                        hubCenters,
+                        hubCenters.length,
                     ),
                 );
             }
@@ -594,6 +756,47 @@ export class AlienReceiver {
 
         this._prevSylCount = newSylCount;
         if (!this._growing) this._dequeue();
+    }
+
+    // 음절 i가 확정될 때 호출 — cho.y(조음방법)가 비음(0.75)/유음(1.0)이 아니면 허브로 등록
+    // 허브 위치 = 셀 중심 + 자음 조음위치/방법/긴장도(cho.xyz, 0~1) 기반 로컬 오프셋
+    _maybeRegisterHub(i, uniformData) {
+        const cho = uniformData.chos[i];
+        if (cho.y >= 0.75) return; // 비음/유음 제외
+
+        const amp = uniformData.amps[i];
+        const choOffset = new THREE.Vector3((cho.x - 0.5) * 2, (cho.y - 0.5) * 2, (cho.z - 0.5) * 2).multiplyScalar(
+            amp * 0.6,
+        ); // 0.6: 셀 내부 오프셋 강도, 조절 포인트
+
+        const hubCenter = uniformData.centers[i].clone().add(choOffset);
+        this._hubs.set(i, { center: hubCenter, connections: 0 });
+    }
+
+    // mother tree: 가중치(연결 많은 허브일수록 잘 뽑힘)로 최대 count개의 허브를 중복 없이 선택
+    _pickHubTargets(count) {
+        const picks = [];
+        const used = new Set();
+        for (let n = 0; n < count; n++) {
+            const entries = [...this._hubs.entries()].filter(([id]) => !used.has(id));
+            if (entries.length === 0) break;
+            const weights = entries.map(([, h]) => h.connections + 1);
+            const total = weights.reduce((a, b) => a + b, 0);
+            let r = Math.random() * total;
+            let chosen = entries[entries.length - 1];
+            for (let idx = 0; idx < entries.length; idx++) {
+                r -= weights[idx];
+                if (r <= 0) {
+                    chosen = entries[idx];
+                    break;
+                }
+            }
+            const [id, hub] = chosen;
+            hub.connections++;
+            used.add(id);
+            picks.push(hub);
+        }
+        return picks;
     }
 
     dispose() {
@@ -609,7 +812,7 @@ export class AlienReceiver {
 
     // ── 공개 유틸 ─────────────────────────────────────────────────────────────────
 
-    // materialMode 전환 (0=crosshatch, 1=태양)
+    // materialMode 전환 (0=crosshatch, 1=태양, 2=금속)
     setMaterialMode(mode) {
         if (this._growUniforms) {
             this._growUniforms.u_materialMode.value = mode;
@@ -664,6 +867,7 @@ export class AlienReceiver {
         this._growing = false;
         this._isFirstGlyph = true;
         this._prevSylCount = 0;
+        this._hubs = new Map();
 
         const prevClear = this._renderer.getClearColor(new THREE.Color());
         const prevAlpha = this._renderer.getClearAlpha();
@@ -678,7 +882,7 @@ export class AlienReceiver {
 
     // ── 내부 ─────────────────────────────────────────────────────────────────────
 
-    _makeItem(start, center, cho, end, jung, amp, yang, diph, instant) {
+    _makeItem(start, center, cho, end, jung, amp, yang, diph, instant, hubCenters = [], connCount = 0) {
         return {
             start: start.clone(),
             center: center.clone(),
@@ -689,6 +893,8 @@ export class AlienReceiver {
             yang,
             diph,
             instant,
+            hubCenters: hubCenters.map(v => v.clone()),
+            connCount,
         };
     }
 
@@ -704,6 +910,9 @@ export class AlienReceiver {
         u.u_amp.value = item.amp;
         u.u_yangseong.value = item.yang;
         u.u_diphthong.value = item.diph;
+        u.u_hubCenters.value[0].copy(item.hubCenters[0] ?? new THREE.Vector3());
+        u.u_hubCenters.value[1].copy(item.hubCenters[1] ?? new THREE.Vector3());
+        u.u_connCount.value = item.connCount ?? 0;
         u.u_growT.value = 0.0;
         this._growStart = this._clock.getElapsedTime();
         this._growing = true;
@@ -750,7 +959,7 @@ export class AlienReceiver {
             return;
         } else {
             const prev = this._growUniforms.u_growT.value;
-            growT = this._forceComplete ? 1.0 : prev + (1.0 - prev) * 0.08;
+            growT = this._forceComplete ? 1.0 : prev + (1.0 - prev) * 0.08; //#growT step default 0.08
             this._forceComplete = false;
             this._growUniforms.u_growT.value = growT >= 0.98 ? 1.0 : growT;
         }

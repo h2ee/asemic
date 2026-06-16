@@ -41,7 +41,16 @@ function decomposeSyllables(text) {
 
 // ── 텍스트박스 레이아웃 엔진 ──────────────────────────────────────────────────
 // offsetY: 이전 제출 줄 누적 높이(px) — 새 줄 시작 기준선
-function calcTextboxLayout(items, sylSize, W, H, lineHeightRatio = 1.3, offsetY = 0) {
+function calcTextboxLayout(
+    items,
+    sylSize,
+    W,
+    H,
+    lineHeightRatio = 1.3,
+    offsetY = 0,
+    wrapStep = sylSize * 2,
+    wrapMargin = sylSize,
+) {
     const PAD_X = sylSize * 0.5;
     const PAD_Y = 40;
     const lineH = sylSize * lineHeightRatio;
@@ -54,20 +63,20 @@ function calcTextboxLayout(items, sylSize, W, H, lineHeightRatio = 1.3, offsetY 
 
     for (const item of items) {
         if (item.isSpace) {
-            curX += sylSize * 1.8;
+            curX += wrapStep * 0.2; // #띄어쓰기 공백 길이
             if (curX > W - PAD_X) {
                 curX = PAD_X;
                 curY += lineH;
             }
             continue;
         }
-        if (curX + sylSize > W - PAD_X) {
+        if (curX + wrapMargin > W - PAD_X) {
             curX = PAD_X;
             curY += lineH;
         }
         positions.push([curX / W, curY / H]);
         sylItems.push(item);
-        curX += sylSize * 2;
+        curX += wrapStep;
     }
 
     const lastY = sylItems.length > 0 ? curY : PAD_Y + sylSize + offsetY;
@@ -92,7 +101,7 @@ function jamoToVec3(key, type, scale, offset = new THREE.Vector3()) {
 }
 
 // ── 음절 → alien uniform 데이터 ───────────────────────────────────────────────
-function syllablesToUniforms(sylItems, positions, sylSize) {
+function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = { x: 1, y: 1 }) {
     const W = window.innerWidth;
     const H = window.innerHeight;
     const sceneH = 2.07 * 2;
@@ -132,8 +141,8 @@ function syllablesToUniforms(sylItems, positions, sylSize) {
         if (sylSize3D > 3.5) startOffsetX = sylSize3D * 0.32;
         else if (sylSize3D < 3.0) startOffsetX = sylSize3D * 0.3;
 
-        const wx = (pos[0] - 0.5) * sceneW + startOffsetX;
-        const wy = -(pos[1] - 0.5) * sceneH + 0.5;
+        const wx = (pos[0] - 0.5) * sceneW * layoutScale.x + startOffsetX;
+        const wy = -(pos[1] - 0.5) * sceneH * layoutScale.y + 0.5;
         const offset = new THREE.Vector3(wx, wy, 0);
         const scale = sylSize3D * 0.5;
 
@@ -181,8 +190,11 @@ function syllablesToUniforms(sylItems, positions, sylSize) {
 // ── 수신자별 update 분기 ──────────────────────────────────────────────────────
 function dispatchToReceiver(rm, sylItems, positions, sylSize) {
     if (!sylItems.length) return;
+    const layoutScale = rm.current?.layoutScale ?? { x: 1, y: 1 };
     if (rm.name === 'alien') {
-        rm.update(syllablesToUniforms(sylItems, positions, sylSize), sylItems.length);
+        rm.update(syllablesToUniforms(sylItems, positions, sylSize, layoutScale), sylItems.length);
+    } else if (rm.name === 'mycelium') {
+        rm.update(syllablesToUniforms(sylItems, positions, sylSize, layoutScale), sylItems.length, sylItems);
     } else if (rm.name === 'sora') {
         rm.update(sylItems, positions, JAMO);
     } else if (rm.name === 'signal') {
@@ -233,7 +245,7 @@ function buildHistory() {
 }
 
 // ── UI (수신자 선택) ──────────────────────────────────────────────────────────
-function buildUI(rm, getState) {
+function buildUI(rm, reLayout, getAllItems) {
     const container = document.createElement('div');
     Object.assign(container.style, {
         position: 'fixed',
@@ -244,9 +256,10 @@ function buildUI(rm, getState) {
         alignItems: 'center',
         gap: '10px',
         zIndex: '20',
-        background: 'rgba(0,0,0,0.55)',
+        background: 'rgba(0,0,0,0.15)',
         padding: '8px 14px',
         borderRadius: '10px',
+        outline: '1px solid rgba(255,255,255,0.12)',
         backdropFilter: 'blur(6px)',
     });
 
@@ -255,6 +268,7 @@ function buildUI(rm, getState) {
         { id: 'sora', label: '🐚' },
         { id: 'signal', label: '🚦' },
         { id: 'dandelion', label: '🌼' },
+        { id: 'mycelium', label: '🍄' },
     ]) {
         const btn = document.createElement('button');
         btn.textContent = label;
@@ -262,25 +276,24 @@ function buildUI(rm, getState) {
         Object.assign(btn.style, {
             padding: '4px 10px',
             fontSize: '16px',
-            background: id === rm.name ? '#6c63ff' : 'transparent',
+            background: id === rm.name ? '#d0daff' : 'transparent',
             color: '#fff',
-            border: '1px solid #555',
+            border: '1px solid #777',
             borderRadius: '6px',
             cursor: 'pointer',
             transition: 'background 0.2s',
         });
         btn.addEventListener('click', async () => {
-            const { sylItems, positions, sylSize } = getState();
             await rm.setReceiver(id);
-            dispatchToReceiver(rm, sylItems, positions, sylSize);
+            reLayout(getAllItems());
             container.querySelectorAll('button[data-id]').forEach(b => {
-                b.style.background = b.dataset.id === rm.name ? '#6c63ff' : 'transparent';
+                b.style.background = b.dataset.id === rm.name ? '#d0daff' : 'transparent';
             });
         });
         container.appendChild(btn);
     }
 
-    // ── material mode 전환 (alien 전용) ───────────────────────────────
+    // ── material mode 전환 ───────────────────────────────
     const sep = document.createElement('span');
     sep.textContent = '|';
     Object.assign(sep.style, { color: '#555', fontSize: '14px' });
@@ -288,22 +301,22 @@ function buildUI(rm, getState) {
 
     const matModes = [
         { mode: 0, label: '🙿' }, // crosshatch
-        { mode: 1, label: '🔗' }, // metal
-        { mode: 2, label: '🥛' }, // glass
+        { mode: 1, label: '☀️' }, // solar
+        { mode: 2, label: '🔗' }, // metal
     ];
-    let currentMat = 0; // default: crosshatch
+    let currentMat = 2; // default: metal
     const matBtns = [];
 
     for (const { mode, label } of matModes) {
         const btn = document.createElement('button');
         btn.textContent = label;
-        btn.title = ['crosshatch', 'metal', 'glass'][mode];
+        btn.title = ['crosshatch', 'solar', 'metal'][mode];
         Object.assign(btn.style, {
             padding: '4px 10px',
             fontSize: '16px',
-            background: mode === 0 ? '#3a3a5c' : 'transparent',
+            background: mode === 2 ? '#3a3a5c' : 'transparent',
             color: '#fff',
-            border: '1px solid #555',
+            border: '1px solid #777',
             borderRadius: '6px',
             cursor: 'pointer',
             transition: 'background 0.2s',
@@ -343,11 +356,11 @@ function buildInput(onInput, onSubmit) {
         width: 'min(420px, 70vw)',
         fontSize: '17px',
         padding: '10px 14px',
-        background: 'rgba(10,10,10,0.75)',
-        color: '#fff',
-        border: '1px solid #444',
+        background: 'rgba(255, 255, 255, 0.25)',
+        color: '#000000',
+        border: '1px solid #777',
         borderRadius: '8px',
-        backdropFilter: 'blur(6px)',
+        backdropFilter: 'blur(6px)', // #background blur
         outline: 'none',
     });
 
@@ -356,9 +369,9 @@ function buildInput(onInput, onSubmit) {
     Object.assign(btn.style, {
         padding: '10px 18px',
         fontSize: '15px',
-        background: '#6c63ff',
-        color: '#fff',
-        border: 'none',
+        background: '#abcdff',
+        color: '#456dff',
+        border: '1px solid #8fa7ff',
         borderRadius: '8px',
         cursor: 'pointer',
         whiteSpace: 'nowrap',
@@ -401,7 +414,7 @@ function buildInput(onInput, onSubmit) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function Init() {
     const params = new URLSearchParams(location.search);
-    const initReceiver = params.get('receiver') ?? 'alien';
+    const initReceiver = params.get('receiver') ?? 'mycelium';
 
     const rm = new ReceiverManager();
     await rm.setReceiver(initReceiver);
@@ -419,7 +432,18 @@ async function Init() {
         const H = window.innerHeight;
         const sylSize = rm.current?.sylSize ?? 55;
         const lineHeightRatio = rm.current?.lineHeightRatio ?? 1.3;
-        const { positions, sylItems } = calcTextboxLayout(items, sylSize, W, H, lineHeightRatio, _submitOffsetY);
+        const wrapStep = rm.current?.wrapStep ?? sylSize * 2;
+        const wrapMargin = rm.current?.wrapMargin ?? sylSize;
+        const { positions, sylItems } = calcTextboxLayout(
+            items,
+            sylSize,
+            W,
+            H,
+            lineHeightRatio,
+            _submitOffsetY,
+            wrapStep,
+            wrapMargin,
+        );
         _sylItems = sylItems;
         _positions = positions;
         if (sylItems.length > 0) {
@@ -428,7 +452,7 @@ async function Init() {
     }
 
     async function handleSubmit() {
-        if (!_sylItems.length || rm.name !== 'alien') return;
+        if (!_sylItems.length || (rm.name !== 'alien' && rm.name !== 'mycelium')) return;
         const alien = rm.current;
 
         await alien.flushQueue();
@@ -437,7 +461,18 @@ async function Init() {
         const H = window.innerHeight;
         const sylSize = rm.current?.sylSize ?? 55;
         const lineHeightRatio = rm.current?.lineHeightRatio ?? 1.3;
-        const { lastY } = calcTextboxLayout(_allItems, sylSize, W, H, lineHeightRatio, _submitOffsetY);
+        const wrapStep = rm.current?.wrapStep ?? sylSize * 2;
+        const wrapMargin = rm.current?.wrapMargin ?? sylSize;
+        const { lastY } = calcTextboxLayout(
+            _allItems,
+            sylSize,
+            W,
+            H,
+            lineHeightRatio,
+            _submitOffsetY,
+            wrapStep,
+            wrapMargin,
+        );
         const capHeight = Math.round(lastY + sylSize * lineHeightRatio * 1.5);
 
         const dataUrl = alien.captureFrame();
@@ -461,7 +496,7 @@ async function Init() {
         },
     );
 
-    buildUI(rm, () => ({ sylItems: _sylItems, positions: _positions, sylSize: rm.current?.sylSize ?? 55 }));
+    buildUI(rm, reLayout, () => _allItems);
 
     window.addEventListener('resize', () => reLayout(_allItems));
 }

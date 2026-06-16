@@ -4,12 +4,14 @@ import { AlienReceiver } from './alien.js';
 import { SoraReceiver } from './sora.js';
 import { SignalReceiver } from './signal.js';
 import { DandelionReceiver } from './dandelion.js';
+import { MyceliumReceiver } from './mycelium.js';
 
 const REGISTRY = {
     alien:     AlienReceiver,
     sora:      SoraReceiver,
     signal:    SignalReceiver,
     dandelion: DandelionReceiver,
+    mycelium:  MyceliumReceiver,
 };
 
 export class ReceiverManager {

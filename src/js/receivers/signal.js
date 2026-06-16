@@ -410,6 +410,10 @@ export class SignalReceiver {
         this._flashPhase = 0;
         this._active = false; // 글자 있을 때만 진화
         this._decaying = false; // 입력 후 감쇠 중
+
+        this.sylSize = 65; // main.js 레이아웃이 참조 — _sylSize 기본값(80)과 동일하게 맞춤
+        this.wrapStep = 80; // _draw()의 sylW(=cp*GRID, cp=round(sylSize/5)=16 → 16*5=80)와 일치
+        this.wrapMargin = 0;
     }
 
     async init(canvas) {
