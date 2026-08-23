@@ -1,17 +1,15 @@
 // ── ReceiverManager.js ────────────────────────────────────────────────────────
 
-import { AlienReceiver } from './alien.js';
 import { SoraReceiver } from './sora.js';
 import { SignalReceiver } from './signal.js';
 import { DandelionReceiver } from './dandelion.js';
 import { MyceliumReceiver } from './mycelium.js';
 
 const REGISTRY = {
-    alien:     AlienReceiver,
-    sora:      SoraReceiver,
-    signal:    SignalReceiver,
-    dandelion: DandelionReceiver,
-    mycelium:  MyceliumReceiver,
+    sora:            SoraReceiver,
+    signal:          SignalReceiver,
+    dandelion:       DandelionReceiver,
+    mycelium:        MyceliumReceiver,
 };
 
 export class ReceiverManager {
@@ -35,9 +33,10 @@ export class ReceiverManager {
     }
 
     // ...args로 수신자마다 다른 시그니처를 그대로 통과시킴
-    // alien: update(uniformData)
+    // mycelium: update(uniformData, sylCount, sylItems)
     // sora:  update(syllables, positions, JAMO)
     // dandelion: update(syllables, positions, JAMO)
+    // signal: update(syllables, positions, JAMO, sylSize)
     update(...args) {
         this._current?.update(...args);
     }

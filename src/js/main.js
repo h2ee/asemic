@@ -100,7 +100,7 @@ function jamoToVec3(key, type, scale, offset = new THREE.Vector3()) {
     ).add(offset);
 }
 
-// ── 음절 → alien uniform 데이터 ───────────────────────────────────────────────
+// ── 음절 → mycelium uniform 데이터 ─────────────────────────────────────────────
 function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = { x: 1, y: 1 }) {
     const W = window.innerWidth;
     const H = window.innerHeight;
@@ -191,9 +191,7 @@ function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = { x: 1,
 function dispatchToReceiver(rm, sylItems, positions, sylSize) {
     if (!sylItems.length) return;
     const layoutScale = rm.current?.layoutScale ?? { x: 1, y: 1 };
-    if (rm.name === 'alien') {
-        rm.update(syllablesToUniforms(sylItems, positions, sylSize, layoutScale), sylItems.length);
-    } else if (rm.name === 'mycelium') {
+    if (rm.name === 'mycelium') {
         rm.update(syllablesToUniforms(sylItems, positions, sylSize, layoutScale), sylItems.length, sylItems);
     } else if (rm.name === 'sora') {
         rm.update(sylItems, positions, JAMO);
@@ -264,7 +262,6 @@ function buildUI(rm, reLayout, getAllItems) {
     });
 
     for (const { id, label } of [
-        { id: 'alien', label: '👾' },
         { id: 'sora', label: '🐚' },
         { id: 'signal', label: '🚦' },
         { id: 'dandelion', label: '🌼' },
@@ -290,46 +287,6 @@ function buildUI(rm, reLayout, getAllItems) {
                 b.style.background = b.dataset.id === rm.name ? '#d0daff' : 'transparent';
             });
         });
-        container.appendChild(btn);
-    }
-
-    // ── material mode 전환 ───────────────────────────────
-    const sep = document.createElement('span');
-    sep.textContent = '|';
-    Object.assign(sep.style, { color: '#555', fontSize: '14px' });
-    container.appendChild(sep);
-
-    const matModes = [
-        { mode: 0, label: '🙿' }, // crosshatch
-        { mode: 1, label: '☀️' }, // solar
-        { mode: 2, label: '🔗' }, // metal
-    ];
-    let currentMat = 2; // default: metal
-    const matBtns = [];
-
-    for (const { mode, label } of matModes) {
-        const btn = document.createElement('button');
-        btn.textContent = label;
-        btn.title = ['crosshatch', 'solar', 'metal'][mode];
-        Object.assign(btn.style, {
-            padding: '4px 10px',
-            fontSize: '16px',
-            background: mode === 2 ? '#3a3a5c' : 'transparent',
-            color: '#fff',
-            border: '1px solid #777',
-            borderRadius: '6px',
-            cursor: 'pointer',
-            transition: 'background 0.2s',
-        });
-        btn.addEventListener('click', () => {
-            currentMat = mode;
-            const alien = rm.current;
-            if (alien?.setMaterialMode) alien.setMaterialMode(mode);
-            matBtns.forEach((b, i) => {
-                b.style.background = i === mode ? '#3a3a5c' : 'transparent';
-            });
-        });
-        matBtns.push(btn);
         container.appendChild(btn);
     }
 
@@ -452,10 +409,10 @@ async function Init() {
     }
 
     async function handleSubmit() {
-        if (!_sylItems.length || (rm.name !== 'alien' && rm.name !== 'mycelium')) return;
-        const alien = rm.current;
+        if (!_sylItems.length || rm.name !== 'mycelium') return;
+        const receiver = rm.current;
 
-        await alien.flushQueue();
+        await receiver.flushQueue();
 
         const W = window.innerWidth;
         const H = window.innerHeight;
@@ -475,11 +432,11 @@ async function Init() {
         );
         const capHeight = Math.round(lastY + sylSize * lineHeightRatio * 1.5);
 
-        const dataUrl = alien.captureFrame();
+        const dataUrl = receiver.captureFrame();
         history.addCapture(dataUrl, capHeight);
         _submitOffsetY = lastY + sylSize * lineHeightRatio * 0.5;
 
-        alien.clearAccum();
+        receiver.clearAccum();
 
         _allItems = [];
         _sylItems = [];

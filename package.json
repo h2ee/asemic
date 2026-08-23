@@ -3,6 +3,7 @@
         "vite": "^6.2.4"
     },
     "dependencies": {
+        "d3-delaunay": "^6.0.4",
         "lil-gui": "0.20.0",
         "three": "^0.175.0"
     },

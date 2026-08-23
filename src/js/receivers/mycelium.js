@@ -1,5 +1,5 @@
 // ── mycelium.js ───────────────────────────────────────────────────────────────
-// alien.js 기반 — 균사체(곰팡이) 수신자
+// 균사체(곰팡이) 수신자
 //
 // 2-pass 렌더링:
 //   [Pass 1] grow 중인 음절 1개만 레이마칭 → growTarget
@@ -13,12 +13,12 @@
 //   instant:true  → growT=1로 한 프레임에 즉시 bake (삭제 후 재구움용)
 //   instant:false → grow 애니메이션
 //
-// ── alien.js 대비 변경점 ─────────────────────────────────────────────────────
+// ── 특징 ─────────────────────────────────────────────────────────────────────
 //  1. syllablePath에 ep4(작은 에피사이클) 추가 — 균사 끝부분 미세 흔들림/잔가지
 //  2. taper에 노이즈 기반 불규칙성 추가 — 매듭처럼 굵기가 불균일한 균사
 //  3. map()에 lump(혹) 추가 — 경로 위 랜덤 위치에 작은 구, g_matID로 body/lump 구분
-//  4. mode2(금속) 색 파이프라인을 body/lump로 분리(옵션 A: 현재는 동일색)
-//     + mode1의 rim 항을 검은 edge glow로 재사용
+//  4. 재질은 금속 하나만 사용 — body/lump 색 파이프라인 분리(옵션 A: 현재는 동일색)
+//     + edge rim을 검은 edge glow로 사용
 //  5. 연결 실 / mother tree 허브 로직 — 음절당 최대 2개, 허브 중복 없이 선택
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -27,27 +27,27 @@ import * as THREE from 'three';
 // ── 경로 함수 (syllablePath) ──────────────────────────────────────────────────
 const pathSrc = `
 vec3 orbitalPoint(float r, float freq, float angle, float theta, float phi, float e) {
-  vec3 axis = vec3(sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi));
-  vec3 up   = abs(axis.z) < 0.99 ? vec3(0,0,1) : vec3(1,0,0);
-  vec3 u    = normalize(cross(axis, up));
-  vec3 v    = cross(axis, u) * 1.2;  // #임의 조정
-  float a   = freq * (1.0/3200.0) * angle;
-  return r * cos(a)*u + r*(1.0-e) * sin(a)*v;
+    vec3 axis = vec3(sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi));
+    vec3 up   = abs(axis.z) < 0.99 ? vec3(0,0,1) : vec3(1,0,0);
+    vec3 u    = normalize(cross(axis, up));
+    vec3 v    = cross(axis, u) * 1.2;  // #임의 조정
+    float a   = freq * (1.0/3200.0) * angle;
+    return r * cos(a)*u + r*(1.0-e) * sin(a)*v;
 }
 
 vec3 syllablePath(vec3 start, vec3 center, vec3 cho, float f1, float f2, float f3,
                   float amp, float t, float yang, float diph) {
-  float angle = t * TWO_PI * 5.0; // 에피사이클 회전 3.0 ~12. default 7
-  float r1 = amp*(1.0/1.75), r2=r1*0.5, r3=r1*0.25;
+    float angle = t * TWO_PI * 5.0; // 에피사이클 회전 3.0 ~12. default 7
+    float r1 = amp*(1.0/1.75), r2=r1*0.5, r3=r1*0.25;
 
-  vec3 ep1 = orbitalPoint(r1, f1, angle, cho.x * TWO_PI,           cho.y * PI, 0.03); //0.3
-  vec3 ep2 = orbitalPoint(r2, f2, angle, cho.y * TWO_PI + yang*PI, cho.z * PI, 0.25); //0.25
-  vec3 ep3 = orbitalPoint(r3, f3, angle, cho.z * TWO_PI + diph*PI, yang  * PI, 0.65); //0.95
+    vec3 ep1 = orbitalPoint(r1, f1, angle, cho.x * TWO_PI,           cho.y * PI, 0.03); //0.3
+    vec3 ep2 = orbitalPoint(r2, f2, angle, cho.y * TWO_PI + yang*PI, cho.z * PI, 0.25); //0.25
+    vec3 ep3 = orbitalPoint(r3, f3, angle, cho.z * TWO_PI + diph*PI, yang  * PI, 0.65); //0.95
 
-  // ep4: 작은 에피사이클 — 균사 끝부분의 미세 흔들림/잔가지 느낌 (mycelium 전용 추가)
-  vec3 ep4 = orbitalPoint(r3*0.4, f1*1.7, angle*1.3, cho.x*PI, cho.z*TWO_PI, 0.99);
+    // ep4: 작은 에피사이클 — 균사 끝부분의 미세 흔들림/잔가지 느낌 (mycelium 전용 추가)
+    vec3 ep4 = orbitalPoint(r3*0.4, f1*1.7, angle*1.3, cho.x*PI, cho.z*TWO_PI, 0.99);
 
-  return center + ep1 + ep2 + ep3 - ep4*1.3; //임의 조정
+    return center + ep1 + ep2 + ep3 - ep4*1.3; //임의 조정
 }
 `;
 
@@ -57,8 +57,8 @@ vec3 syllablePath(vec3 start, vec3 center, vec3 cho, float f1, float f2, float f
 const vertSrc = `
 varying vec2 vUv;
 void main() {
-  vUv = uv;
-  gl_Position = vec4(position, 1.0);
+    vUv = uv;
+    gl_Position = vec4(position, 1.0);
 }
 `;
 
@@ -72,7 +72,6 @@ const sdfSrc = `
 #define MAX_SYL   1
 
 uniform vec2  u_resolution;
-uniform float u_dpr;
 uniform float u_time;
 
 uniform vec3  u_ro;
@@ -90,21 +89,20 @@ uniform float u_amp;
 uniform float u_yangseong;
 uniform float u_diphthong;
 uniform float u_growT;
-uniform int   u_materialMode;  // 0=crosshatch, 1=태양, 2=금속
 
 // 재질 ID: 0=경로(body), 1=혹(lump) — map()에서 기록, growFrag 컬러링에서 사용
 float g_matID;
 
 float sdCapsule(vec3 p, vec3 a, vec3 b, float r) {
-  vec3 pa = p - a, ba = b - a;
-  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  return length(pa - ba * (h*1.0)) - r; //약간 끊김 0.95
+    vec3 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * (h*1.0)) - r; //약간 끊김 0.95
 }
 
 // HSL → RGB
 vec3 hsl2rgb(vec3 c) {
-  vec3 rgb = clamp(abs(mod(c.x*6.0+vec3(0,4,2),6.0)-3.0)-1.0, 0.0, 1.0);
-  return c.z + c.y*(rgb-0.5)*(1.0-abs(2.0*c.z-1.0));
+    vec3 rgb = clamp(abs(mod(c.x*6.0+vec3(0,4,2),6.0)-3.0)-1.0, 0.0, 1.0);
+    return c.z + c.y*(rgb-0.5)*(1.0-abs(2.0*c.z-1.0));
 }
 
 // 초성 좌표 → HSL 기반 컬러
@@ -112,17 +110,17 @@ vec3 hsl2rgb(vec3 c) {
 // z(긴장도):   채도  울림=0.15 → 거센=0.9
 // y(조음방법): 명도 미세조정
 vec3 choToColor(vec3 cho) {
-  float h = cho.x * 0.70;
-  float s = 0.15 + cho.z * 0.75;
-  float l = 0.45 + (cho.y - 0.5) * 0.12;
-  return hsl2rgb(vec3(h, s, l));
+    float h = cho.x * 0.70;
+    float s = 0.15 + cho.z * 0.75;
+    float l = 0.45 + (cho.y - 0.5) * 0.12;
+    return hsl2rgb(vec3(h, s, l));
 }
 
 float sdSphere(vec3 p, float r) { return length(p) - r; }
 
 float opSmoothUnion(float d1, float d2, float k) {
-  float h = max(k - abs(d1 - d2), 0.0);
-  return min(d1, d2) - h * h * 0.25 / k;
+    float h = max(k - abs(d1 - d2), 0.0);
+    return min(d1, d2) - h * h * 0.25 / k;
 }
 
 vec3 opTwistPoint(vec3 p) {
@@ -201,8 +199,8 @@ float map(vec3 p) {
     float d1 = sdCapsule(p, a, b, rad * taper);
 
     float d2 = sin(p.y * 10.0) * 0.1 * 0.175-0.0155; //for 태양 material
-    float d3 = 0.008 * noise(p * 95.0); //진폭(돌출) 0.03, 주파수(촘촘함 정도) 80.0인 노이즈 --> for 노이즈 material
-    float displaced = d1 + d2 + d3;
+    // d3(노이즈)는 실루엣/거리장에서 제외하고 bump map으로만 사용 (아래 bumpMap/applyBump 참고) — 테스트용, 무거우면 롤백
+    float displaced = d1 + d2;
 
     d = opSmoothUnion(d, displaced, k);
     //d = opSmoothUnion(d, sdCapsule(p, a, b, rad), k); //displacement 없는 기본 캡슐
@@ -316,19 +314,20 @@ vec3 estimateNormal(vec3 p) {
   ));
 }
 
-float hatch1(vec2 fc, float dpr, float a, float pitch, float width) {
-  vec2 p = fc / max(dpr, 1.0);
-  float u = p.x * cos(a) - p.y * sin(a);
-  float g = abs(fract(u / pitch) - 0.5) * 2.0;
-  return step(width / pitch, g);
+// d3를 raymarch용 map()에서 빼고 여기서 bump map으로만 적용 (테스트)
+// -- map()/raymarch 루프에서 noise(p*95.0)를 반복 호출하지 않아도 되므로 훨씬 가벼움.
+float bumpMap(vec3 p) {
+  return 0.05 * noise(p * 105.0); //진폭(돌출) 주파수(촘촘함 정도)
 }
-float crossHatch(vec2 fc, float dpr, float band) {
-  float m = 1.0;
-  if (band >= 1.) m = min(m, hatch1(fc, dpr, radians(  0.), 1.5, 0.1));
-  if (band >= 2.) m = min(m, hatch1(fc, dpr, radians( 60.), 1.5, 0.1));
-  if (band >= 3.) m = min(m, hatch1(fc, dpr, radians(-60.), 1.5, 0.5));
-  if (band >= 4.) m = min(m, hatch1(fc, dpr, radians( 90.), 1.5, 0.6));
-  return m;
+
+vec3 applyBump(vec3 p, vec3 n) {
+  vec2 e = vec2(0.005, 0.0);
+  vec3 grad = vec3(
+    bumpMap(p + e.xyy) - bumpMap(p - e.xyy),
+    bumpMap(p + e.yxy) - bumpMap(p - e.yxy),
+    bumpMap(p + e.yyx) - bumpMap(p - e.yyx)
+  );
+  return normalize(n + grad * 12.0);
 }
 
 float rand(vec3 p){
@@ -367,6 +366,7 @@ void main() {
   vec3 pos = u_ro + rd * t;
 
   vec3 nor = estimateNormal(pos);
+  nor = applyBump(pos, nor); // d3를 여기서만 bump로 적용 (map()엔 없음)
   // 표면 지점에서의 재질 ID(g_matID) 확정 (estimateNormal의 마지막 호출값은 오프셋 지점이므로 재계산)
   float _surfD = map(pos);
 
@@ -374,79 +374,34 @@ void main() {
   vec3 choCol = u_cho;//choToColor(u_cho);
   vec3 col    = vec3(0.0);
 
-  if (u_materialMode == 0) {
-    // ── Mode 0: 노이즈 ─────────────────────────────────────
-    vec3 L = vec3(1., 1., 1.1);
-    float shk_a = rand(vec3(uv, .0)) * 2. * PI;
-    float shk_r = rand(vec3(uv, 1.)) * 1.;
-    vec2 shk = vec2(cos(shk_a), sin(shk_a)) * shk_r;
-    L.xz += shk;
+  // ── 금속 (mycelium 기본, 구 Mode 2) ─────────────────────────────────────
 
-    float diff      = max(dot(nor, L), 0.0);
-    float toonSteps = 5.0;
-    float diffQ     = floor(diff * toonSteps) / toonSteps;
-    float band      = floor(diffQ * (toonSteps - 1.0) + 1e-3);
-    col = vec3(0.99) * (0.5 + 0.5 * diff);
-    float m = crossHatch(gl_FragCoord.xy, u_dpr, (toonSteps - 1.0) - band);
-    col = mix(choCol, col, m*2.0);
-    float sp  = step(0.4, pow(max(dot(nor, normalize(L + V)), 0.0), 60.0));
-    col += sp * 0.8;
-    float rim = pow(1.0 - max(dot(nor, -rd), 0.0), 2.0);
-    col += 0.15 * rim * vec3(0.8, 0.6, 1.0);
+  //vec3 L = vec3(1., 1., 0.8);
 
-  } else if (u_materialMode == 1) {
-    // ── Mode 1: 태양 코로나 ───────────────────────────────────────────────
+  vec3 L = vec3(1.0, -1.0, -0.2);
+  float shk_a = rand(vec3(uv, .0)) * 1.2 * PI;
+  float shk_r = rand(vec3(uv, 1.)) * 1.;
+  vec2 shk = vec2(cos(shk_a), sin(shk_a)) * shk_r;
+  L.xz += shk;
 
-    vec3 L = normalize(vec3(0.5, 1.0, 0.8));
-    float diff = max(dot(nor, L), 0.0);
+  float diff      = max(dot(nor, L), 0.0);
+  float toonSteps = 4.0;
+  float diffQ     = floor(diff * toonSteps) / toonSteps;
+  float band      = floor(diffQ * (toonSteps - 1.0) + 1e-3);
+  vec3 baseCol = vec3(0.999) * (0.85 + 0.15 * diff);
+  vec3 monoCol = mix(vec3(0.48), baseCol, (toonSteps - 1.0) - band) * 1.2 + 0.3;
+  baseCol = mix(choCol, baseCol, (toonSteps - 1.0) - band) * 1.2;
 
-    // 표면-가장자리 색온도: 코어(황백) → 외곽(코로나 주황)
-    float rim = pow(1.0 - max(dot(nor, V), 0.0), 1.8);
-    vec3 coreCol = vec3(1.0, 0.95, 0.75);   // 황백 (코어)
-    vec3 edgeCol = vec3(1.0, 0.35, 0.02);   // 주황 (코로나 외곽)
-    col = mix(coreCol, edgeCol, rim);
-    col *= 0.6 + 0.4 * diff;
+  // 경로(body) / 혹(lump) 색 분리 — 옵션 A: 현재는 동일색,
+  // 추후 lumpCol만 따로 조정해 혹에 강조색 부여 가능
+  vec3 bodyCol = monoCol;
+  vec3 lumpCol = baseCol * 0.95;
+  col = mix(bodyCol, lumpCol, g_matID);
 
-    // 초성 긴장도(choCol.z) → 플레어 강도
-    float flareStr = 0.6 + choCol.z * 0.8;
-
-    // 하이라이트 (표면 플레어)
-    vec3 H  = normalize(L + V);
-    float sp = pow(max(dot(nor, H), 0.0), 40.0);
-    col += sp * vec3(1.0, 0.9, 0.6) * flareStr;
-
-    // 외곽 발광 (코로나 루프 끝부분)
-    col += rim * rim * vec3(1.0, 0.4, 0.0) * flareStr * 0.9;
-  } else if (u_materialMode == 2) {
-    // ── Mode 2: 금속 (mycelium 기본) ──────────────────────────────────────
-
-    //vec3 L = vec3(1., 1., 0.8);
-
-    vec3 L = vec3(1.0, -1.0, -0.2);
-    float shk_a = rand(vec3(uv, .0)) * 1.2 * PI;
-    float shk_r = rand(vec3(uv, 1.)) * 1.;
-    vec2 shk = vec2(cos(shk_a), sin(shk_a)) * shk_r;
-    L.xz += shk;
-
-    float diff      = max(dot(nor, L), 0.0);
-    float toonSteps = 4.0;
-    float diffQ     = floor(diff * toonSteps) / toonSteps;
-    float band      = floor(diffQ * (toonSteps - 1.0) + 1e-3);
-    vec3 baseCol = vec3(0.999) * (0.85 + 0.15 * diff);
-    vec3 monoCol = mix(vec3(0.48), baseCol, (toonSteps - 1.0) - band) * 1.2 + 0.3;
-    baseCol = mix(choCol, baseCol, (toonSteps - 1.0) - band) * 1.2;
-
-    // 경로(body) / 혹(lump) 색 분리 — 옵션 A: 현재는 동일색,
-    // 추후 lumpCol만 따로 조정해 혹에 강조색 부여 가능
-    vec3 bodyCol = monoCol;
-    vec3 lumpCol = baseCol * 0.95;
-    col = mix(bodyCol, lumpCol, g_matID);
-
-    // 외곽 발광 (mode1의 rim 항 재사용) — 검은 edge glow로 적용
-    float rim = pow(1.0 - max(dot(nor, V), 0.0), 1.2);
-    float flareStr = 1.4;//0.6 + choCol.z * 0.8;
-    col = mix(col, vec3(0.0), rim * rim * flareStr * 1.2);
-  }
+  // 외곽 발광 — 검은 edge glow로 적용
+  float rim = pow(1.0 - max(dot(nor, V), 0.0), 1.2);
+  float flareStr = 1.4;//0.6 + choCol.z * 0.8;
+  col = mix(col, vec3(0.0), rim * rim * flareStr * 1.2);
 
   gl_FragColor = vec4(col, 1.0);
 }
@@ -484,48 +439,11 @@ precision highp float;
 
 uniform sampler2D u_accumTex;
 uniform vec2      u_resolution;
-uniform int       u_dispMatMode;  // dispFrag용 materialMode 사본
 
 void main() {
   vec2 uv  = gl_FragCoord.xy / u_resolution;
   vec4 acc = texture2D(u_accumTex, uv);
 
-  // 0 mode에서 SSR 건너뜀
-  if (u_dispMatMode == 0) {
-    gl_FragColor = vec4(mix(vec3(0.0), acc.rgb, acc.a), 1.0);
-    return;
-  }
-/*
-  // ── SSR (스크린스페이스 반사) ─────────────────────────────────────────
-  // accumTarget 밝기 기울기로 2D 법선 근사
-  vec2 texel = 1.0 / u_resolution;
-  float L  = dot(texture2D(u_accumTex, uv + vec2(-texel.x, 0.0)).rgb, vec3(0.299,0.587,0.114));
-  float R  = dot(texture2D(u_accumTex, uv + vec2( texel.x, 0.0)).rgb, vec3(0.299,0.587,0.114));
-  float D  = dot(texture2D(u_accumTex, uv + vec2(0.0, -texel.y)).rgb, vec3(0.299,0.587,0.114));
-  float U  = dot(texture2D(u_accumTex, uv + vec2(0.0,  texel.y)).rgb, vec3(0.299,0.587,0.114));
-  vec2 screenNor = vec2(R - L, U - D);  // 밝기 기울기 = 표면 법선 근사
-
-  // 글자 위 픽셀에서만 반사 계산 (배경은 반사 없음)
-  float onGlyph = acc.a;
-
-  // 반사 UV: 법선 방향으로 오프셋해서 accumTarget 재샘플링
-  float reflStr  = 0.098;              // 반사 강도(오프셋 크기). 여기서 조절
-  vec2  reflUV   = uv + screenNor * reflStr;
-  reflUV         = clamp(reflUV, vec2(0.0), vec2(1.0));
-  vec4  reflCol  = texture2D(u_accumTex, reflUV);
-
-  // 반사는 글자가 있는 곳(reflUV)에서만 의미있음
-  float reflMask = reflCol.a;
-
-  // 기울기 크기 = fresnel 근사 (가장자리일수록 기울기 크고 반사 강함)
-  float edgeness = clamp(length(screenNor) * 6.0, 0.0, 1.0);
-
-  vec3 base = mix(vec3(0.0), acc.rgb, acc.a);
-  vec3 refl = reflCol.rgb * reflMask;
-
-  // 가장자리에서 반사색 합성
-  vec3 col = base + refl * edgeness * onGlyph * 0.95;
-*/
   gl_FragColor = vec4(mix(vec3(0.7), acc.rgb, acc.a), 1.0);// #bg color = vec3(1.0)
   //gl_FragColor = vec4(col, 1.0);
 
@@ -571,7 +489,7 @@ export class MyceliumReceiver {
         this._hubs = new Map();
 
         this.lineHeightRatio = 4.0;
-        this.sylSize = 100; // per-receiver sylSize : #fontSize (alien 기본 fallback=55보다 크게)
+        this.sylSize = 100; // per-receiver sylSize : #fontSize (다른 수신자 기본값(55)보다 크게)
         this.wrapStep = 200; // 자간(px)
         this.wrapMargin = 0;
         // 카메라(0.7, 0.5, 7) 오프셋으로 화면이 압축되어 보이는 것 보정
@@ -614,7 +532,6 @@ export class MyceliumReceiver {
         // Pass 1 — grow
         this._growUniforms = {
             u_resolution: { value: new THREE.Vector2(rW, rH) },
-            u_dpr: { value: dpr },
             u_time: { value: 0 },
             u_ro: { value: ro },
             u_camMat: { value: camMat },
@@ -630,7 +547,6 @@ export class MyceliumReceiver {
             u_yangseong: { value: 0 },
             u_diphthong: { value: 0 },
             u_growT: { value: 0 },
-            u_materialMode: { value: 2 }, // 0=crosshatch, 1=태양, 2=금속
         };
         this._growScene = this._makeQuadScene(vertSrc, growFrag, this._growUniforms);
 
@@ -647,7 +563,6 @@ export class MyceliumReceiver {
         this._dispUniforms = {
             u_accumTex: { value: this._accumTarget.texture },
             u_resolution: { value: new THREE.Vector2(rW, rH) },
-            u_dispMatMode: { value: 2 }, // 0=crosshatch, 1=태양, 2=금속
         };
         this._dispScene = this._makeQuadScene(vertSrc, dispFrag, this._dispUniforms);
 
@@ -811,16 +726,6 @@ export class MyceliumReceiver {
     }
 
     // ── 공개 유틸 ─────────────────────────────────────────────────────────────────
-
-    // materialMode 전환 (0=crosshatch, 1=태양, 2=금속)
-    setMaterialMode(mode) {
-        if (this._growUniforms) {
-            this._growUniforms.u_materialMode.value = mode;
-        }
-        if (this._dispUniforms) {
-            this._dispUniforms.u_dispMatMode.value = mode;
-        }
-    }
 
     // 큐가 빌 때까지 대기 후 2프레임 더 기다려 마지막 bake 확정
     flushQueue() {
