@@ -6,6 +6,16 @@
 > **2026-08-27 변경**: signal 전용 **Shelf 레이아웃 + 포먼트 기반 가변 음절 크기** 도입. `main.js`에 `calcShelfLayout`/`calcSignalLatticeSize` 추가(기존 `calcTextboxLayout`·타 수신자 무변경), `reLayout()`이 `rm.name==='signal'`일 때만 분기. `signal.js`는 음절마다 다른 `width`/`height`를 받아 point 생성/adjacency/렌더/셰이더 전 경로가 "누적 폭" 기반으로 동작(`sylMeta.w/h`, `wordWidth/wordHeight`, 셰이더 `u_sylOffsetX/Width/Height[]` uniform 배열). 섹션 4/5 반영.
 > **2026-08-27 변경 (2)**: signal 셰이더에 radial gradient 두 겹 추가 — (a) 음절 센터 배경 halo(`BG_GRAY` + `SYL_GRADIENT_*`), (b) 셀 내부 gradient(컬러 모드 전용, site 중심→가장자리 채도/명도 변화, `CELL_GRADIENT_*`). CA·레이아웃 무관, `main()` 색 합성 단계만 바뀜. 섹션 5 반영. **값은 h2ee가 자주 바꿈 — 파일 재확인 필수.**
 > **2026-08-27 변경 (3)**: signal 음절 실루엣을 **스퀘어클(squircle) 단일 방식으로 확정** — `GLOBE_STYLE` 토글과 style 0(크리스프 원형 클리핑) 및 관련 상수/유니폼(`GLOBE_RADIUS_RATIO`/`HALO_EXTRA`/`u_globeStyle`/`u_globeRadiusRatio`/`u_haloExtra`) 전부 제거. 비주얼 무변화(스퀘어클이 원래 기본값이었음). 앞으로 signal 발전은 이 비주얼을 베이스로. 섹션 5 반영.
+> **2026-08-28 변경 (설계 방향, 코드 변경 아님)**: 전시 형태를 **큰 세로형 디바이스(대형 TV 세로 설치 또는 단초점 프로젝터) + 채팅 형식**으로 잠정 결정(섹션 1/8-b 반영). 이에 따라 signal.js 관련 레이아웃 고민의 결론이 바뀜:
+>   - **"고정 박스 + 단어 개수 상한 + 오래된 것부터 교체" 아이디어는 폐기.** 세로 채팅 스크롤 형식에서는 폭만 고정, 높이는 턴(제출)마다 자연 증가 — mycelium의 기존 submit/capture/history 흐름(섹션 4-4)이 이미 이 구조를 구현하고 있어 그대로 재사용 가능.
+>   - **Skyline "빈패킹" 알고리즘도 이 결론에 따라 불필요해짐** — 애초 동기가 고정 공간을 효율적으로 채우는 것이었는데 그 공간이 더 이상 고정이 아니게 됨. Skyline "실루엣"(공통 지면선 위 들쭉날쭉한 높이, shelf 코드 한 줄 변경으로 가능 — `_draw()`의 `(rowMaxH - wH) * 0.5` → `(rowMaxH - wH)`)만 순수 비주얼 옵션으로 남을 수 있음, 미착수.
+>   - **signal.js도 mycelium처럼 submit 시 캡처+히스토리 흐름에 편입되어야 함** — 지금 `handleSubmit()`이 `rm.name === 'mycelium'`으로 막혀 있는 부분(섹션 4-4, 6)이 이제 최우선 작업 대상.
+>   - **"턴(turn)" 단위 재정의**: 사용자 입력 = 제출 버튼 기준 1턴(짧음). 향후 LLM 연동 시 수신자 응답 = 2~3문장 정도(더 김) — 8-b의 LLM 응답 텍스트도 같은 submit/캡처 파이프라인을 타는 것을 전제로 설계.
+>   - **아카이빙(전시 중 주고받은 한글 메시지+그림 영구 보존)**: 하고 싶다는 의사만 확인, 설계/구현 미착수 — 현재는 순수 프론트엔드라 새로고침 시 히스토리가 전부 사라짐(의도된 프로토타입 동작). 실제로 진행하게 되면 로컬 서버(라즈베리파이 활용 후보) + `captureFrame()` dataURL·원본 텍스트를 제출 시점마다 저장하는 방식이 유력.
+>   - **해상도/DPR**: 세로 디바이스 스펙(TV 4K 세로 회전 vs 단초점 프로젝터 1080p)이 아직 미확정 — 지금 DPR 캡(2)은 유지, 기기 확정 후 재조정.
+>
+> **2026-08-31 변경**: `dandelion.js` 전면 재설계 — 구버전(5개 고정 식물 + p5 flower math Canvas 2D)을 폐기하고 "자모→음절→단어" 3단 궤적 모델 + WebGL2 SDF 셰이더로 교체(`dandelion_redesign_spec.md`). `update()` 시그니처·`calcTextboxLayout` 사용은 무변경. submit 파이프라인 편입 완료 — `main.js` `handleSubmit()` 가드가 `mycelium`+`dandelion` 둘 다 허용(다른 코드 무변경). 3D 뷰는 `ENABLE_3D_PROTOTYPE` 플래그 뒤 프로토타입만. 섹션 5 dandelion 항목 전면 갱신, 섹션 6 최우선 이슈에서 dandelion 제외.
+>
 > **주의**: 사용자(h2ee)가 세션 사이에 셰이더 파라미터를 직접 수정하는 경우가 많음.
 > 값(숫자 상수 등)은 이 문서를 믿지 말고 항상 실제 파일을 다시 읽어서 확인할 것.
 
@@ -18,7 +28,7 @@
 - **핵심 질문**: 소통에서 "내용(언어적 이해)"이 차지하는 자리는 생각보다 부차적인 것일지 모른다 — 가사를 몰라도 노래를 듣고, 말이 통하지 않는 대상(동물 등)에게도 말을 건다. 언어적 이해를 제거한 소통에는 무엇이 남는가.
 - **Asemic writing**: 글쓰기의 방식과 형태는 유지하되 해독 가능한 의미는 없는 글쓰기. 독자에게 해석의 여지를 남기는, "그 자체를 위한 글쓰기(writing for its own sake)".
 - **송수신 구도**: Me(관람객, Audience) ↔ translator(아세믹 변환 규칙) ↔ Opponent = **Non-Human Receivers**. 비인간 사물을 소통 상대로 설정하는 것은 포스트휴머니즘적 관점의 연장이자, 인간과 사물을 나란히 "발신자"의 위치에 놓는 실험이기도 하다.
-- **전시 형태**: 정사각 모니터 여러 대, 각 모니터 = 서로 다른 "수신자"(receiver) 하나. 관람객이 한글을 입력하면 실시간으로 해당 수신자의 시각 언어로 변환. 미정
+- **전시 형태**: (2026-08-27까지) 정사각 모니터 여러 대, 각 모니터 = 서로 다른 "수신자"(receiver) 하나 안으로 구상되었으나, **2026-08-28 기준 큰 세로형 디바이스(대형 TV 세로 설치 또는 단초점 프로젝터) 하나에 수신자를 채팅 형식으로 출력하는 안으로 잠정 이동**(상단 변경로그 2026-08-28 항목 참고). 관람객 입력 = 제출 버튼 기준 1턴, 향후 LLM 응답도 같은 턴 단위를 따른다. 정사각 모니터 다수 구성은 미확정(폐기된 것은 아니고, 우선순위가 세로형 단일 디바이스로 이동).
 - **전시 하드웨어**: MacBook Pro M3 Max (인터랙티브 스테이션 구동), Raspberry Pi (아카이빙 디스플레이), 19" 5:4 모니터, Pepper's Ghost용 11.6" 포터블 모니터 + 45도 아크릴판. 미정
     - 전시 형태/하드웨어가 미정인 이유: **LLM 연동(섹션 8-b) 여부에 따라 달라질 수 있음.** 예시로 LLM API 호출이 들어가면 각 스테이션에 안정적인 네트워크 연결이 필요해지고, 응답 대기시간이 생기면 입력/출력 UI 구조나 모니터 배치(예: 응답 전용 화면 분리 등)가 달라질 수 있다. 따라서 전시 형태는 8-b의 LLM 설계가 종료된 후에 확정하는 것이 낫다
 - **자모 → 데이터 매핑 원칙(패널 기준)**: 초성 = color(색), 중성 = form/움직임(형태), 종성 = 형태가 끝나는 지점/최종 위치. 이 3단 매핑이 mycelium/sora 등 receiver 설계의 공통 기반.
@@ -42,7 +52,7 @@ asemic/
       ReceiverManager.js     — 공통 인터페이스 (init/update/dispose) + registry
       sora.js                — 🐚 클라드니 극좌표 SDF, 단어 슬롯 방식
       signal.js               — 🚦 가중 Voronoi(power diagram), WebGL2/GLSL ES 3.00, CA 규칙은 JS에 유지
-      dandelion.js             — 🌼 5개 고정 민들레, 단어 순환 active
+      dandelion.js             — 🌼 3단 궤적(자모/음절/단어) + WebGL2 SDF (2026-08-31 재설계)
       mycelium.js              — 🍄 균사체, 3-pass 레이마칭 (alien.js 기반, 현재 기본 수신자)
 ```
 
@@ -98,8 +108,8 @@ asemic/
     - `mycelium`: `update(syllablesToUniforms(...), sylItems.length, sylItems)`
     - `sora`: `update(sylItems, positions, JAMO)` (positions는 무시, 내부에서 랜덤 위치 사용)
     - `signal`: `update(sylItems, positions, JAMO, sylSize, widths, heights)` (widths/heights = 음절별 lattice px 크기)
-    - `dandelion`: `update(sylItems, positions, JAMO)` (positions 무시, 고정 슬롯 사용)
-4. `handleSubmit()` — **⚠️ 현재 `rm.name === 'mycelium'`일 때만 동작.** flushQueue → captureFrame(투명 PNG) → history에 고정 이미지로 누적 → clearAccum. 나머지 세 수신자는 전송 시 히스토리 캡처가 구현되어 있지 않음.
+    - `dandelion`: `update(sylItems, positions, JAMO)` (positions = 음절 anchor로 사용, `calcTextboxLayout` 결과)
+4. `handleSubmit()` — **⚠️ 현재 `mycelium` + `dandelion`일 때만 동작**(2026-08-31 dandelion 편입). flushQueue → captureFrame(투명 PNG) → history에 고정 이미지로 누적 → clearAccum. sora/signal은 전송 시 히스토리 캡처 미구현.
 5. UI 버튼: 🐚 sora / 🚦 signal / 🌼 dandelion / 🍄 mycelium
 
 ---
@@ -154,22 +164,27 @@ asemic/
 - displacement(사인/노이즈)로 클라드니 마디선을 비틀어 손그림 느낌 추가
 - `this.sylSize = 150`, `MAX_SYL = 9`(단어 슬롯 최대 개수)
 
-### 🌼 dandelion.js — 민들레 (Canvas 2D)
+### 🌼 dandelion.js — 민들레 (WebGL2 SDF, 2026-08-31 전면 재설계)
 
 - **모티브(패널 기준)**: Plant / Wind — 식물과 바람이라는 비인간적 수신자.
-- 화면에 **5개 민들레 고정**(`PLANT_SLOTS`, 위치/바람위상/키배율 고정), 상시 바람 흔들림 애니메이션
-- **단어 완성(공백) 순환**: 공백이 생길 때마다 active 식물이 0→1→2→3→4→0... 순환 (음절마다가 아니라 단어 경계마다 전환)
-- active 식물은 해당 단어의 마지막 음절 자모값으로 파라미터 갱신 (`mapParams`) → `updateParams`에서 부드럽게 모프(MORPH_DUR=550ms, easeInOut)
-- 꽃/홀씨 렌더링은 **p5.js 수학 공식을 Canvas 2D로 포팅**(`renderFlowerOffscreen`, `buildSeeds` — 피보나치 나선 배치), 오프스크린 캔버스에 캐시 후 blit
-- 매핑: 초성 조음위치(x)→잎 펼침폭/색조, 조음방법(y)→톱니 깊이, F1→줄기 높이, F2→꽃머리 크기, 종성 유무→꽃(노랑)/홀씨(흰색) 전환, 종성 긴장도→홀씨 밀도
-- `this.sylSize = 130`, `lineHeightRatio = 1.8`
+- **2026-08-31 재설계**: 구버전(5개 고정 식물 `PLANT_SLOTS` + p5 flower math 포팅 `renderFlowerOffscreen`/`buildSeeds` + Canvas 2D)을 전부 폐기. `dandelion_redesign_spec.md` 기준 **"자모→음절→단어" 3단 궤적(trajectory) 모델 + WebGL2 프래그먼트 셰이더 2D SDF 렌더링**으로 교체. `update(sylItems, positions, JAMO)` 시그니처는 유지, 레이아웃은 `calcTextboxLayout`(signal의 shelf 아님) 그대로 사용.
+- **3단 모델**:
+    - Tier 1 (micro) — 음절마다 CHO→JUNG(→JONG) 자모 좌표를 잇는 짧은 폴리라인. 각 세그먼트에 wind-swirl(curl) 장식, curl 세기/주파수 = 소스 자모 긴장도(z). 가장 최근 음절만 `growT`로 점진 렌더.
+    - Tier 2 (meso) — 음절이 "닫히면"(뒤에 다음 음절 생성 or 단어 경계) `blobT` 0→1, 세그먼트/노드가 굵어져 SDF `smin`으로 blob 뭉침. blob 크기 = 모음 F2, 색 = 초성(조음위치→hue 50°~100°, 긴장도→채도). 종성 있으면 씨앗머리(크림/흰색 `SEED`로 탈채도).
+    - Tier 3 (macro) — 같은 단어 연속 음절 anchor를 잇는 줄기(`STEM` 녹색) 커넥터, 단어 경계에서 끊김.
+- **렌더링**: 셰이더 1개, 화면 전체 quad 1 draw call. 모든 엔트리(세그먼트/노드/커넥터)를 RGBA32F 데이터 텍스처(`MAX_ENTRIES`×3: row0 ax,ay,bx,by / row1 rgb,radius / row2 curlAmp,curlFreq,growT)에 패킹, 픽셀마다 순회하며 curl 캡슐/원 SDF를 `smin`으로 합침. 출력 = non-premultiplied `(잉크색, 커버리지)`, 블렌딩 OFF. 캔버스 CSS 배경 = 종이색(`PAPER`).
+- **전역 바람**: 셰이더에서 샘플 좌표 x를 y 위상차 sin으로 스윙(`WIND_SWAY_*`) + curl 장식 flutter(`WIND_CURL_SPEED`).
+- **submit 편입 완료**: `flushQueue`/`captureFrame`(투명 PNG, `preserveDrawingBuffer` readPixels)/`clearAccum`/`finishGrowing` 구현 → `main.js` `handleSubmit()` 가드가 `mycelium` + `dandelion` 둘 다 허용하도록 변경됨. mycelium과 동일한 스택 히스토리 + `_submitOffsetY` 흐름.
+- **3D 프로토타입 레이어**: `ENABLE_3D_PROTOTYPE`(기본 false, 콘솔 `rm.current.set3DPrototype(true)`)로만 켜짐. 별도 투명 오버레이 캔버스 + Three.js top-down `OrthographicCamera`(`up=(0,-1,0)`로 y-down 정렬), anchor마다 플레이스홀더 구 + 레이아웃 바운딩 와이어프레임만. 목적 = 2D 바닥 px 좌표와 카메라 포커스가 겹치는지 확인. 생성 로직은 이번 범위 아님.
+- `this.sylSize = SYL_SIZE(120)`, `this.wrapStep = 150`, `lineHeightRatio = 1.9`. **상수(`PAPER`/`STEM`/`SEED`/`SYL_SIZE`/`STROKE_R`/`SMIN_K`/`WIND_*`/`GROW_EASE`/`BLOB_EASE`)는 h2ee가 자주 바꿈 — 파일 재확인.**
 
 ---
 
 ## 6. 알려진 이슈 / 다음 작업 후보
 
 - **signal.js**: 신호등 플래싱은 이제 자율 사이클(`NORMAL/BLINK/FREEZE`, 섹션 5 참고)로 동작 — RGB 색상 분석 결과와 연동하는(예: 빨강 셀이 많으면 FREEZE 유발) 로직은 아직 없음, 순수 타이머. 구버전 `p.flash` 알파블렌드 경로는 죽은 코드. 구버전 "도형 오버레이 레이어(원/별/사각형)" placeholder는 2026-08-24 재구성 때 사라짐(BLINK 모노 도형이 그 역할을 부분적으로 대체).
-- **sora / signal / dandelion**: 전송(submit) 시 히스토리 캡처가 mycelium과 달리 구현 안 됨 — `main.js`의 `handleSubmit()`이 `rm.name === 'mycelium'`으로 하드코딩되어 있음 (signal.js가 2026-08-24에 WebGL2로 교체된 뒤에도 이 부분은 아직 손대지 않음)
+- **⚠️ 최우선: sora / signal 전송(submit) 히스토리 미구현** — `main.js`의 `handleSubmit()` 가드가 이제 `mycelium` + `dandelion`만 허용(2026-08-31 dandelion 편입 완료). sora/signal은 아직 `flushQueue`/`captureFrame`/`clearAccum` 계약 미구현. 2026-08-28 설계 방향 결정(상단 변경로그) 이후 이게 단순 "미구현 기능"이 아니라 **세로형 채팅 레이아웃의 핵심 전제조건**이 됨 — 턴(제출) 단위로 PNG 이미지를 쌓아올리는 구조 자체가 이 플로우에 의존. signal.js 우선.
+- **signal.js "고정 박스 + 단어 상한 + 오래된 것 교체" / skyline 빈패킹 아이디어는 폐기됨**(2026-08-28) — 세로 채팅 형식으로 전시 방향이 바뀌면서 "고정된 유한 공간"이라는 전제 자체가 사라짐. Skyline "실루엣"(빈패킹이 아닌 공통 지면선 버전)만 선택적 비주얼 옵션으로 남을 수 있음.
 - **mycelium**: 연결 실/mother tree 효과가 화면에서 잘 안 보일 수 있음(v8 시점 이슈) — growT≥0.99에서만 그려지므로 instant bake 음절은 한 프레임만 노출될 가능성 있음. 실제로 해결됐는지 파일 재확인 필요
 - 줄바꿈을 가로지르는 단어 간 연결(mycelium 허브)은 보류 상태
 

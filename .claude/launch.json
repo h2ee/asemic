@@ -3,7 +3,8 @@
   "configurations": [
     {
       "name": "asemic-dev",
-      "url": "http://localhost:5173"
+      "url": "http://localhost:5173",
+      "autoPort": false
     }
   ]
 }

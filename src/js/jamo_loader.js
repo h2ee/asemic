@@ -38,7 +38,7 @@ function parseCSV(text) {
  * 자모 데이터 로드 및 변환
  *
  * @param {object} options
- * @param {string}   options.csvPath   CSV 파일 경로 (기본값: './jamo_data.csv')
+ * @param {string}   options.csvPath   CSV 파일 경로 (기본값: `${BASE_URL}jamo_data.csv`)
  * @param {number[]} options.choRange  자음 pos 출력 범위 (기본값: [0, 1])
  * @param {number[]} options.jungRange 모음 pos 출력 범위 — Hz값은 변환하지 않음
  *
@@ -48,12 +48,20 @@ function parseCSV(text) {
  */
 export async function loadJamo(options = {}) {
     const {
-        csvPath = './jamo_data.csv',
+        // vite base('/asemic/')를 반영. public/jamo_data.csv → 전시 페이지/dev 페이지
+        // 어디서 열든 항상 `${BASE_URL}jamo_data.csv`로 해석됨.
+        // (상대경로 './'는 페이지 URL 기준이라 dev/ 하위에서 깨지고, 절대경로 '/'는 base가 빠져 404.)
+        csvPath = `${import.meta.env.BASE_URL}jamo_data.csv`,
         choRange = [0, 1], // 자음 원본 범위는 항상 [0, 1]
     } = options;
 
-    const text = await fetch(csvPath).then(r => r.text());
+    const res = await fetch(csvPath);
+    if (!res.ok) throw new Error(`loadJamo: CSV 로드 실패 ${res.status} @ ${csvPath}`);
+    const text = await res.text();
     const rows = parseCSV(text);
+    if (!rows.length || !rows[0].jamo) {
+        throw new Error(`loadJamo: CSV 파싱 실패 @ ${csvPath} — 응답이 CSV가 아님(HTML 폴백?)`);
+    }
     const JAMO = {};
 
     for (const row of rows) {

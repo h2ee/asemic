@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>asemic — output (전시 디스플레이 / TD Web Render TOP)</title>
+<style>
+    /* 디자인 기준 해상도 1080×1920 (세로). 좌표는 전부 Figma translator 프레임(1:4) 기준.
+       뷰포트가 이 비율이면 vw/vh 로 그대로 매핑됨.
+         x% = figmaX / 1080 * 100  (vw)
+         y% = figmaY / 1920 * 100  (vh)                                             */
+
+    html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #eef0ec;
+        overflow: hidden;
+        font-family: 'Apple SD Gothic Neo', -apple-system, sans-serif;
+    }
+
+    /* ── 레이어(z) ───────────────────────────────────────────────
+       0   #board          board1.png — 베젤 + 상단 타이틀바 + 글자창 배경 텍스처 (불투명)
+       1   #glyph-window   receiver 캔버스 (투명 출력) — Figma output_canvas(y408, h1079)로 클립
+       2   #panel          control panel.png — 하단 컨트롤 패널
+       3   .part           knob / button 등 (지금은 정적, 하드웨어 연결 시 회전/토글)
+       10  #input-row      입력창 (control panel userinput 위치)
+       11  #indicators     신호등·로딩 등 (미구현 — 프로필/라이트 PNG 미제공)
+       ──────────────────────────────────────────────────────────── */
+
+    #board {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        object-fit: fill;
+        z-index: 0;
+        pointer-events: none;
+    }
+
+    /* Figma output_canvas: x0 y408 w1080 h1079 → 408/1920=21.25% , 1079/1920=56.20%.
+       좌우는 board1 베젤 안쪽으로 살짝 물려 글자가 베젤 밖으로 새지 않게(≈2.5vw). */
+    #glyph-window {
+        position: fixed;
+        left: 2.5vw;
+        top: 21.25vh;
+        width: 95vw;
+        height: 56.20vh;
+        overflow: hidden;
+        z-index: 1;
+    }
+    /* 캔버스는 풀 뷰포트 크기(mycelium이 window.innerWidth/Height 로 렌더).
+       부모 오프셋만큼 역방향 이동 → 글자 좌표(뷰포트 0~100) 정렬 유지, 창 밖은 클립. */
+    #stage-canvas {
+        position: absolute;
+        left: -2.5vw;
+        top: -21.25vh;
+        width: 100vw;
+        height: 100vh;
+        display: block;
+    }
+
+    /* Figma control panel 프레임: y1493 → 77.76% . control panel.png 는 1080×427(2×:2160×854) */
+    #panel {
+        position: fixed;
+        left: 0;
+        top: 77.76vh;
+        width: 100vw;
+        height: auto;
+        z-index: 2;
+        pointer-events: none;
+    }
+
+    .part {
+        position: fixed;
+        z-index: 3;
+        pointer-events: none;
+    }
+    /* sizenweightwheel 검은 원 위에 얹는 흰 노브 페이스.
+       control panel.png 의 검은 원 중심(≈17vw, 89vh)에 맞춤 — 눈대중, 조정 포인트 */
+    #knob-size {
+        left: 7vw;
+        top: 83.4vh;
+        width: 20vw;
+    }
+
+    /* userinput: Figma abs (469, 1545) w200 → 43.4vw , 80.47vh */
+    #input-row {
+        position: fixed;
+        left: 43.4vw;
+        top: 80.0vh;
+        width: 18.5vw;
+        z-index: 10;
+    }
+    #user-input {
+        width: 100%;
+        box-sizing: border-box;
+        font-size: 1.6vh;
+        padding: 0.4vh 0.6vw;
+        background: transparent;
+        color: #123;
+        border: none;
+        outline: none;
+        font-family: inherit;
+    }
+    #user-input::placeholder { color: rgba(0, 0, 0, 0.35); }
+
+    #indicators {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 11;
+    }
+</style>
+</head>
+<body>
+<img id="board" alt="" src="./chrome/board1.png" onerror="this.style.display='none'" />
+
+<div id="glyph-window">
+    <canvas id="stage-canvas"></canvas>
+</div>
+
+<img id="panel" alt="" src="./chrome/control panel.png" onerror="this.style.display='none'" />
+<img id="knob-size" class="part" alt="" src="./chrome/size_knob.png" onerror="this.style.display='none'" />
+
+<div id="input-row">
+    <input id="user-input" type="text" placeholder="한글 입력" autocomplete="off" autofocus />
+</div>
+<div id="indicators"></div>
+
+<script type="module" src="./output-main.js"></script>
+</body>
+</html>

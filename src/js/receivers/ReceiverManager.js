@@ -19,7 +19,9 @@ export class ReceiverManager {
         this._name = null;
     }
 
-    async setReceiver(name) {
+    // opts는 receiver 생성자로 그대로 전달됨. 현재 mycelium만 사용:
+    //   { transparentOutput: true } → 크롬 PNG/TD 합성용 straight-alpha 출력
+    async setReceiver(name, opts = {}) {
         if (this._name === name) return;
         if (this._current) {
             this._current.dispose();
@@ -27,7 +29,7 @@ export class ReceiverManager {
         }
         const Cls = REGISTRY[name];
         if (!Cls) throw new Error(`Unknown receiver: ${name}`);
-        this._current = new Cls();
+        this._current = new Cls(opts);
         this._name = name;
         await this._current.init(this._canvas);
     }

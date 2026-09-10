@@ -24,6 +24,12 @@
 
 import * as THREE from 'three';
 
+// ── 파라미터 ─────────────────────────────────────────────────────────────────
+// d3(고주파 노이즈) 디테일 처리 방식
+//   false: bump map — 가벼움
+//   true : displacement — 실루엣 디테일, 무거움
+const D3_DISPLACE_DEFAULT = true;
+
 // ── 경로 함수 (syllablePath) ──────────────────────────────────────────────────
 const pathSrc = `
 vec3 orbitalPoint(float r, float freq, float angle, float theta, float phi, float e) {
@@ -36,15 +42,14 @@ vec3 orbitalPoint(float r, float freq, float angle, float theta, float phi, floa
 }
 
 vec3 syllablePath(vec3 start, vec3 center, vec3 cho, float f1, float f2, float f3,
-                  float amp, float t, float yang, float diph) {
-    float angle = t * TWO_PI * 5.0; // 에피사이클 회전 3.0 ~12. default 7
+                float amp, float t, float yang, float diph) {
+    float angle = t * TWO_PI * 5.0; // 에피사이클 회전 3.0 ~12. default 5
     float r1 = amp*(1.0/1.75), r2=r1*0.5, r3=r1*0.25;
 
     vec3 ep1 = orbitalPoint(r1, f1, angle, cho.x * TWO_PI,           cho.y * PI, 0.03); //0.3
     vec3 ep2 = orbitalPoint(r2, f2, angle, cho.y * TWO_PI + yang*PI, cho.z * PI, 0.25); //0.25
-    vec3 ep3 = orbitalPoint(r3, f3, angle, cho.z * TWO_PI + diph*PI, yang  * PI, 0.65); //0.95
+    vec3 ep3 = orbitalPoint(r3, f3, angle, cho.z * TWO_PI + diph*PI, yang  * PI, 0.65); //0.65
 
-    // ep4: 작은 에피사이클 — 균사 끝부분의 미세 흔들림/잔가지 느낌 (mycelium 전용 추가)
     vec3 ep4 = orbitalPoint(r3*0.4, f1*1.7, angle*1.3, cho.x*PI, cho.z*TWO_PI, 0.99);
 
     return center + ep1 + ep2 + ep3 - ep4*1.3; //임의 조정
@@ -89,6 +94,7 @@ uniform float u_amp;
 uniform float u_yangseong;
 uniform float u_diphthong;
 uniform float u_growT;
+uniform float u_d3Displace;   // d3(고주파 노이즈) 처리 방식: 0=bump map만(가벼움), 1=거리장 displacement(디테일↑)
 
 // 재질 ID: 0=경로(body), 1=혹(lump) — map()에서 기록, growFrag 컬러링에서 사용
 float g_matID;
@@ -199,8 +205,11 @@ float map(vec3 p) {
     float d1 = sdCapsule(p, a, b, rad * taper);
 
     float d2 = sin(p.y * 10.0) * 0.1 * 0.175-0.0155; //for 태양 material
-    // d3(노이즈)는 실루엣/거리장에서 제외하고 bump map으로만 사용 (아래 bumpMap/applyBump 참고) — 테스트용, 무거우면 롤백
+    // d3(고주파 노이즈): 기본은 실루엣/거리장에서 제외하고 bump map으로만 사용(가벼움).
+    //   u_d3Displace > 0.5 이면 예전처럼 거리장에 직접 더해 실루엣까지 우글거리게 함(무거움, 디테일 look용).
+    //   이땐 이중 적용 방지를 위해 growFrag의 applyBump를 끔.
     float displaced = d1 + d2;
+    if (u_d3Displace > 0.5) displaced += 0.008 * noise(p * 95.0); //진폭(돌출), 주파수(촘촘함)
 
     d = opSmoothUnion(d, displaced, k);
     //d = opSmoothUnion(d, sdCapsule(p, a, b, rad), k); //displacement 없는 기본 캡슐
@@ -237,7 +246,7 @@ float map(vec3 p) {
             sdCapsule(p, mid, hub, rad * 0.3)
         );
 
-        // 타겟 쪽 작은 앵커 — 실이 여기로 "녹아드는" 느낌
+        // 타겟 쪽 작은 앵커 blop
         float dAnchor = sdSphere(p - hub, rad * 0.2);
         dConn = opSmoothUnion(dConn, dAnchor, k * 1.6); // 앵커 쪽 melt 강도
 
@@ -346,64 +355,63 @@ precision highp float;
 ${sdfSrc}
 
 void main() {
-  vec2 uv = gl_FragCoord.xy / u_resolution;
-  uv = uv * 2.0 - 1.0;
-  uv.x *= u_resolution.x / u_resolution.y;
+    vec2 uv = gl_FragCoord.xy / u_resolution;
+    uv = uv * 2.0 - 1.0;
+    uv.x *= u_resolution.x / u_resolution.y;
 
-  vec3 rd = normalize(
-    u_camMat[0] * uv.x +
-    u_camMat[1] * uv.y -
-    u_camMat[2] * u_fov
-  );
+    vec3 rd = normalize(
+        u_camMat[0] * uv.x +
+        u_camMat[1] * uv.y -
+        u_camMat[2] * u_fov
+    );
 
-  float t = raymarch(u_ro, rd);
+    float t = raymarch(u_ro, rd);
 
-  if (t < 0.0) {
-    gl_FragColor = vec4(0.0);
-    return;
-  }
+    if (t < 0.0) {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
 
-  vec3 pos = u_ro + rd * t;
+    vec3 pos = u_ro + rd * t;
 
-  vec3 nor = estimateNormal(pos);
-  nor = applyBump(pos, nor); // d3를 여기서만 bump로 적용 (map()엔 없음)
-  // 표면 지점에서의 재질 ID(g_matID) 확정 (estimateNormal의 마지막 호출값은 오프셋 지점이므로 재계산)
-  float _surfD = map(pos);
+    vec3 nor = estimateNormal(pos);
+    // d3 처리 방식 분기: displacement 모드(u_d3Displace>0.5)면 map()이 이미 디테일을 갖고 있으므로 bump 생략
+    if (u_d3Displace < 0.5) nor = applyBump(pos, nor);
+    // 표면 지점에서의 재질 ID(g_matID) 확정 (estimateNormal의 마지막 호출값은 오프셋 지점이므로 재계산)
+    float _surfD = map(pos);
 
-  vec3 V      = normalize(-rd);
-  vec3 choCol = u_cho;//choToColor(u_cho);
-  vec3 col    = vec3(0.0);
+    vec3 V      = normalize(-rd);
+    vec3 choCol = u_cho;//choToColor(u_cho);
+    vec3 col    = vec3(0.0);
 
-  // ── 금속 (mycelium 기본, 구 Mode 2) ─────────────────────────────────────
+    //vec3 L = vec3(1., 1., 0.8);
 
-  //vec3 L = vec3(1., 1., 0.8);
+    vec3 L = vec3(1.0, -1.0, -0.2);
+    float shk_a = rand(vec3(uv, .0)) * 1.2 * PI;
+    float shk_r = rand(vec3(uv, 1.)) * 1.;
+    vec2 shk = vec2(cos(shk_a), sin(shk_a)) * shk_r;
+    L.xz += shk;
 
-  vec3 L = vec3(1.0, -1.0, -0.2);
-  float shk_a = rand(vec3(uv, .0)) * 1.2 * PI;
-  float shk_r = rand(vec3(uv, 1.)) * 1.;
-  vec2 shk = vec2(cos(shk_a), sin(shk_a)) * shk_r;
-  L.xz += shk;
+    float diff      = max(dot(nor, L), 0.0);
+    float toonSteps = 4.0;
+    float diffQ     = floor(diff * toonSteps) / toonSteps;
+    float band      = floor(diffQ * (toonSteps - 1.0) + 1e-3);
+    vec3 baseCol = vec3(0.999) * (0.85 + 0.15 * diff);
+    vec3 monoCol = mix(vec3(0.48), baseCol, (toonSteps - 1.0) - band) * 1.2 + 0.3;
+    baseCol = mix(choCol, baseCol, (toonSteps - 1.0) - band) * 1.2;
 
-  float diff      = max(dot(nor, L), 0.0);
-  float toonSteps = 4.0;
-  float diffQ     = floor(diff * toonSteps) / toonSteps;
-  float band      = floor(diffQ * (toonSteps - 1.0) + 1e-3);
-  vec3 baseCol = vec3(0.999) * (0.85 + 0.15 * diff);
-  vec3 monoCol = mix(vec3(0.48), baseCol, (toonSteps - 1.0) - band) * 1.2 + 0.3;
-  baseCol = mix(choCol, baseCol, (toonSteps - 1.0) - band) * 1.2;
+    // 경로(body) / 혹(lump) 색 분리 — 옵션 A: 현재는 동일색,
+    // 추후 lumpCol만 따로 조정해 혹에 강조색 부여 가능
+    vec3 bodyCol = monoCol;
+    vec3 lumpCol = baseCol * 0.95;
+    col = mix(bodyCol, lumpCol, g_matID);
 
-  // 경로(body) / 혹(lump) 색 분리 — 옵션 A: 현재는 동일색,
-  // 추후 lumpCol만 따로 조정해 혹에 강조색 부여 가능
-  vec3 bodyCol = monoCol;
-  vec3 lumpCol = baseCol * 0.95;
-  col = mix(bodyCol, lumpCol, g_matID);
+    // 외곽 발광 — 검은 edge glow로 적용
+    float rim = pow(1.0 - max(dot(nor, V), 0.0), 1.2);
+    float flareStr = 1.4;//0.6 + choCol.z * 0.8;
+    col = mix(col, vec3(0.0), rim * rim * flareStr * 1.2);
 
-  // 외곽 발광 — 검은 edge glow로 적용
-  float rim = pow(1.0 - max(dot(nor, V), 0.0), 1.2);
-  float flareStr = 1.4;//0.6 + choCol.z * 0.8;
-  col = mix(col, vec3(0.0), rim * rim * flareStr * 1.2);
-
-  gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(col, 1.0);
 }
 `;
 
@@ -419,20 +427,22 @@ uniform vec2      u_resolution;
 uniform float     u_isFirst;
 
 void main() {
-  vec2 uv  = gl_FragCoord.xy / u_resolution;
-  vec4 grow = texture2D(u_growTex,   uv);
-  vec4 prev = texture2D(u_bckbuffer, uv);
+    vec2 uv  = gl_FragCoord.xy / u_resolution;
+    vec4 grow = texture2D(u_growTex,   uv);
+    vec4 prev = texture2D(u_bckbuffer, uv);
 
-  vec4 col = (grow.a > 0.5)
-    ? grow
-    : (u_isFirst > 0.5 ? vec4(0.0) : prev);
+    vec4 col = (grow.a > 0.5)
+        ? grow
+        : (u_isFirst > 0.5 ? vec4(0.0) : prev);
 
-  gl_FragColor = col;
+    gl_FragColor = col;
 }
 `;
 
 // ── Pass 3: 표시 셰이더 ───────────────────────────────────────────────────────
-const dispFrag = `
+// transparent=false: 배경색 vec3(0.7)을 섞어 alpha=1로 출력 (전시 스탠드얼론 페이지)
+// transparent=true : straight alpha 그대로 출력 (크롬 PNG / TD 합성)
+const makeDispFrag = transparent => `
 #ifdef GL_ES
 precision highp float;
 #endif
@@ -441,19 +451,23 @@ uniform sampler2D u_accumTex;
 uniform vec2      u_resolution;
 
 void main() {
-  vec2 uv  = gl_FragCoord.xy / u_resolution;
-  vec4 acc = texture2D(u_accumTex, uv);
+    vec2 uv  = gl_FragCoord.xy / u_resolution;
+    vec4 acc = texture2D(u_accumTex, uv);
 
-  gl_FragColor = vec4(mix(vec3(0.7), acc.rgb, acc.a), 1.0);// #bg color = vec3(1.0)
-  //gl_FragColor = vec4(col, 1.0);
-
+    ${transparent
+        ? 'gl_FragColor = vec4(acc.rgb, acc.a);'
+        : 'gl_FragColor = vec4(mix(vec3(0.7), acc.rgb, acc.a), 1.0);// #bg color'}
 }
 `;
 
 // ── MyceliumReceiver ──────────────────────────────────────────────────────────
 
 export class MyceliumReceiver {
-    constructor() {
+    // opts.transparentOutput: 최종 표시 패스를 배경색 합성 없이 straight alpha로 출력하고
+    //   WebGLRenderer를 alpha:true로 만든다. TD Web Render TOP / 크롬 PNG 위 합성용.
+    //   (전시 index.html은 이 옵션 없이 생성 → 기존 불투명 회색 배경 그대로.)
+    constructor(opts = {}) {
+        this._transparent = !!opts.transparentOutput;
         this._renderer = null;
         this._clock = null;
         this._raf = null;
@@ -483,18 +497,22 @@ export class MyceliumReceiver {
         this._isFirstGlyph = true;
         this._prevSylCount = 0;
         this._forceComplete = false; // single-flag: force current syllable to growT=1
+        this._forceFinish = false; // sticky: force current + all queued syllables to growT=1 (bake)
 
         // hub state: syllable index -> { center: Vector3, connections: number }
         // 트리거: 자음이 비음/유음이 아니면(파열/파찰/마찰), 다음 음절로 넘어가는 순간 무조건 허브로 등록
         this._hubs = new Map();
 
-        this.lineHeightRatio = 4.0;
-        this.sylSize = 100; // per-receiver sylSize : #fontSize (다른 수신자 기본값(55)보다 크게)
-        this.wrapStep = 200; // 자간(px)
+        this.lineHeightRatio = 3.2;
+        this.sylSize = 100; // per-receiver sylSize : #fontSize
+        this.wrapStep = 180; // 자간(px)
         this.wrapMargin = 0;
         // 카메라(0.7, 0.5, 7) 오프셋으로 화면이 압축되어 보이는 것 보정
         // x=1.0이면 보정 없음. 1.3~1.6 사이에서 화면을 꽉 채우는 값을 찾아서 조절
         this.layoutScale = { x: 1.28, y: 1.0 };
+
+        // d3(고주파 노이즈) 디테일 방식 — 초기값은 파일 상단 D3_DISPLACE_DEFAULT, 런타임은 setD3Displace()
+        this._d3Displace = D3_DISPLACE_DEFAULT;
     }
 
     // ── Receiver 인터페이스 ──────────────────────────────────────────────────────
@@ -504,8 +522,14 @@ export class MyceliumReceiver {
         const H = window.innerHeight;
         const dpr = Math.min(window.devicePixelRatio, 2.0); // # pixel density DPR
 
-        this._renderer = new THREE.WebGLRenderer({ antialias: true, canvas: canvas ?? undefined });
+        this._renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            canvas: canvas ?? undefined,
+            alpha: this._transparent,
+            premultipliedAlpha: !this._transparent,
+        });
         this._renderer.setSize(W, H);
+        if (this._transparent) this._renderer.setClearColor(0x000000, 0);
         this._renderer.setPixelRatio(dpr);
         if (!canvas) {
             this._renderer.domElement.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;';
@@ -547,6 +571,7 @@ export class MyceliumReceiver {
             u_yangseong: { value: 0 },
             u_diphthong: { value: 0 },
             u_growT: { value: 0 },
+            u_d3Displace: { value: this._d3Displace ? 1.0 : 0.0 },
         };
         this._growScene = this._makeQuadScene(vertSrc, growFrag, this._growUniforms);
 
@@ -564,7 +589,7 @@ export class MyceliumReceiver {
             u_accumTex: { value: this._accumTarget.texture },
             u_resolution: { value: new THREE.Vector2(rW, rH) },
         };
-        this._dispScene = this._makeQuadScene(vertSrc, dispFrag, this._dispUniforms);
+        this._dispScene = this._makeQuadScene(vertSrc, makeDispFrag(this._transparent), this._dispUniforms);
 
         window.addEventListener('resize', this._onResize);
         this._raf = requestAnimationFrame(this._animate);
@@ -727,9 +752,26 @@ export class MyceliumReceiver {
 
     // ── 공개 유틸 ─────────────────────────────────────────────────────────────────
 
+    // d3(고주파 노이즈) 디테일 방식 전환 (UI 없음, 코드/콘솔에서 호출)
+    //   false: bump map으로만 적용 — map()/raymarch에서 noise(p*95) 반복 호출 안 함, 가벼움 (기본)
+    //   true : 예전처럼 거리장에 직접 더함 — 실루엣까지 우글거리는 디테일 look, 무거움
+    // 이미 accum에 구워진 글자는 안 바뀜. 새로 입력/리레이아웃되는 음절부터 반영.
+    setD3Displace(on) {
+        this._d3Displace = !!on;
+        if (this._growUniforms) this._growUniforms.u_d3Displace.value = this._d3Displace ? 1.0 : 0.0;
+    }
+
+    // 진행 중 + 큐에 남은 모든 음절을 growT=1로 즉시 완성(bake). bake 버튼처럼
+    // "지금 있는 걸 그대로 확정"해야 할 때 사용. _animate가 다음 프레임부터 반영.
+    finishGrowing() {
+        if (this._growing || this._queue.length > 0) this._forceFinish = true;
+    }
+
     // 큐가 빌 때까지 대기 후 2프레임 더 기다려 마지막 bake 확정
     flushQueue() {
         const wait2 = resolve => requestAnimationFrame(() => requestAnimationFrame(resolve));
+
+        this.finishGrowing();
 
         if (!this._growing && this._queue.length === 0) {
             return new Promise(wait2);
@@ -770,6 +812,7 @@ export class MyceliumReceiver {
     clearAccum() {
         this._queue = [];
         this._growing = false;
+        this._forceFinish = false;
         this._isFirstGlyph = true;
         this._prevSylCount = 0;
         this._hubs = new Map();
@@ -864,7 +907,7 @@ export class MyceliumReceiver {
             return;
         } else {
             const prev = this._growUniforms.u_growT.value;
-            growT = this._forceComplete ? 1.0 : prev + (1.0 - prev) * 0.08; //#growT step default 0.08
+            growT = this._forceComplete || this._forceFinish ? 1.0 : prev + (1.0 - prev) * 0.08; //#growT step default 0.08
             this._forceComplete = false;
             this._growUniforms.u_growT.value = growT >= 0.98 ? 1.0 : growT;
         }
@@ -881,6 +924,9 @@ export class MyceliumReceiver {
         if (growT >= 1.0) {
             this._growing = false;
             this._dequeue();
+            if (this._forceFinish && this._queue.length === 0 && !this._growing) {
+                this._forceFinish = false;
+            }
         }
     };
 

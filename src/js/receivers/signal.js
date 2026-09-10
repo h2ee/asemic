@@ -1395,7 +1395,7 @@ export class SignalReceiver {
                 const wordState = row[wi];
                 const wH = wordHeight(wordState);
                 const ox = curX;
-                const oy = rowTop + (rowMaxH - wH) * 0.5; // 줄 안에서 세로 중앙 정렬
+                const oy = rowTop + (rowMaxH - wH) * 0.5; // 줄 안에서 가운데 정렬
 
                 this._drawWord(gl, wordState, ox, oy);
 
