@@ -1,286 +1,93 @@
-// ── dandelion.js ──────────────────────────────────────────────────────────────
-// 민들레(🌼) 수신자 — 2026-08-31 전면 재설계 (dandelion_redesign_spec.md 기준)
+// ── DandelionReceiver (🌼) ───────────────────────────────────────────────────
 //
-// 구버전(5개 고정 식물 + p5 flower math 포팅)을 완전히 폐기하고,
-// "자모 → 음절 → 단어" 3단 궤적(trajectory) 모델 + WebGL2 SDF 렌더링으로 교체.
+// 2026-09-25: 구버전 dandelion(3단 궤적 + WebGL2 SDF, 2026-08-31 재설계본)을 폐기하고
+// sketch 프로젝트 `04_trail_gl` 의 "마우스 궤적 + GPU 밀도장 goo" 엔진으로 교체했다.
+// 구버전이 필요하면 git 이력에서 꺼낼 것.
 //
-// ── 3단 궤적 모델 (전부 2D 바닥 평면 위) ────────────────────────────────────────
-//  Tier 1 (micro) — 자모 이동:
-//    음절 하나가 들어오면 CHO→JUNG(→JONG) 세 자모 좌표를 잇는 짧은 폴리라인 생성.
-//    각 세그먼트에는 wind-swirl(curl) 장식이 붙음 — curl 세기/주파수 = 소스 자모의
-//    긴장도(z). 새로 자라는(가장 최근) 음절만 growT로 점진적으로 그려짐.
-//  Tier 2 (meso) — 음절 blob:
-//    음절이 "닫히면"(뒤에 다음 음절이 생기거나 단어 경계) blobT가 0→1로 올라가며
-//    세그먼트/노드가 굵어져 SDF smooth-union으로 하나의 blob(꽃/씨앗머리)으로 뭉침.
-//    blob 크기 = 모음 F2, 색 = 초성(조음위치→hue, 긴장도→채도). 종성이 있으면
-//    씨앗머리(탈채도된 크림/흰색)로 전환.
-//  Tier 3 (macro) — 단어 진행:
-//    같은 단어의 연속 음절 anchor를 잇는 줄기(stem) 커넥터. Tier 1과 같은 curl로
-//    장식. 단어 경계(공백)에서 끊김.
+// 엔진 파일들은 `trail/` 에 있고 sketch 쪽과 **바이트 단위로 동일**하다 — 스케치에서
+// 튜닝하고 그대로 복사해 오는 워크플로를 유지하기 위함. 디렉터리 이름이 receiver 이름과
+// 다른 건 그래서다(엔진은 receiver 가 아니라 "궤적 엔진"이다). 이 파일만 asemic 전용.
 //
-// ── 렌더링 ────────────────────────────────────────────────────────────────────
-//  WebGL2 프래그먼트 셰이더 하나, 화면 전체 quad 1 draw call. 모든 엔트리(세그먼트/
-//  노드/커넥터)를 RGBA32F 데이터 텍스처(width=MAX_ENTRIES, height=3)에 패킹하고
-//  픽셀마다 순회하며 2D SDF(curl 캡슐 / 원)를 smooth-min으로 합침 —
-//  mycelium.js의 SDF/smin 접근을 2D로 축소 적용(3D raymarch 아님).
-//  출력은 non-premultiplied alpha(잉크색, 커버리지) — 캔버스 CSS 배경이 종이색이고,
-//  submit 캡처 PNG는 잉크 밖이 투명이라 mycelium과 동일한 스택 히스토리에 얹힘.
+// 구조
+//   CPU  자모 → 궤적 점 배열(trail/jamoTrail.js) → 리샘플/스무딩/동반 곡선
+//   GPU  캡슐 SDF 커널을 누적 텍스처에 스탬프 → 밀도 임계 → 셰이딩 (goo)
+//   2D   얇은 크리스프 잉크(점선 companion, 화살촉, 장식 사각형, 단어 윤곽선)만 투명 오버레이에
 //
-// ── 3D 뷰 레이어 ──────────────────────────────────────────────────────────────
-//  ENABLE_3D_PROTOTYPE 플래그로만 켜지는 프로토타입. 이번 범위는 "2D 바닥 좌표계와
-//  top-down 직교 카메라 포커스가 정확히 겹치는지"만 확인. 생성 로직(SDF 블롭/가루
-//  등)은 이번 범위 아님 — 플레이스홀더 지오메트리(anchor 구 + 레이아웃 사각형)만.
-// ─────────────────────────────────────────────────────────────────────────────
+// 캔버스 2장: WebGL2(goo) + 엔진이 만드는 투명 2D 오버레이. 둘 다 dispose() 에서 치우고
+// 등록한 리스너·body 배경도 되돌린다 (다른 receiver 로 전환해도 흔적이 남지 않게).
+//
+// 획 단위 = **단어**. 음절 하나는 경로가 200px 안팎이라 동반 곡선 생성기가 놀 공간이 없다.
+// 타이핑 중인 단어는 hold 상태로 자라고, 공백/제출에서 구워진다.
 
-import * as THREE from 'three';
+import { createTrail } from './trail/trailgl.js';
+import { jamoToTrail, jamoToTrailTurtle, jamoWordTrail } from './trail/jamoTrail.js';
 
-// ── 튜닝 상수 (h2ee가 자주 바꿈 — 값은 항상 이 파일을 재확인) ──────────────────
-const PAPER = [0.965, 0.955, 0.925]; // 종이색(캔버스 CSS 배경 + 셰이더 col 기본값)
-const STEM = [0.42, 0.53, 0.29]; // 줄기/커넥터 녹색
-const SEED = [0.93, 0.92, 0.86]; // 씨앗머리 크림/흰색 (종성 있는 음절이 여기로 섞임)
+// 자모 → 궤적 생성기 선택. A/B 비교용 — 콘솔에서 rm.current.setGenerator('anchor') 로도 바꾼다.
+//   'turtle' (B) 자모가 운동(방향·곡률·속도)을 지시. 경로가 스스로 접혀 호길이가 2~3배
+//   'anchor' (A) 자모 좌표를 제어점으로 놓고 스플라인 보간. 얌전하지만 단순
+const GENERATOR = 'turtle';
 
-const SYL_SIZE = 120; // 음절 하나의 화면 기준 크기(px). main.js 레이아웃이 참조.
-const WRAP_STEP = 150; // 음절 간 자간(px) — SYL_SIZE보다 살짝 커서 커넥터가 보임
-const LINE_HEIGHT_RATIO = 1.9;
+// 뒤에서 몇 음절을 "아직 안 정해진 것"으로 볼지.
+//   1 이면 조합 중인 마지막 음절만 — 그런데 한글은 **종성이 다음 글자의 초성으로 넘어간다**:
+//   "반가" + ㅇ → "반강" → + ㅜ → "반가우". 이때 이미 그려진 *중간* 음절(강→가)이 바뀌므로
+//   안정 구간이 깨져 단어 전체가 다시 그려졌다. 종성 이동은 바로 다음 음절까지만 일어나므로
+//   2 면 충분하다. (대가: 마지막 두 음절은 타건마다 다시 만든다 — 그래도 재구성은 0회)
+const UNSTABLE_TAIL = 2;
 
-const LOCAL_EXTENT = 0.4; // 자모 로컬 좌표(-1~1)를 anchor 주변 몇 px로 펼칠지 = SYL_SIZE * 이 값
-const STROKE_R = SYL_SIZE * 0.028; // Tier 1 세그먼트/노드 기본 두께(px)
-const SMIN_K = 6.0; // SDF smooth-union 반경(px) — blob 뭉침 정도
-const EDGE_AA = 1.6; // 실루엣 안티에일리어싱 폭(px)
+const SYL_SIZE = 110;
+const WRAP_STEP = 100; // SYL_SIZE 보다 작게 두면 이웃 음절 궤적이 reach 안에 들어와 goo 로 이어진다
+const LINE_HEIGHT_RATIO = 1.8;
 
-const GROW_EASE = 0.09; // 최근 음절 growT 접근 속도
-const BLOB_EASE = 0.055; // 닫힌 음절 blobT 접근 속도
-const BLOB_EASE_FINISH = 0.28; // finishGrowing()/flushQueue() 중 blobT 가속
+// 스케치 기본값은 "화면을 가로지르는 긴 마우스 획"(1000px+) 기준이다.
+// 음절 하나 = 획 하나면 경로가 200~260px 밖에 안 되므로 길이 계열 파라미터를 줄여야
+// 동반 곡선 생성기(루프/방황)가 작동한다. **h2ee 가 튜닝할 자리.**
+const CFG_OVERRIDE = {
+    spacing: 4,
+    spineSmooth: 8,
 
-const WIND_SWAY_PX = 6.0; // 전역 바람: 픽셀 x-스윙 진폭(px)
-const WIND_SWAY_SPEED = 0.0011; // 전역 바람 속도(rad/ms)
-const WIND_CURL_SPEED = 0.004; // curl 장식 flutter 속도(rad/ms)
+    wanderAmp: [3, 8],
+    wanderLen: [120, 240],
+    weaveAmp: [6, 14],
+    weaveLen: [80, 150],
+    eventGap: [55, 110], // 음절당 루프 2~4개
+    swirlSpan: [18, 26],
+    swirlRadius: [9, 15],
+    compBaseSmooth: 28,
+    compStep: 2.5,
+    compSmooth: 6,
+    headLag: 5,
 
-const MAX_ENTRIES = 360; // 데이터 텍스처 정적 상한 (음절당 ≈6엔트리 × MAX_SYL(50) 일부 여유 — 40음절쯤부터 오래된 엔트리가 잘림)
-const FRAME_INTERVAL = 1000 / 30;
+    decorGap: [30, 70],
+    decorSpread: 12,
+    decorRadius: [2, 5], // 사각형 반변 길이(px) — 2배로
+    decorLineWidth: 0.75, // 윤곽선 굵기
 
-// 3D 프로토타입 — 기본 OFF. 콘솔에서 rm.current.set3DPrototype(true)로 토글.
-const ENABLE_3D_PROTOTYPE = false;
+    growPx: 8, // 경로가 짧으니 프레임당 전진도 줄인다 (음절당 약 0.5초)
 
-// ── 유틸 ──────────────────────────────────────────────────────────────────────
-const lerp = (a, b, t) => a + (b - a) * t;
-const clamp01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
+    // th: B(터틀)로 오면서 경로가 접혀 밀도가 올라갔다 — 실측 p10(외톨이 선) 1.23 /
+    // median 2.29 / p90 3.86. 1.15 로 두면 거의 전 구간이 임계를 넘어 검은 덩어리가 된다.
+    goo: { reach: 10, th: 1.7, edge: 0.04, spine: true, companion: true, fieldScale: 1.0 },
+    grow: { on: false },
+    part: { on: false },
+};
 
-function hslToRgb(h, s, l) {
-    const a = s * Math.min(l, 1 - l);
-    const f = n => {
-        const k = (n + h * 12) % 12;
-        return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-    };
-    return [f(0), f(8), f(4)];
-}
-
-// 자모 문자 → 정규화 좌표. cho/jong: pos = [x,y,z] 0~1 그대로.
-// jung: [F1,F2,F3] → open/front/z3 정규화 (main.js·signal.js와 같은 기준 범위).
-// 겹받침(pos 없음)은 cluster_front로 대표 자음 참조.
-function jamoCoord(JAMO, ch, role) {
-    if (!ch || !JAMO) return null;
-    if (role === 'jung') {
-        const e = JAMO[ch];
-        const p = e?.pos ?? [500, 1200, 2400];
-        return {
-            open: clamp01((p[0] - 250) / 650), // F1: 개구도
-            front: clamp01((p[1] - 580) / 2020), // F2: 혀 전후
-            z: clamp01((p[2] - 2080) / 1120), // F3
-            yang: e?.yang ? 1 : 0,
-            diph: e?.diphthong ? 1 : 0,
-            type: 'jung',
-        };
-    }
-    let e = role === 'jong' ? (JAMO[ch + '_jong'] ?? JAMO[ch]) : (JAMO[ch]?.cho ?? JAMO[ch]);
-    let pos = e?.pos;
-    if (!pos && e?.cluster_front) pos = JAMO[e.cluster_front + '_jong']?.pos;
-    pos = pos ?? [0.5, 0.5, 0.5];
-    return { x: pos[0], y: pos[1], z: pos[2], type: role };
-}
-
-// ── 음절 하나 → 궤적 지오메트리 (Tier 1 + Tier 2 파라미터) ────────────────────
-// 위치/크기는 로컬 정규화(-1~1)로만 계산. 실제 px 변환은 _pack()에서 anchor +
-// 현재 SYL_SIZE 기준으로 매 프레임 수행(리사이즈/바람/growth와 독립).
-function buildSyllable(JAMO, syl, key) {
-    const cho = jamoCoord(JAMO, syl.cho, 'cho');
-    const jung = jamoCoord(JAMO, syl.jung, 'jung');
-    const jong = syl.jong ? jamoCoord(JAMO, syl.jong, 'jong') : null;
-
-    const choZ = cho?.z ?? 0.3;
-    const jungZ = jung?.z ?? 0.3;
-
-    // 노드 로컬 좌표 (-1~1). 화면 y는 아래로 증가.
-    //  CHO — 조음위치(x) → 좌우, 조음방법(y) → 상하. 살짝 위쪽에서 시작.
-    //  JUNG — 혀 전후(front) → 좌우, 개구도(open) → 상하(열릴수록 아래로).
-    //  JONG — "형태가 끝나는 지점": 조음위치/방법 + 아래로 밀어냄.
-    const nodes = [
-        { x: (cho.x - 0.5) * 1.6, y: (cho.y - 0.5) * 1.5 - 0.15, w: 0.62 },
-        { x: (jung.front - 0.5) * 1.8, y: (jung.open - 0.5) * 1.7 + 0.1, w: 1.0 },
-    ];
-    if (jong) nodes.push({ x: (jong.x - 0.5) * 1.4, y: (jong.y - 0.5) * 1.2 + 0.75, w: 0.8 });
-
-    // 세그먼트 (Tier 1) — curl 세기/주파수 = 소스 자모 긴장도
-    const segs = [
-        { i0: 0, i1: 1, curlAmp: SYL_SIZE * (0.05 + choZ * 0.16), curlFreq: 1.5 + choZ * 3.5 },
-    ];
-    if (jong) {
-        segs.push({ i0: 1, i1: 2, curlAmp: SYL_SIZE * (0.05 + jungZ * 0.16), curlFreq: 1.5 + jungZ * 3.5 });
-    }
-
-    // 색 — 초성 조음위치(x): hue 50°(gold) → 100°(yellow-green), 긴장도(z): 채도
-    const choX = cho?.x ?? 0.5;
-    let col = hslToRgb(lerp(0.14, 0.28, choX), 0.34 + choZ * 0.42, 0.5);
-    if (jong) col = col.map((c, i) => lerp(c, SEED[i], 0.55)); // 종성 → 씨앗머리로 탈채도
-
-    // blob 반경 — 모음 F2 낮을수록(후설/원순) 큰 머리
-    const blobR = SYL_SIZE * (0.11 + (1 - jung.front) * 0.15);
-
-    return {
-        key,
-        wordId: syl.wordId,
-        anchorUV: [0, 0], // _pack 직전 update()에서 positions로 채움
-        nodes,
-        segs,
-        col,
-        blobR,
-        growT: 0,
-        blobT: 0,
-        _lastNodeWorld: null,
-    };
-}
-
-// ── 셰이더 ────────────────────────────────────────────────────────────────────
-const VERT = `#version 300 es
-in vec2 a_uv;
-uniform vec2 u_res;
-out vec2 v_px;
-void main() {
-    v_px = a_uv * u_res;          // 논리 px (y-down) — anchor/노드 좌표와 같은 공간
-    vec2 clip = a_uv * 2.0 - 1.0;
-    clip.y = -clip.y;
-    gl_Position = vec4(clip, 0.0, 1.0);
-}
-`;
-
-const FRAG = `#version 300 es
-precision highp float;
-in vec2 v_px;
-out vec4 outColor;
-
-uniform sampler2D u_data;  // width=MAX_ENTRIES, height=3
-                           //  row0: ax, ay, bx, by
-                           //  row1: r, g, b, radius
-                           //  row2: curlAmp, curlFreq, growT, _
-uniform int   u_count;
-uniform float u_time;      // wall-clock ms (performance.now / rAF timestamp)
-uniform float u_aa;
-uniform float u_k;         // smooth-union 반경(px)
-uniform vec3  u_paper;
-
-#define MAXE ${MAX_ENTRIES}
-#define PI 3.14159265
-
-float smin(float a, float b, float k) {
-    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-    return mix(b, a, h) - k * h * (1.0 - h);
-}
-
-void main() {
-    vec2 p = v_px;
-
-    // 전역 바람 — y에 따라 위상차를 줘서 화면 전체가 한 덩어리로 흔들리지 않게.
-    float sway = sin(u_time * ${WIND_SWAY_SPEED.toFixed(6)} + p.y * 0.010) * ${WIND_SWAY_PX.toFixed(2)}
-               + sin(u_time * ${(WIND_SWAY_SPEED * 2.1).toFixed(6)} + p.y * 0.031) * ${(WIND_SWAY_PX * 0.35).toFixed(3)};
-    p.x += sway;
-
-    float scene = 1e9;
-    float nearest = 1e9;
-    vec3  col = u_paper;
-
-    for (int i = 0; i < MAXE; i++) {
-        if (i >= u_count) break;
-        vec4 r0 = texelFetch(u_data, ivec2(i, 0), 0);
-        vec4 r1 = texelFetch(u_data, ivec2(i, 1), 0);
-        vec4 r2 = texelFetch(u_data, ivec2(i, 2), 0);
-
-        float growT = r2.z;
-        if (growT <= 0.001) continue;
-
-        vec2 a = r0.xy, b = r0.zw;
-        float rad = r1.w;
-        vec2 ba = b - a;
-        float baLen = length(ba);
-
-        float d;
-        if (baLen < 0.5) {
-            // 노드(원)
-            d = length(p - a) - rad;
-        } else {
-            // curl 캡슐 — 축을 따라 growT까지만 그리고, 수직으로 sin 변위(양끝 fade).
-            // 엄밀한 SDF는 아니지만 얇은 스트로크에선 시각적으로 충분(mycelium과 같은 근사).
-            vec2 dir = ba / baLen;
-            vec2 perp = vec2(-dir.y, dir.x);
-            float t = clamp(dot(p - a, dir) / baLen, 0.0, 1.0);
-            t = min(t, growT);
-            vec2 axP = a + ba * t;
-            float env = sin(t * PI);
-            float curl = sin(t * r2.y * PI + u_time * ${WIND_CURL_SPEED.toFixed(4)}) * r2.x * env;
-            d = length(p - (axP + perp * curl)) - rad;
-        }
-
-        if (d < nearest) { nearest = d; col = r1.rgb; }
-        scene = smin(scene, d, u_k);
-    }
-
-    float cov = 1.0 - smoothstep(0.0, u_aa, scene);
-    outColor = vec4(col, cov);
-}
-`;
-
-function compile(gl, type, src) {
-    const sh = gl.createShader(type);
-    gl.shaderSource(sh, src);
-    gl.compileShader(sh);
-    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-        const log = gl.getShaderInfoLog(sh);
-        gl.deleteShader(sh);
-        throw new Error('dandelion shader compile error: ' + log);
-    }
-    return sh;
-}
-
-// ── DandelionReceiver ─────────────────────────────────────────────────────────
 export class DandelionReceiver {
-    constructor() {
+    constructor(opts = {}) {
+        this._opts = opts;
+        this._trail = null;
         this._canvas = null;
         this._ownCanvas = false;
-        this._gl = null;
-        this._prog = null;
-        this._quadBuf = null;
-        this._tex = null;
-        this._u = null;
-        this._raf = null;
-        this._lastFrame = 0;
-
         this._JAMO = null;
-        this._syls = [];
-        this._finishAll = false;
-        this._active = false;
+        this._groups = []; // [{ sig, anchorKey, keys, pointCount }] — 이미 그려진 단어 획
+        this._holdingIdx = -1; // hold 중인(=타이핑 중인 단어) 그룹 인덱스
+        this._sampleStep = Math.max(CFG_OVERRIDE.spacing + 1, 5);
+        this._generator = GENERATOR;
 
-        this._cssW = window.innerWidth;
-        this._cssH = window.innerHeight;
-        this._dataArr = new Float32Array(MAX_ENTRIES * 3 * 4);
-        this._count = 0;
-
-        // main.js 레이아웃 엔진이 읽는 값
+        // core.js 레이아웃 엔진이 읽는 값
         this.sylSize = SYL_SIZE;
         this.wrapStep = WRAP_STEP;
-        this.wrapMargin = SYL_SIZE * 0.5;
+        this.wrapMargin = SYL_SIZE * 0.6;
         this.lineHeightRatio = LINE_HEIGHT_RATIO;
-
-        this._three = null; // { renderer, scene, camera, markers, canvas } — 프로토타입만
-        this._use3D = ENABLE_3D_PROTOTYPE;
     }
 
     async init(canvas) {
@@ -291,417 +98,185 @@ export class DandelionReceiver {
             this._ownCanvas = true;
             document.body.appendChild(this._canvas);
         }
-        Object.assign(this._canvas.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '100vw',
-            height: '100vh',
-            background: `rgb(${PAPER.map(c => Math.round(c * 255)).join(',')})`,
+        this._trail = createTrail({
+            canvas: this._canvas,
+            mouse: false, // 자모 입력이 대체
+            keys: false, // 한글 입력창과 충돌하므로 절대 등록하지 않는다
+            global: false,
+            cfg: CFG_OVERRIDE,
         });
-
-        const gl = this._canvas.getContext('webgl2', {
-            alpha: true,
-            premultipliedAlpha: false,
-            preserveDrawingBuffer: true, // captureFrame()의 readPixels용
-            antialias: true,
-        });
-        if (!gl) throw new Error('dandelion: WebGL2 not available');
-        this._gl = gl;
-
-        const vs = compile(gl, gl.VERTEX_SHADER, VERT);
-        const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG);
-        this._prog = gl.createProgram();
-        gl.attachShader(this._prog, vs);
-        gl.attachShader(this._prog, fs);
-        gl.linkProgram(this._prog);
-        if (!gl.getProgramParameter(this._prog, gl.LINK_STATUS)) {
-            throw new Error('dandelion program link error: ' + gl.getProgramInfoLog(this._prog));
-        }
-        gl.deleteShader(vs);
-        gl.deleteShader(fs);
-
-        this._quadBuf = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, this._quadBuf);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
-        const aUv = gl.getAttribLocation(this._prog, 'a_uv');
-        gl.enableVertexAttribArray(aUv);
-        gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0);
-
-        this._tex = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, this._tex);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-        this._u = {
-            res: gl.getUniformLocation(this._prog, 'u_res'),
-            data: gl.getUniformLocation(this._prog, 'u_data'),
-            count: gl.getUniformLocation(this._prog, 'u_count'),
-            time: gl.getUniformLocation(this._prog, 'u_time'),
-            aa: gl.getUniformLocation(this._prog, 'u_aa'),
-            k: gl.getUniformLocation(this._prog, 'u_k'),
-            paper: gl.getUniformLocation(this._prog, 'u_paper'),
-        };
-
-        // 블렌딩 불필요 — 화면 전체 quad 1 draw call, 픽셀마다 outColor를 한 번만 씀.
-        // non-premultiplied (col, cov)를 그대로 버퍼에 남겨야 캡처 PNG가 깔끔함.
-        gl.disable(gl.BLEND);
-
-        this._resize();
-        window.addEventListener('resize', this._onResize);
-
-        if (this._use3D) this._init3DPrototype();
-
-        this._raf = requestAnimationFrame(this._animate);
     }
 
     // sylItems : { cho, jung, jong, wordId } 배열 (공백 제외)
-    // positions: main.js calcTextboxLayout 결과 (uv 0~1) — anchor로 사용
+    // positions: calcTextboxLayout 결과 (uv 0~1) — 음절 셀의 좌측 기준점
     update(sylItems, positions, JAMO) {
         if (JAMO) this._JAMO = JAMO;
-        if (!this._JAMO) return;
+        if (!this._JAMO || !this._trail) return;
 
         if (!sylItems?.length) {
-            this._syls = [];
-            this._finishAll = false;
-            this._active = false;
+            this.clearAccum();
             return;
         }
 
-        const keys = sylItems.map(s => `${s.cho}|${s.jung}|${s.jong}|${s.wordId}`);
+        const W = window.innerWidth;
+        const H = window.innerHeight;
 
-        // append-only 프리픽스 매칭 — 일치하는 앞부분은 growth 상태 보존, 뒤는 새로 빌드
-        const old = this._syls;
+        // ── 음절을 "단어 = 획" 단위로 묶는다.
+        // 줄바꿈으로 단어가 두 줄에 걸치면(앵커 y가 달라지면) 거기서 끊어 별도 획으로.
+        const groups = [];
+        for (let i = 0; i < sylItems.length; i++) {
+            const s = sylItems[i];
+            const p = positions?.[i] ?? [0.5, 0.5];
+            const prev = groups[groups.length - 1];
+            if (prev && prev.wordId === s.wordId && Math.abs(prev.anchor[1] - p[1]) < 1e-4) {
+                prev.syls.push(s);
+                prev.keys.push(`${s.cho}${s.jung}${s.jong ?? ''}`);
+            } else {
+                groups.push({
+                    wordId: s.wordId,
+                    anchor: [p[0], p[1]],
+                    syls: [s],
+                    keys: [`${s.cho}${s.jung}${s.jong ?? ''}`],
+                });
+            }
+        }
+        const anchorKey = g => `${g.wordId}@${g.anchor[0].toFixed(5)},${g.anchor[1].toFixed(5)}`;
+        const buildPts = (g, syls = g.syls) =>
+            jamoWordTrail(
+                this._JAMO,
+                syls,
+                g.anchor[0] * W,
+                g.anchor[1] * H,
+                WRAP_STEP,
+                this._sampleStep,
+            );
+        const seedOf = g => this._trail.hashSeed('word', g.wordId, ...g.keys);
+
+        const prev = this._groups;
+        // 앞에서부터 완전히 같은 그룹은 그대로 둔다
         let match = 0;
-        while (match < old.length && match < keys.length && old[match].key === keys[match]) match++;
+        while (
+            match < prev.length &&
+            match < groups.length &&
+            prev[match].sig === anchorKey(groups[match]) + '|' + groups[match].keys.join('')
+        )
+            match++;
 
-        const next = old.slice(0, match);
-        for (let i = match; i < sylItems.length; i++) {
-            next.push(buildSyllable(this._JAMO, sylItems[i], keys[i]));
+        // ── 빠른 경로: 타이핑 중인 마지막 단어는 되감기+이어붙이기로 처리한다.
+        //
+        // 한글은 **마지막 음절이 조합되면서 계속 바뀐다**(ㅇ→아→안). 그래서 "음절이
+        // 추가됐는가"만 보면 매 타건마다 판정이 실패해 단어 전체가 다시 그려졌다.
+        // 대신 마지막 음절을 뺀 앞부분을 "안정 구간"으로 보고,
+        //   · 안정 구간이 그대로면 → 거기까지 되감고(rewindGrowing) 마지막 음절만 다시 뻗는다
+        // jamoWordTrail 이 append-only 라 안정 구간 좌표가 변하지 않는 게 전제다.
+        if (
+            match === prev.length - 1 &&
+            match === groups.length - 1 &&
+            this._holdingIdx === match
+        ) {
+            const a = prev[match];
+            const b = groups[match];
+            const nStable = Math.max(0, b.keys.length - UNSTABLE_TAIL);
+            const bStable = b.keys.slice(0, nStable);
+            // 새 안정 구간이 **이전 키 배열의 프리픽스**여야 한다. 그래야 앞 k 점이 정말
+            // 같은 점이고, replaceTail 이 옛 앞부분 + 새 꼬리를 섞는 사고가 안 난다.
+            // (연음으로 중간 음절이 바뀌면 여기서 걸러져 정상적으로 재구성된다)
+            const canExtend =
+                a.anchorKey === anchorKey(b) &&
+                bStable.length <= a.keys.length &&
+                a.keys.slice(0, bStable.length).join('\u0000') === bStable.join('\u0000');
+            if (canExtend) {
+                const stablePts = nStable > 0 ? buildPts(b, b.syls.slice(0, nStable)) : [];
+                const full = buildPts(b);
+                this._trail.replaceTail(stablePts.length, full.slice(stablePts.length));
+                a.keys = b.keys.slice();
+                a.stableKeys = bStable;
+                a.sig = anchorKey(b) + '|' + b.keys.join('');
+                a.pointCount = full.length;
+                return;
+            }
         }
-        // anchor는 매 update 갱신 (타이핑 중 자간/줄바꿈으로 위치가 계속 바뀜)
-        for (let i = 0; i < next.length; i++) {
-            if (positions?.[i]) next[i].anchorUV = positions[i];
-        }
-        // 뒤로 음절이 새로 붙었으면 직전까지는 전부 "닫힌" 것 — growth 강제 완료
-        for (let i = 0; i < next.length - 1; i++) next[i].growT = 1;
 
-        this._syls = next;
-        this._finishAll = false;
-        this._active = true;
+        // 바뀐 게 전혀 없으면 여기서 끝낸다. (한글 조합 중에는 분해 결과가 그대로인
+        // 타건이 섞인다 — 예: "안ㄴ" 은 여전히 ['안']. 그때 아래로 내려가 _holdingIdx 를
+        // 리셋해버리면 **다음** 타건의 빠른 경로가 깨져서 단어 전체가 다시 그려진다.)
+        if (match === prev.length && match === groups.length) return;
+
+        // ── 그 외에는 달라진 지점부터 다시 그린다. 획이 이미 밀도장에 구워졌으면
+        // 개별로 뺄 수 없으므로 전면 재구성 (결정론 덕분에 같은 글자는 같은 모양).
+        const rebuild = match < prev.length;
+        if (rebuild) {
+            this._trail.clear();
+            this._groups = [];
+        }
+        const from = rebuild ? 0 : match;
+        this._holdingIdx = -1;
+
+        for (let gi = from; gi < groups.length; gi++) {
+            const g = groups[gi];
+            const pts = buildPts(g);
+            if (pts.length < 2) continue;
+            const isLast = gi === groups.length - 1;
+            // 마지막 단어는 아직 타이핑 중일 수 있으므로 hold — 음절이 더 붙기를 기다린다.
+            if (rebuild && !isLast) this._trail.addStroke(pts, seedOf(g));
+            else this._trail.queueStroke(pts, seedOf(g), { hold: isLast });
+            if (isLast) this._holdingIdx = gi;
+            this._groups.push({
+                sig: anchorKey(g) + '|' + g.keys.join(''),
+                anchorKey: anchorKey(g),
+                keys: g.keys.slice(),
+                stableKeys: g.keys.slice(0, Math.max(0, g.keys.length - UNSTABLE_TAIL)),
+                pointCount: pts.length,
+            });
+        }
     }
 
-    // 공백(단어 경계) 발생 시 main.js가 호출 — 자라던 음절 즉시 완성
+    // 공백(단어 경계)/다음 음절 입력 시 core.js 흐름이 호출 — 자라던 획 즉시 완성
     finishGrowing() {
-        this._finishAll = true;
+        this._trail?.finishGrowing();
     }
 
-    // submit — 큐/애니메이션이 정착할 때까지 대기 후 2프레임 여유
-    flushQueue() {
-        this._finishAll = true;
-        const wait2 = res => requestAnimationFrame(() => requestAnimationFrame(res));
-        return new Promise(resolve => {
-            const t0 = performance.now();
-            const check = () => {
-                const settled = this._syls.every(s => s.growT >= 0.999 && s.blobT >= 0.98);
-                if (settled || performance.now() - t0 > 1400) wait2(resolve);
-                else requestAnimationFrame(check);
-            };
-            requestAnimationFrame(check);
-        });
+    // submit — 큐를 비우고, 합성 프레임이 한 번 돌 때까지 기다린다.
+    // captureFrame() 이 GL 프레임버퍼를 읽으므로 스탬프 직후가 아니라 렌더 직후여야 한다.
+    async flushQueue() {
+        if (!this._trail) return;
+        await this._trail.flushQueue();
+        await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
     }
 
-    // 현재 프레임을 투명 배경 PNG로 — mycelium.captureFrame()과 같은 계약
+    // ⚠️ 아직 불투명 PNG (종이색 포함). 투명화는 composite.frag 알파 출력 작업에서.
     captureFrame() {
-        this._renderNow();
-        const gl = this._gl;
-        const w = this._canvas.width;
-        const h = this._canvas.height;
-        const buf = new Uint8Array(w * h * 4);
-        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-
-        const cvs = document.createElement('canvas');
-        cvs.width = w;
-        cvs.height = h;
-        const ctx = cvs.getContext('2d');
-        const img = ctx.createImageData(w, h);
-        for (let y = 0; y < h; y++) {
-            const src = (h - 1 - y) * w * 4;
-            img.data.set(buf.subarray(src, src + w * 4), y * w * 4);
-        }
-        ctx.putImageData(img, 0, 0);
-        return cvs.toDataURL('image/png');
+        if (!this._trail) return null;
+        return this._trail.captureCanvas().toDataURL('image/png');
     }
 
-    // submit 후 새 줄 시작 — 누적 궤적 비움 (히스토리 이미지는 main.js가 관리)
+    // submit 후 새 줄 시작 — 누적 궤적 비움 (히스토리 이미지는 core.js 흐름이 관리)
     clearAccum() {
-        this._syls = [];
-        this._finishAll = false;
-        this._active = false;
-        this._count = 0;
-        this._renderNow();
+        this._trail?.clear();
+        this._groups = [];
+        this._holdingIdx = -1;
     }
 
     dispose() {
-        cancelAnimationFrame(this._raf);
-        window.removeEventListener('resize', this._onResize);
-        const gl = this._gl;
-        if (gl) {
-            if (this._tex) gl.deleteTexture(this._tex);
-            if (this._quadBuf) gl.deleteBuffer(this._quadBuf);
-            if (this._prog) gl.deleteProgram(this._prog);
-        }
-        if (this._three) {
-            this._three.renderer.dispose();
-            this._three.canvas.remove();
-            this._three = null;
-        }
+        this._trail?.dispose(); // 리스너·오버레이 캔버스·body 배경 전부 되돌린다
+        this._trail = null;
         if (this._ownCanvas && this._canvas?.parentNode) this._canvas.parentNode.removeChild(this._canvas);
         this._canvas = null;
-        this._gl = null;
     }
 
-    // ── 콘솔 토글 — 3D 프로토타입 ────────────────────────────────────────────────
-    set3DPrototype(on) {
-        this._use3D = !!on;
-        if (this._use3D && !this._three) this._init3DPrototype();
-        if (this._three) this._three.canvas.style.display = this._use3D ? 'block' : 'none';
+    // 콘솔에서 A/B 전환 — rm.current.setGenerator('anchor')
+    setGenerator(name) {
+        this._generator = name === 'anchor' ? 'anchor' : 'turtle';
+        this._trail?.clear();
+        this._groups = [];
+        this._holdingIdx = -1;
     }
 
-    // ── 내부 ──────────────────────────────────────────────────────────────────
-    _onResize = () => this._resize();
-
-    _resize() {
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        this._cssW = window.innerWidth;
-        this._cssH = window.innerHeight;
-        this._canvas.width = Math.round(this._cssW * dpr);
-        this._canvas.height = Math.round(this._cssH * dpr);
-        this._gl?.viewport(0, 0, this._canvas.width, this._canvas.height);
-        if (this._three) this._resize3DPrototype();
+    // 콘솔 튜닝용 — rm.current.cfg().goo.th = 1.4
+    cfg() {
+        return this._trail?.CFG;
     }
-
-    _animate = ts => {
-        this._raf = requestAnimationFrame(this._animate);
-        if (ts - this._lastFrame < FRAME_INTERVAL) return;
-        this._lastFrame = ts;
-
-        this._tick();
-        this._renderNow(ts);
-    };
-
-    // growT / blobT 진행
-    _tick() {
-        const n = this._syls.length;
-        for (let i = 0; i < n; i++) {
-            const s = this._syls[i];
-            const isLast = i === n - 1;
-            if (this._finishAll || !isLast) {
-                s.growT = 1;
-                const ease = this._finishAll ? BLOB_EASE_FINISH : BLOB_EASE;
-                s.blobT += (1 - s.blobT) * ease;
-            } else {
-                s.growT += (1 - s.growT) * GROW_EASE;
-                if (s.growT > 0.995) s.growT = 1;
-            }
-        }
-    }
-
-    // 궤적 → 데이터 텍스처 엔트리 패킹
-    _pack() {
-        const W = this._cssW;
-        const H = this._cssH;
-        const half = SYL_SIZE * LOCAL_EXTENT;
-        const arr = this._dataArr;
-        let e = 0;
-
-        const put = (ax, ay, bx, by, r, g, b, rad, curlAmp, curlFreq, growT) => {
-            if (e >= MAX_ENTRIES) return;
-            const o0 = e * 4;
-            const o1 = (MAX_ENTRIES + e) * 4;
-            const o2 = (MAX_ENTRIES * 2 + e) * 4;
-            arr[o0] = ax;
-            arr[o0 + 1] = ay;
-            arr[o0 + 2] = bx;
-            arr[o0 + 3] = by;
-            arr[o1] = r;
-            arr[o1 + 1] = g;
-            arr[o1 + 2] = b;
-            arr[o1 + 3] = rad;
-            arr[o2] = curlAmp;
-            arr[o2 + 1] = curlFreq;
-            arr[o2 + 2] = growT;
-            arr[o2 + 3] = 0;
-            e++;
-        };
-
-        const syls = this._syls;
-        for (let i = 0; i < syls.length; i++) {
-            const s = syls[i];
-            const ax = s.anchorUV[0] * W;
-            const ay = s.anchorUV[1] * H;
-            const nodeW = s.nodes.map(nd => [ax + nd.x * half, ay + nd.y * half]);
-
-            // Tier 3 — 같은 단어의 직전 음절과 잇는 줄기 커넥터
-            const prev = syls[i - 1];
-            if (prev && prev.wordId === s.wordId && prev._lastNodeWorld) {
-                const A = prev._lastNodeWorld;
-                put(
-                    A[0], A[1], nodeW[0][0], nodeW[0][1],
-                    STEM[0], STEM[1], STEM[2],
-                    STROKE_R * 1.25, SYL_SIZE * 0.045, 1.2, s.growT,
-                );
-            }
-            s._lastNodeWorld = nodeW[nodeW.length - 1];
-
-            // Tier 1 — 세그먼트 (blobT에 따라 굵어짐)
-            const segRad = lerp(STROKE_R, s.blobR * 0.5, s.blobT * 0.6);
-            for (const seg of s.segs) {
-                const A = nodeW[seg.i0];
-                const B = nodeW[seg.i1];
-                put(
-                    A[0], A[1], B[0], B[1],
-                    s.col[0], s.col[1], s.col[2],
-                    segRad, seg.curlAmp, seg.curlFreq, s.growT,
-                );
-            }
-
-            // Tier 2 — 노드 (blobT에 따라 원이 커져 smooth-union으로 blob 형성)
-            for (let k = 0; k < nodeW.length; k++) {
-                const P = nodeW[k];
-                const rad = lerp(STROKE_R * 1.4, s.blobR * s.nodes[k].w, s.blobT);
-                put(P[0], P[1], P[0], P[1], s.col[0], s.col[1], s.col[2], rad, 0, 0, s.growT);
-            }
-        }
-
-        this._count = e;
-    }
-
-    _renderNow(ts) {
-        const gl = this._gl;
-        if (!gl || !this._prog) return;
-
-        this._pack();
-
-        gl.bindTexture(gl.TEXTURE_2D, this._tex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MAX_ENTRIES, 3, 0, gl.RGBA, gl.FLOAT, this._dataArr);
-
-        gl.clearColor(0, 0, 0, 0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-
-        gl.useProgram(this._prog);
-        gl.bindBuffer(gl.ARRAY_BUFFER, this._quadBuf);
-        const aUv = gl.getAttribLocation(this._prog, 'a_uv');
-        gl.enableVertexAttribArray(aUv);
-        gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0);
-
-        gl.uniform2f(this._u.res, this._cssW, this._cssH);
-        gl.uniform1i(this._u.count, this._count);
-        gl.uniform1f(this._u.time, ts ?? performance.now());
-        gl.uniform1f(this._u.aa, EDGE_AA);
-        gl.uniform1f(this._u.k, SMIN_K);
-        gl.uniform3f(this._u.paper, PAPER[0], PAPER[1], PAPER[2]);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this._tex);
-        gl.uniform1i(this._u.data, 0);
-
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-        if (this._three) this._render3DPrototype();
-    }
-
-    // ── 3D 프로토타입 레이어 ──────────────────────────────────────────────────
-    // 목적(이번 범위): 2D 바닥 좌표계(px, y-down)와 top-down 직교 카메라 포커스가
-    // 정확히 겹치는지 눈으로 확인. 생성 로직은 없음 — anchor마다 작은 구 + 현재
-    // 입력 영역을 감싸는 와이어프레임 사각형만. 별도 투명 오버레이 캔버스 사용
-    // (메인 WebGL2 컨텍스트와 분리).
-    _init3DPrototype() {
-        const canvas = document.createElement('canvas');
-        Object.assign(canvas.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            width: '100vw',
-            height: '100vh',
-            pointerEvents: 'none',
-            zIndex: '3',
-        });
-        document.body.appendChild(canvas);
-
-        const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-
-        const scene = new THREE.Scene();
-        // 바닥 평면을 XY(z=0)로 두고 카메라가 +Z에서 -Z로 내려다봄 → 화면 x=px.x, y=px.y(부호 반전).
-        const camera = new THREE.OrthographicCamera(0, 1, 0, 1, 0.1, 4000);
-        camera.position.set(0, 0, 1000);
-        camera.up.set(0, -1, 0); // y-down 화면과 정렬
-        camera.lookAt(0, 0, 0);
-
-        const markers = new THREE.Group();
-        scene.add(markers);
-
-        const bounds = new THREE.LineSegments(
-            new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1)),
-            new THREE.LineBasicMaterial({ color: 0x4a8a3a, transparent: true, opacity: 0.5 }),
-        );
-        scene.add(bounds);
-
-        this._three = { renderer, scene, camera, markers, bounds, canvas };
-        this._resize3DPrototype();
-    }
-
-    _resize3DPrototype() {
-        const t = this._three;
-        if (!t) return;
-        t.renderer.setSize(this._cssW, this._cssH, false);
-        t.camera.left = 0;
-        t.camera.right = this._cssW;
-        t.camera.top = 0;
-        t.camera.bottom = this._cssH;
-        t.camera.updateProjectionMatrix();
-    }
-
-    _render3DPrototype() {
-        const t = this._three;
-        if (!t) return;
-        const W = this._cssW;
-        const H = this._cssH;
-
-        while (t.markers.children.length) t.markers.remove(t.markers.children[0]);
-        let minX = W,
-            minY = H,
-            maxX = 0,
-            maxY = 0;
-        for (const s of this._syls) {
-            const x = s.anchorUV[0] * W;
-            const y = s.anchorUV[1] * H;
-            const m = new THREE.Mesh(
-                new THREE.SphereGeometry(Math.max(s.blobR * (0.3 + s.blobT * 0.7), 4), 12, 8),
-                new THREE.MeshBasicMaterial({
-                    color: new THREE.Color(s.col[0], s.col[1], s.col[2]),
-                    transparent: true,
-                    opacity: 0.45,
-                }),
-            );
-            m.position.set(x, y, 0);
-            t.markers.add(m);
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
-        }
-
-        if (this._syls.length) {
-            t.bounds.visible = true;
-            t.bounds.position.set((minX + maxX) / 2, (minY + maxY) / 2, 0);
-            t.bounds.scale.set(Math.max(maxX - minX, 1), Math.max(maxY - minY, 1), 1);
-        } else {
-            t.bounds.visible = false;
-        }
-
-        t.renderer.render(t.scene, t.camera);
+    engine() {
+        return this._trail;
     }
 }

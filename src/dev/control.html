@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>asemic — control (가상 컨트롤 패널)</title>
+<style>
+    /* 피지컬 패널이 나오기 전 테스트용. 보내는 건 {t:'control', id, value} 뿐이고
+       의미는 src/js/controls.js + output-main.js applyControl 이 정한다. */
+    :root {
+        --bg: #eef1f4;
+        --panel: #ffffff;
+        --ink: #13456d;
+        --muted: #7d93a8;
+        --line: #d5dee7;
+        --accent: #ffff00;
+        --accent-ink: #003279;
+        --on: #578aae;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #10161c;
+            --panel: #1a232c;
+            --ink: #dbe8f4;
+            --muted: #7890a6;
+            --line: #2b3844;
+            --on: #7fb2d8;
+        }
+    }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: 'Inconsolata', ui-monospace, 'SF Mono', Menlo, monospace;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+    }
+    main {
+        width: min(760px, 100%);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 22px;
+        display: grid;
+        gap: 22px;
+    }
+    header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    h1 { font-size: 15px; margin: 0; letter-spacing: 0.08em; text-transform: uppercase; }
+    #status { font-size: 12px; color: var(--muted); }
+    #status.ok::before { content: '● '; color: #3cb371; }
+    #status.off::before { content: '● '; color: #d9534f; }
+    section { display: grid; gap: 10px; }
+    h2 { font-size: 11px; margin: 0; color: var(--muted); font-weight: 500; letter-spacing: 0.1em; }
+    .row { display: flex; flex-wrap: wrap; gap: 14px; }
+
+    .knob { display: grid; justify-items: center; gap: 6px; width: 92px; user-select: none; touch-action: none; }
+    .knob svg { width: 76px; height: 76px; cursor: ns-resize; }
+    .knob .track { fill: none; stroke: var(--line); stroke-width: 6; stroke-linecap: round; }
+    .knob .val { fill: none; stroke: var(--on); stroke-width: 6; stroke-linecap: round; }
+    .knob .cap { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+    .knob .tick { stroke: var(--ink); stroke-width: 3; stroke-linecap: round; }
+    .knob .label { font-size: 13px; }
+    .knob .num { font-size: 11px; color: var(--muted); }
+
+    button {
+        font: inherit;
+        font-size: 14px;
+        color: var(--ink);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px 18px;
+        min-width: 92px;
+        cursor: pointer;
+        transition: transform 0.05s;
+    }
+    button:active, button.flash { transform: scale(0.96); background: var(--accent); color: var(--accent-ink); }
+    button[aria-pressed='true'] { background: var(--on); color: #fff; border-color: var(--on); }
+    button .key { display: block; font-size: 10px; color: var(--muted); margin-top: 4px; }
+    button[aria-pressed='true'] .key { color: #fff; }
+    footer { font-size: 11px; color: var(--muted); line-height: 1.6; }
+    code { font-size: 11px; }
+</style>
+</head>
+<body>
+<main>
+    <header>
+        <h1>Asemic · Control</h1>
+        <span id="status" class="off">연결 안 됨</span>
+    </header>
+    <section><h2>KNOB — 세로로 드래그 · 더블클릭 = 기본값</h2><div class="row" id="knobs"></div></section>
+    <section><h2>PRESET</h2><div class="row" id="buttons"></div></section>
+    <section><h2>MODE</h2><div class="row" id="toggles"></div></section>
+    <section><h2>ACTION</h2><div class="row" id="actions"></div></section>
+    <footer>
+        보내는 메시지: <code id="last">—</code><br />
+        output 페이지와 같은 허브에 붙어야 한다. TD 없이: <code>BRIDGE_PORT=9981 npm run bridge</code> 후
+        두 페이지 모두 <code>?bridge=ws://localhost:9981</code>
+    </footer>
+</main>
+<script type="module" src="./control.js"></script>
+</body>
+</html>

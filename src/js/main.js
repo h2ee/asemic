@@ -3,7 +3,7 @@
 // core.js로 옮김 — dev 페이지(dev/translator, dev/analyzer)와 공유하기 위함.
 // 이 파일엔 전시용 페이지의 DOM/UI 구성(buildUI, buildInput, buildHistory, Init)만 남음.
 import { ReceiverManager } from './receivers/ReceiverManager.js';
-import { MAX_SYL, decomposeSyllables, calcTextboxLayout, calcShelfLayout, dispatchToReceiver } from './core.js';
+import { MAX_SYL, decomposeSyllables, layoutFor, canSubmit, dispatchToReceiver } from './core.js';
 
 // ── 제출된 줄 히스토리 (캡처 이미지 누적) ────────────────────────────────────
 function buildHistory() {
@@ -192,20 +192,12 @@ async function Init() {
     function reLayout(items) {
         const W = window.innerWidth;
         const H = window.innerHeight;
-        const sylSize = rm.current?.sylSize ?? 55;
-        const lineHeightRatio = rm.current?.lineHeightRatio ?? 1.3;
-        const wrapStep = rm.current?.wrapStep ?? sylSize * 2;
-        const wrapMargin = rm.current?.wrapMargin ?? sylSize;
-        const layoutFn = rm.name === 'signal' ? calcShelfLayout : calcTextboxLayout;
-        const { positions, sylItems, widths, heights } = layoutFn(
+        const { positions, sylItems, widths, heights, sylSize } = layoutFor(
+            rm,
             items,
-            sylSize,
             W,
             H,
-            lineHeightRatio,
             _submitOffsetY,
-            wrapStep,
-            wrapMargin,
         );
         _sylItems = sylItems;
         _positions = positions;
@@ -215,29 +207,15 @@ async function Init() {
     }
 
     async function handleSubmit() {
-        // mycelium + dandelion: 둘 다 flushQueue/captureFrame/clearAccum 계약을 구현함
-        if (!_sylItems.length || (rm.name !== 'mycelium' && rm.name !== 'dandelion')) return;
         const receiver = rm.current;
+        if (!_sylItems.length || !canSubmit(receiver)) return;
 
         // await 이전(동기 구간)에 먼저 계산. flushQueue가 await로 제어권을 넘기는 순간
         // doSubmit()의 다음 줄(onInput(''))이 먼저 실행되며 _allItems가 비워지기 때문에,
         // 그 뒤에 읽으면 lastY가 항상 "1줄" 기본값이 되는 버그가 있었음 (fix: snapshot before await)
         const W = window.innerWidth;
         const H = window.innerHeight;
-        const sylSize = rm.current?.sylSize ?? 55;
-        const lineHeightRatio = rm.current?.lineHeightRatio ?? 1.3;
-        const wrapStep = rm.current?.wrapStep ?? sylSize * 2;
-        const wrapMargin = rm.current?.wrapMargin ?? sylSize;
-        const { lastY } = calcTextboxLayout(
-            _allItems,
-            sylSize,
-            W,
-            H,
-            lineHeightRatio,
-            _submitOffsetY,
-            wrapStep,
-            wrapMargin,
-        );
+        const { lastY, sylSize, lineHeightRatio } = layoutFor(rm, _allItems, W, H, _submitOffsetY);
         const capHeight = Math.round(lastY + sylSize * lineHeightRatio * 1.5);
         // _submitOffsetY도 await 이전에 갱신 — flushQueue 대기 중 사용자가 타이핑을 시작해도
         // 항상 최신 기준선으로 레이아웃되어 위치가 어긋나지 않음. (_allItems 등은 doSubmit()의

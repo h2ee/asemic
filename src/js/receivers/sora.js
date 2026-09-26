@@ -185,7 +185,7 @@ vec3 heatmap3(float t, float choX, float choZ) {
 
 void main() {
   int count = u_sylCount;
-  if (count < 1) { fragColor = vec4(1.0, 1.0, 1.0, 0.0); return; }
+  if (count < 1) { fragColor = vec4(0.0); return; }   // premultiplied — 흰색을 남기면 배경을 칠한다
 
   vec2  uv     = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y) / u_resolution;
   float aspect = u_resolution.x / u_resolution.y;
@@ -225,7 +225,7 @@ void main() {
     delta.x     *= aspect;
     presence = max(presence, smoothstep(radius * 1.2, radius * 0.6, length(delta)));
   }
-  if (presence < 0.001) { fragColor = vec4(1.0, 1.0, 1.0, 0.0); return; }
+  if (presence < 0.001) { fragColor = vec4(0.0); return; }
 
   // ── fake normal (F3 → 기복 강도) ─────────────────────────────────────────
   vec3  nrmAcc = vec3(0.0);
@@ -266,7 +266,11 @@ void main() {
   col = mix(col, vec3(0.0), dark);
   // ────────────────────────────────────────────────────────────────────────
 
-  fragColor = vec4(col, presence);
+  // ⚠️ 캔버스 컨텍스트가 premultipliedAlpha:true(기본값)다 — RGB를 알파로 미리 곱해서
+  //    내보내야 한다. 안 그러면 합성기가 canvasRGB + dest*(1-canvasA) 로 섞으면서
+  //    presence가 작은 자리마다 col이 그대로 더해져 **배경 위에 흰 상자**가 생긴다.
+  //    (배경이 흰색이던 시절엔 안 보였고, TD 투명 합성으로 오면서 드러났다)
+  fragColor = vec4(col * presence, presence);
 }
 `;
 
@@ -324,8 +328,9 @@ export class SoraReceiver {
         this._waveStart = Array(MAX_SYL).fill(-999);
         this._f3Norms = Array(MAX_SYL).fill(0.5);
         this._frozen = Array(MAX_SYL).fill(false);
-        this._wordPositions = new Map(); // wordId → [x, y]
+        this._wordPositions = new Map(); // wordId → [x, y] (뷰포트 uv)
         this._wordRadii = new Map(); // wordId → radius (한 번 배정 후 유지)
+        this._rect = null; // 글자 영역(뷰포트 px). null이면 뷰포트 전체 — setRect() 참고
         this.sylSize = 150; // per-receiver sylSize : #fontSize
         this._sylCount = 0;
         this._sminK = 0.06;
@@ -344,7 +349,9 @@ export class SoraReceiver {
         this._resize();
         window.addEventListener('resize', this._onResize);
 
-        const gl = this._canvas.getContext('webgl2');
+        // preserveDrawingBuffer — captureFrame()이 toDataURL()로 읽으려면 필요하다.
+        // 기본값(false)이면 draw 직후 다음 합성에서 버퍼가 버려져 빈 PNG가 나온다.
+        const gl = this._canvas.getContext('webgl2', { preserveDrawingBuffer: true });
         if (!gl) {
             console.error('[sora] WebGL2 not supported');
             return;
@@ -356,7 +363,9 @@ export class SoraReceiver {
         gl.useProgram(this._prog);
 
         gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        // 프리멀티플라이드 블렌딩 — 캔버스 컨텍스트가 premultipliedAlpha:true(기본값)라
+        // 셰이더도 clearColor도 RGB를 알파로 미리 곱한 값이어야 한다. fragColor 주석 참고.
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
         const buf = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -384,6 +393,22 @@ export class SoraReceiver {
         this._raf = requestAnimationFrame(this._animate);
     }
 
+    // 글자 영역을 뷰포트 일부로 좁힌다. {x, y, w, h}(뷰포트 px) 또는 null(=전체).
+    // sora는 positions를 무시하고 단어마다 랜덤 자리를 잡기 때문에 core.js layoutFor(rect)가
+    // 안 먹는다 — 이 메서드가 그 짝으로, 랜덤 범위와 반경 기준을 rect로 바꾼다.
+    // 이미 자리를 배정받은 단어는 그대로 둔다(자리를 유지하는 게 이 receiver의 규칙).
+    setRect(rect) {
+        this._rect = rect ?? null;
+    }
+
+    // 캔버스 전체 기준 uv(0~1)를 rect 안쪽 uv로 접는다. rect가 없으면 그대로.
+    _toRect(u, v) {
+        const r = this._rect;
+        if (!r) return [u, v];
+        // sora는 논리 px 크기를 따로 안 들고 있다(_resize가 window에서 바로 읽는다).
+        return [(r.x + u * r.w) / window.innerWidth, (r.y + v * r.h) / window.innerHeight];
+    }
+
     // @param sylItems   wordId 태깅된 음절 배열
     // @param positions  0~1 uv 위치 배열 — sora에서는 무시, 랜덤 위치 사용
     // @param JAMO       자모 데이터
@@ -404,13 +429,19 @@ export class SoraReceiver {
 
         // 단어 슬롯 위치 + 반경: wordId별로 한 번만 배정, 이후 유지
         const MARGIN = 0.22;
-        const baseRadius = this.sylSize / 550;
+        // 반경은 y-uv 단위다(셰이더가 delta.x에만 aspect를 곱한다). 글자 영역이 좁아지면
+        // 같이 줄어야 rect 밖으로 새지 않는다.
+        const rectScale = this._rect ? this._rect.h / window.innerHeight : 1;
+        const baseRadius = (this.sylSize / 550) * rectScale;
         for (const wid of wordIds) {
             if (!this._wordPositions.has(wid)) {
-                this._wordPositions.set(wid, [
-                    MARGIN + Math.random() * (1 - MARGIN * 2),
-                    MARGIN + Math.random() * (1 - MARGIN * 2),
-                ]);
+                this._wordPositions.set(
+                    wid,
+                    this._toRect(
+                        MARGIN + Math.random() * (1 - MARGIN * 2),
+                        MARGIN + Math.random() * (1 - MARGIN * 2),
+                    ),
+                );
             }
             if (!this._wordRadii.has(wid)) {
                 this._wordRadii.set(wid, baseRadius * (Math.random() * 0.75 + 0.25));
@@ -471,6 +502,48 @@ export class SoraReceiver {
         }
     }
 
+    // ── 제출(submit) 계약 — flushQueue → captureFrame → clearAccum ────────────
+    // mycelium/dandelion/signal과 같은 3단 계약. sora는 성장 큐 대신 **슬롯별 모프**가
+    // "자라는 중"에 해당한다(MORPH_DUR 0.8s + WAVE_DUR 2.4s).
+
+    // 진행 중인 모프/파동을 즉시 끝내고, 그 상태가 화면에 올라오길 기다린다.
+    // 다 자라길 실제로 기다리면 파동만 2.4초라 제출이 늘어진다 — mycelium의
+    // finishGrowing()과 같은 취지로 목표값으로 스냅시킨다.
+    // (_morphStart/_waveStart의 -999는 "아주 예전" 센티널이라 t가 곧바로 1.0이 된다)
+    async flushQueue() {
+        for (let i = 0; i < MAX_SYL; i++) {
+            this._prevCells[i] = [...this._cells[i]];
+            this._morphStart[i] = -999;
+            this._waveStart[i] = -999;
+        }
+        await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
+    }
+
+    // 투명 PNG다 — 셰이더가 프리멀티플라이드 알파를 내보내고 clearColor도 (0,0,0,0)라
+    // 도형 바깥은 완전 투명하게 나온다. 화면엔 안 쓰이고 아카이빙(PRD 3-E)용.
+    captureFrame() {
+        if (!this._gl || !this._canvas) return null;
+        this._render(); // 마지막 상태를 확실히 한 장 그린 뒤 읽는다
+        return this._canvas.toDataURL('image/png');
+    }
+
+    // 제출 후 새 문장 시작 — 슬롯과 단어 자리 배정을 전부 비우고 빈 화면 한 장.
+    // wordPositions/wordRadii까지 지워야 다음 문장이 같은 자리를 물려받지 않는다.
+    clearAccum() {
+        this._cells = Array.from({ length: MAX_SYL }, () => [2.0, 3.0, 0.5, 0.33]);
+        this._prevCells = Array.from({ length: MAX_SYL }, () => [2.0, 3.0, 0.5, 0.33]);
+        this._positions = Array.from({ length: MAX_SYL }, () => [0.5, 0.5]);
+        this._radii = Array(MAX_SYL).fill(0.1);
+        this._morphStart = Array(MAX_SYL).fill(-999);
+        this._waveStart = Array(MAX_SYL).fill(-999);
+        this._f3Norms = Array(MAX_SYL).fill(0.5);
+        this._frozen = Array(MAX_SYL).fill(false);
+        this._wordPositions.clear();
+        this._wordRadii.clear();
+        this._sylCount = 0;
+        this._render(); // 다음 _animate를 기다리면 방금 캡처한 화면이 한 프레임 더 남는다
+    }
+
     dispose() {
         cancelAnimationFrame(this._raf);
         window.removeEventListener('resize', this._onResize);
@@ -491,7 +564,10 @@ export class SoraReceiver {
         const l = this._locs;
 
         gl.viewport(0, 0, this._canvas.width, this._canvas.height);
-        gl.clearColor(0.9804, 0.9882, 1, 0); // #bg color (조절 2)
+        // 완전 투명. 예전엔 여기가 (0.98, 0.99, 1, 0) 이었는데, 알파가 0이라 배경색으로
+        // 쓰이면 안 되는 값이 프리멀티플라이드 합성 버그를 타고 **흰 배경처럼 보이고 있었다**
+        // (페이지 배경이 흰색이던 시절엔 구분이 안 됐고, TD 투명 합성에서 흰 상자로 드러남).
+        gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
         gl.uniform2f(l.res, this._canvas.width, this._canvas.height);

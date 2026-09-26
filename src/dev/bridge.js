@@ -11,20 +11,32 @@
 //
 // ── 메시지 스키마 ─────────────────────────────────────────────────────────────
 // page → TD
-//   { t:'hello',    role:'output' }                         접속 시 자동
+//   { t:'hello',    role:'output'|'control' }               접속 시 자동(createBridge({role}))
 //   { t:'compose',  text, sylCount }                        키 입력마다
 //   { t:'syllable', char, cho:{jamo,x,y,z},                 마지막 완성 음절(→ analyzer)
 //                   jung:{jamo,f1,f2,f3,yang,diph}, jong:{jamo,x,y,z}|null }
-//   { t:'turn',     phase:'baking' }                        제출 시작
-//   { t:'turn',     phase:'done', png:<dataURL>, h:<px> }   bake 완료(→ 아카이브)
+//   { t:'turn',     phase:'baking', speaker }               제출 시작
+//   { t:'turn',     phase:'done', speaker, text,            bake 완료(→ 아카이브 / LLM 트리거)
+//                   png:<dataURL>, h:<px> }
+//        speaker:'visitor'|'receiver', text = 방금 끝난 문장의 원문.
+//        TD의 LLM은 speaker==='visitor' 일 때만 응답을 만든다 — 자기가 흘려보낸
+//        수신자 차례에 또 반응하면 무한루프가 된다.
 //   { t:'receiver', name }                                  활성 receiver(로드/전환)
+//   { t:'mode',     joke, question }                        패널 토글 상태(→ LLM 프롬프트용)
 // TD → page
 //   { t:'param',    size?, lineHeight?, letterSpacing? }    하드웨어 노브/슬라이더
-//   { t:'text',     value }                                 입력 텍스트 주입(원격 키보드 / LLM 응답)
+//   { t:'text',     value, speaker?:'visitor'|'receiver' }  입력 텍스트 주입(원격 키보드 / LLM 응답)
+//        speaker 생략 시 'visitor'(하위호환). 글자 영역엔 한 화자·한 문장만 뜨고
+//        화자 표시가 글자엔 없으므로, 이 필드가 하단 토스트의 유일한 근거다.
+//        화자가 바뀌면 페이지가 진행 중이던 문장을 버리고 처음부터 그린다.
 //   { t:'submit' }                                          물리 send 버튼
 //   { t:'clear' }                                           입력/화면 초기화
 //   { t:'mode',     joke?, question? }                      토글
 //   { t:'receiver', name }                                  receiver 전환
+// panel → page   (가상 패널 control.html, 또는 TD가 MIDI를 그대로 전달)
+//   { t:'control',  id|cc, value }                          원시 입력. 의미는 src/js/controls.js
+//        TD 허브는 control 페이지가 보낸 이 메시지를 output 페이지로 릴레이해야 한다
+//        (npm run bridge 는 이미 모든 메시지를 릴레이함).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_PORT = 9980;
@@ -71,7 +83,7 @@ export function createBridge(opts = {}) {
         }
         ws.addEventListener('open', () => {
             backoff = 500;
-            rawSend({ t: 'hello', role: 'output' });
+            rawSend({ t: 'hello', role: opts.role ?? 'output' });
             const pending = queue;
             queue = [];
             for (const m of pending) if (!rawSend(m)) queue.push(m);

@@ -36,6 +36,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Delaunay } from 'd3-delaunay';
+import { getPatternType } from '../core.js';
 
 const BLANK = 0,
     CHO = 1,
@@ -65,8 +66,7 @@ const HIGH_R = 0.6;
 const LOW_R = 0.4;
 const OFFSET_R = 0.2;
 
-// F2 경계: vertical / horizontal 구분 (signal.js와 동일)
-const F2_BOUNDARY = 1100;
+// F2 경계(vertical/horizontal 구분)는 core.js의 F2_BOUNDARY로 옮겼다 — getPatternType과 함께.
 
 // state별 목표 셀 크기 (brightness와 독립적인 값 — 자유롭게 실험 가능)
 const CHO_SCALE = 1.4;
@@ -118,6 +118,9 @@ const BG_GRAY = 0.25; // 배경 회색 — 기존 코드 곳곳의 vec3(0.75)/cl
 const SYL_GRADIENT_STRENGTH = 0.94; // 중심에서 배경 대비 밝기 증가량 (0이면 gradient 꺼짐)
 const SYL_GRADIENT_RADIUS_RATIO = 0.45; // gradient 반경 / min(음절 width, height)
 const SYL_GRADIENT_FALLOFF = 1.6; // 페이드 곡선 exponent — 클수록 밝기가 중심 근처에 집중
+// 투명 출력(transparentOutput)일 때만 쓰임 — halo가 배경 위에 얹히는 세기.
+// 0이면 셀만 남고 halo가 사라진다. 1.0 = gradT 그대로.
+const SYL_HALO_ALPHA = 1.0;
 
 // ── 셀 내부 미세 radial gradient (컬러 모드 전용) ─────────────────────────────
 // 각 셀이 site 중심에선 원래 색, 바깥으로 갈수록 색이 변함 — 평평한 모자이크
@@ -226,6 +229,12 @@ const CYCLE_TOTAL_MS = CYCLE_NORMAL_MS + CYCLE_BLINK_MS + CYCLE_FREEZE_MS;
 const CYCLE_PHASE_STEP_MS = 400; // 음절 인덱스당 사이클 시작 지연 — 신호가 순차적으로 번지는 느낌
 const CYCLE_BLINK_RATE_MS = 1200; // BLINK 구간 내 모노/원본 교차 반주기
 
+// 입력 없이 이만큼 지나면 렌더 루프를 아예 멈춘다(마지막 화면은 그대로 남는다).
+// TD Web Render TOP(CEF) 안에서는 이 루프가 도는 것만으로 브라우저 프로세스가 GPU를
+// 붙잡아 TouchDesigner 쪽 fps가 10~15까지 떨어졌다 — 멈추면 즉시 60으로 회복된다.
+// 입력(update)이 들어오면 _wake()가 되살린다.
+const IDLE_PAUSE_MS = 30000;
+
 const PHASE_NORMAL = 0,
     PHASE_BLINK = 1,
     PHASE_FREEZE = 2;
@@ -240,22 +249,9 @@ const MONO_BORDER_THICKNESS_RATIO = 0.08; // 셀 테두리 두께 / u_cellSize(M
 // (도형 자체는 셀 단위라 이 상한과 무관 — MAX_PTS가 그쪽 상한.)
 const MAX_SYL_UNIFORM = 48;
 
-// ── 패턴 선택 (signal.js와 동일 로직) ─────────────────────────────────────────
-function getPatternType(jung, jong, JAMO) {
-    if (!jung) return 'vertical';
-    const entry = JAMO[jung];
-    const diph = entry?.diphthong ?? 0;
-    const f2 = entry?.pos?.[1] ?? 1000;
-    const hasJong = !!jong;
-
-    if (!hasJong) {
-        if (diph) return 'per75';
-        return f2 >= F2_BOUNDARY ? 'vertical' : 'horizontal';
-    } else {
-        if (diph) return 'bed';
-        return f2 >= F2_BOUNDARY ? 'right_click' : 'hamburger';
-    }
-}
+// 패턴 선택(getPatternType)은 core.js로 옮겼다 — 채팅창이 같은 6종을 쓰기 때문.
+// 여기 patternState()는 그 6종을 "연속 좌표에서 어느 자모 영역인가"로 푸는 쪽이라
+// signal 전용으로 남는다.
 
 // ── 연속 좌표(0~1) 기반 패턴 배정 — signal.js의 makePattern()을 포인트 단위로 이식.
 // nx/ny = 음절 내부 상대 위치(0~1). signal.js의 c(col)→nx, r(row)→ny에 대응.
@@ -838,6 +834,10 @@ uniform float u_time; // 신호등 플래싱용 wall-clock(ms) — JS의 rAF tim
 // (BLINK 때 어떤 "도형"을 그릴지는 셀 단위라 이 배열이 아니라 u_data의 row2에서 읽음.)
 uniform float u_sylPhaseStart[${MAX_SYL_UNIFORM}];
 uniform int u_sylCount;
+// 셀 바깥(배경)의 알파. 1.0 = 자기 배경(BG_GRAY)을 칠하는 원래 모드,
+// 0.0 = 투명 출력(TD 합성). 1.0이면 아래 식이 전부 예전 그대로로 접힌다.
+uniform float u_bgAlpha;
+#define HALO_ALPHA ${SYL_HALO_ALPHA.toFixed(4)}
 out vec4 outColor;
 
 #define MAX_PTS ${MAX_PTS}
@@ -907,6 +907,10 @@ void main() {
     float gradR = max(min(sylW_i, sylH_i) * SYL_GRAD_RADIUS_RATIO, 1.0);
     float gradT = pow(clamp(1.0 - length(v_local - sylCenter) / gradR, 0.0, 1.0), SYL_GRAD_FALLOFF);
     vec3 bg = vec3(BG_GRAY + SYL_GRAD_STRENGTH * gradT);
+    // 투명 출력에선 어두운 바탕(BG_GRAY)을 빼고 **halo만** 남긴다. 아래 alpha가 gradT라
+    // "흰 glow가 뒤 배경 위에 얹히는" 합성이 되고, 멀리서는 알파가 0이라 배경이 그대로 비친다.
+    // u_bgAlpha=1.0이면 bg 그대로 — 불투명 모드의 룩은 1비트도 안 바뀐다.
+    vec3 bgCol = mix(vec3(1.0), bg, u_bgAlpha);
 
     // 1st pass — power distance가 가장 작은 site(best) 찾기
     float best = 1e12;
@@ -990,7 +994,7 @@ void main() {
     cellShaded *= (1.0 - CELL_GRAD_DEPTH * cellT);
     cellShaded = clamp(cellShaded, 0.0, 1.0);
 
-    vec3 finalColor = mix(bg, cellShaded, edge); // bg = 음절 센터 radial gradient (NORMAL/FREEZE 구간엔 이대로)
+    vec3 finalColor = mix(bgCol, cellShaded, edge); // bgCol = 음절 센터 radial gradient (NORMAL/FREEZE 구간엔 이대로)
 
     // ── 신호등 플래싱 — sylIdx(이 픽셀이 속한 음절)의 NORMAL/BLINK/FREEZE를
     // u_sylPhaseStart[]로 계산. FREEZE는 별도 오버레이 없음(멈춘 순간의 CA 렌더링
@@ -1035,10 +1039,15 @@ void main() {
         float borderMask = 1.0 - smoothstep(0.0, borderPx, abs(edgeDist));
         vec3 cellBG = vec3(1.0);
         vec3 cellMono = mix(cellBG, vec3(0.0), max(shapeMask, borderMask));
-        finalColor = mix(bg, cellMono, edge); // NORMAL과 동일한 gap 블렌딩 재사용
+        finalColor = mix(bgCol, cellMono, edge); // NORMAL과 동일한 gap 블렌딩 재사용
     }
 
-    outColor = vec4(finalColor, 1.0);
+    // 셀 안(edge=1)은 늘 불투명, 바깥은 배경 알파. 투명 모드에선 halo가 알파를 만든다.
+    // 캔버스가 premultipliedAlpha:true 라 RGB를 알파로 미리 곱해서 내보낸다
+    // (u_bgAlpha=1.0이면 alpha=1.0이라 곱해도 그대로 — 예전 출력과 동일).
+    float bgA = max(u_bgAlpha, clamp(gradT * HALO_ALPHA, 0.0, 1.0));
+    float alpha = mix(bgA, 1.0, edge);
+    outColor = vec4(finalColor * alpha, alpha);
 }
 `;
 
@@ -1124,7 +1133,10 @@ function uploadWordData(gl, wordState, flashPhase) {
 
 // ── SignalReceiver ──────────────────────────────────────────────────
 export class SignalReceiver {
-    constructor() {
+    // opts.transparentOutput: 배경(BG_GRAY)을 칠하지 않고 셀 + halo만 알파로 내보낸다.
+    // TD Web Render TOP 합성용 — 안 주면 예전처럼 자기 배경을 칠한다(스탠드얼론 페이지).
+    constructor(opts = {}) {
+        this._transparent = !!opts.transparentOutput;
         this.lineHeightRatio = 1.0;
         this._canvas = null;
         this._gl = null;
@@ -1145,6 +1157,10 @@ export class SignalReceiver {
         this._FRAME_INTERVAL = 1000 / 24;
         this._flashPhase = 0;
         this._active = false;
+        this._lastActivity = 0; // 마지막 입력 시각 — 유휴 정지 판단용
+        this._paused = false;
+        this._pausedAt = 0;
+        this._rect = null; // 글자 영역(뷰포트 px). null이면 뷰포트 전체 — setRect() 참고
 
         // main.js 레이아웃 엔진이 참조하는 값들 — signal.js와 동일하게 맞춤
         this.sylSize = DEFAULT_SYL_SIZE;
@@ -1154,6 +1170,7 @@ export class SignalReceiver {
 
     async init(canvas) {
         this._canvas = canvas ?? document.createElement('canvas');
+        this._ownCanvas = !canvas;   // 밖에서 받은 캔버스는 dispose 때 건드리지 않는다
         if (!canvas) {
             Object.assign(this._canvas.style, {
                 position: 'fixed',
@@ -1165,7 +1182,9 @@ export class SignalReceiver {
             document.body.appendChild(this._canvas);
         }
 
-        const gl = this._canvas.getContext('webgl2');
+        // preserveDrawingBuffer — captureFrame()이 toDataURL()로 읽으려면 필요하다.
+        // 기본값(false)이면 draw 직후 다음 합성에서 버퍼가 버려져 빈 PNG가 나온다.
+        const gl = this._canvas.getContext('webgl2', { preserveDrawingBuffer: true });
         if (!gl) throw new Error('signal: WebGL2 not available');
         this._gl = gl;
         this._prog = createProgram(gl);
@@ -1194,10 +1213,17 @@ export class SignalReceiver {
             time: gl.getUniformLocation(this._prog, 'u_time'),
             sylPhaseStart: gl.getUniformLocation(this._prog, 'u_sylPhaseStart'),
             sylCount: gl.getUniformLocation(this._prog, 'u_sylCount'),
+            bgAlpha: gl.getUniformLocation(this._prog, 'u_bgAlpha'),
         };
 
         this._resize();
-        window.addEventListener('resize', () => this._resize());
+        // 이름 있는 핸들러 — 익명 화살표로 걸면 dispose()의 removeEventListener가 안 먹는다
+        this._onResize = () => {
+            this._wake();
+            this._resize();
+        };
+        window.addEventListener('resize', this._onResize);
+        this._lastActivity = performance.now();
         this._raf = requestAnimationFrame(this._animate);
     }
 
@@ -1208,6 +1234,7 @@ export class SignalReceiver {
     // @param widths     음절별 lattice 폭(px) 배열 — main.js calcShelfLayout이 계산
     // @param heights    음절별 lattice 높이(px) 배열
     update(sylItems, positions, JAMO, sylSize, widths, heights) {
+        this._wake(); // 입력이 왔다 — 유휴 정지 상태면 여기서 되살아난다
         this._JAMO = JAMO;
         this._sylItems = sylItems;
         this._positions = positions;
@@ -1226,9 +1253,65 @@ export class SignalReceiver {
         this._active = true;
     }
 
+    // 글자 영역을 뷰포트 일부로 좁힌다. {x, y, w, h}(뷰포트 px) 또는 null(=전체).
+    // signal은 positions를 실제 배치에 쓰지 않고 _draw()가 직접 shelf를 깔기 때문에,
+    // core.js layoutFor(rect)만으로는 영역이 안 좁혀진다 — 이 메서드가 그 짝이다.
+    // (줄바꿈 자체는 layoutFor가 rect.w 기준으로 이미 끊어서 넘겨준다)
+    setRect(rect) {
+        this._rect = rect ?? null;
+    }
+
+    // ── 제출(submit) 계약 — flushQueue → captureFrame → clearAccum ────────────
+    // mycelium/dandelion과 같은 3단 계약. signal은 누적 버퍼도 성장 큐도 없고
+    // 매 프레임 _wordCache에서 통째로 다시 그리므로, 세 메서드가 전부 얕다.
+
+    // signal은 "자라는 중"인 상태가 없다(update()가 _syncRows로 즉시 반영).
+    // 남은 건 그 상태가 실제로 화면에 올라왔는지뿐 — 유휴 정지 상태면 깨우고,
+    // _animate의 24fps 스로틀에 걸려 아직 안 그려졌을 수 있으니 2프레임 기다린다.
+    async flushQueue() {
+        this._wake();
+        await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
+    }
+
+    // ⚠️ 불투명 PNG다 — 셰이더가 배경(BG_GRAY)을 직접 칠하고 outColor의 알파가 1.0이라
+    //    현재로선 투명 출력이 불가능하다(mycelium만 투명). 전체화면 스택 대신
+    //    말풍선 rect 크롭으로 쓰는 v2에서는 문제가 없다. — PRD 3-A
+    captureFrame() {
+        if (!this._gl || !this._canvas) return null;
+        // 플래싱 사이클을 위상 0(NORMAL)으로 고정하고 한 장 그린 뒤 읽는다.
+        // 셰이더가 elapsed = max(0, u_time - u_sylPhaseStart[i])로 위상을 구하므로,
+        // u_time을 모든 cyclePhaseStart보다 작은 값으로 두면 전 음절이 NORMAL이 된다.
+        // 이렇게 안 하면 제출 순간 BLINK에 걸려 있던 음절이 흑백 모노 카드로 굳어버린다.
+        const prevTime = this._time;
+        this._time = 0;
+        this._draw();
+        this._time = prevTime;
+        return this._canvas.toDataURL('image/png');
+    }
+
+    // 제출 후 새 줄 시작 — 단어 캐시(+GPU 텍스처)를 비우고 빈 배경 한 장을 그린다.
+    // (다음 _animate를 기다리면 방금 캡처한 화면이 한 프레임 더 남는다)
+    clearAccum() {
+        const gl = this._gl;
+        if (gl) {
+            for (const wordState of this._wordCache.values()) {
+                if (wordState._glTex) gl.deleteTexture(wordState._glTex);
+            }
+        }
+        this._wordCache.clear();
+        this._rows = [];
+        this._sylItems = [];
+        this._positions = [];
+        this._widths = null;
+        this._heights = null;
+        this._stepCount = 0;
+        this._active = false;
+        this._draw();
+    }
+
     dispose() {
         cancelAnimationFrame(this._raf);
-        window.removeEventListener('resize', this._resize);
+        window.removeEventListener('resize', this._onResize);
         const gl = this._gl;
         if (gl) {
             for (const wordState of this._wordCache.values()) {
@@ -1237,7 +1320,7 @@ export class SignalReceiver {
             if (this._quadBuf) gl.deleteBuffer(this._quadBuf);
             if (this._prog) gl.deleteProgram(this._prog);
         }
-        if (this._canvas?.parentNode) this._canvas.parentNode.removeChild(this._canvas);
+        if (this._ownCanvas && this._canvas?.parentNode) this._canvas.parentNode.removeChild(this._canvas);
         this._wordCache.clear();
     }
 
@@ -1273,9 +1356,13 @@ export class SignalReceiver {
         const lines = [];
         let curLine = [],
             prevY = -1;
+        // 줄바꿈 판정은 **px**로 한다. positions는 뷰포트 uv인데, 글자 영역이 뷰포트보다
+        // 작은 rect로 좁혀지면(layoutFor의 rect) 같은 줄 간격이라도 uv 차이가 rect.h/H
+        // 배로 줄어든다 — 예전처럼 uv 고정값(0.05)으로 비교하면 여러 줄이 한 줄로 뭉친다.
+        const lineBreakPx = this._sylSize * 0.3;
         for (let i = 0; i < sylItems.length; i++) {
-            const py = positions[i][1];
-            if (prevY >= 0 && Math.abs(py - prevY) > 0.05) {
+            const py = positions[i][1] * (this._cssHeight ?? window.innerHeight);
+            if (prevY >= 0 && Math.abs(py - prevY) > lineBreakPx) {
                 lines.push(curLine);
                 curLine = [];
             }
@@ -1318,6 +1405,14 @@ export class SignalReceiver {
     }
 
     _animate = timestamp => {
+        // 유휴 정지 — 다음 프레임을 예약하지 않고 빠져나간다. 캔버스에는 마지막 프레임이 남고,
+        // u_time도 멈추므로 신호등 사이클이 그 순간 상태로 얼어붙는다.
+        if (timestamp - this._lastActivity > IDLE_PAUSE_MS) {
+            this._raf = null;
+            this._paused = true;
+            this._pausedAt = timestamp;
+            return;
+        }
         this._raf = requestAnimationFrame(this._animate);
         if (timestamp - this._lastFrame < this._FRAME_INTERVAL) return;
         this._lastFrame = timestamp;
@@ -1352,10 +1447,33 @@ export class SignalReceiver {
         this._draw();
     };
 
+    // 유휴 정지에서 복귀. 멈춰 있던 만큼 각 음절의 사이클 시작 시각을 뒤로 밀어,
+    // 재개하는 순간 신호등 위상이 건너뛰지 않게 한다(u_time은 wall-clock이라 그냥 두면 점프한다).
+    _wake() {
+        const now = performance.now();
+        if (this._paused) {
+            const gap = now - this._pausedAt;
+            for (const row of this._rows) {
+                for (const wordState of row) {
+                    for (const syl of wordState.syllables) syl.cyclePhaseStart += gap;
+                    wordState._needsUpload = true;
+                }
+            }
+            this._lastFrame = 0;
+            this._lastStep = now; // 재개 직후 CA가 밀린 만큼 몰아서 돌지 않게
+            this._paused = false;
+            this._raf = requestAnimationFrame(this._animate);
+        }
+        this._lastActivity = now;
+    }
+
     _draw() {
         const gl = this._gl;
         if (!gl) return;
-        gl.clearColor(BG_GRAY, BG_GRAY, BG_GRAY, 1); // # BG color
+        // 투명 모드는 완전 투명으로 지운다(프리멀티플라이드라 RGB도 0이어야 한다 — RGB를
+        // 남기면 알파 0인 자리가 그 색으로 칠해진다. sora가 흰 상자를 그리던 사고와 같은 것).
+        const bgA = this._transparent ? 0 : 1;
+        gl.clearColor(BG_GRAY * bgA, BG_GRAY * bgA, BG_GRAY * bgA, bgA); // # BG color
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.useProgram(this._prog);
         gl.bindBuffer(gl.ARRAY_BUFFER, this._quadBuf);
@@ -1372,6 +1490,7 @@ export class SignalReceiver {
         gl.uniform1f(this._uniforms.sylSize, this._sylSize);
         gl.uniform1f(this._uniforms.cellSize, MIN_DIST);
         gl.uniform1f(this._uniforms.time, this._time ?? 0);
+        gl.uniform1f(this._uniforms.bgAlpha, bgA);
         gl.activeTexture(gl.TEXTURE0);
         gl.uniform1i(this._uniforms.data, 0);
 
@@ -1381,16 +1500,22 @@ export class SignalReceiver {
         const gapPx = sylW * WORD_GAP_RATIO;
         const LINE_GAP = sylW * Math.max(0, this.lineHeightRatio - 1);
 
+        // 글자 영역 원점 — setRect()로 받은 rect가 있으면 거기서 시작한다.
+        // ⚠️ 배경(gl.clearColor)은 여전히 캔버스 전체를 칠한다. signal은 자기 배경을
+        //    그리는 receiver라 rect만 칠할 수가 없다 — 투명 출력은 별건(PRD 3-A).
+        const originX = (this._rect?.x ?? 0) + PAD_X;
+        const originY = (this._rect?.y ?? 0) + PAD_Y;
+
         // Shelf 레이아웃 — 줄 높이 = 그 줄 음절 height 최댓값. main.js calcShelfLayout과
         // 같은 규칙(rowTop 누적)이지만 여기선 캐시된 wordState.syllables[].h에서 직접 읽음.
-        let rowTop = PAD_Y;
+        let rowTop = originY;
         for (let li = 0; li < this._rows.length; li++) {
             const row = this._rows[li];
             let rowMaxH = 0;
             for (const ws of row) rowMaxH = Math.max(rowMaxH, wordHeight(ws));
             if (rowMaxH === 0) rowMaxH = sylW;
 
-            let curX = PAD_X;
+            let curX = originX;
             for (let wi = 0; wi < row.length; wi++) {
                 const wordState = row[wi];
                 const wH = wordHeight(wordState);

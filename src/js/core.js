@@ -9,6 +9,9 @@ import { loadJamo } from './jamo_loader.js';
 
 export const JAMO = await loadJamo();
 
+// 컨트롤 패널 매핑 표 — 의존성 없는 별도 파일(가상 패널 페이지가 three/CSV 없이 쓰도록)
+export * from './controls.js';
+
 // prettier-ignore
 export const CHO  = ['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
 // prettier-ignore
@@ -208,7 +211,10 @@ export function jamoToVec3(key, type, scale, offset = new THREE.Vector3()) {
 }
 
 // ── 음절 → mycelium uniform 데이터 ─────────────────────────────────────────────
-export function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = { x: 1, y: 1 }) {
+// project(u, v) → THREE.Vector3 — 주면 positions를 "음절 중심의 화면 uv"로 보고 receiver
+// 카메라로 역투영한다(mycelium.screenToWorld). 안 주면 예전 근사식(sceneH·layoutScale·
+// startOffsetX)을 쓴다.
+export function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = { x: 1, y: 1 }, project = null) {
     const W = window.innerWidth;
     const H = window.innerHeight;
     const sceneH = 2.07 * 2;
@@ -244,13 +250,19 @@ export function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = 
             continue;
         }
 
-        let startOffsetX = 1.0;
-        if (sylSize3D > 3.5) startOffsetX = sylSize3D * 0.32;
-        else if (sylSize3D < 3.0) startOffsetX = sylSize3D * 0.3;
+        let offset;
+        if (project) {
+            // pos = 음절 중심의 화면 uv. receiver가 자기 카메라로 정확히 역투영한다
+            offset = project(pos[0], pos[1]);
+        } else {
+            let startOffsetX = 1.0;
+            if (sylSize3D > 3.5) startOffsetX = sylSize3D * 0.32;
+            else if (sylSize3D < 3.0) startOffsetX = sylSize3D * 0.3;
 
-        const wx = (pos[0] - 0.5) * sceneW * layoutScale.x + startOffsetX;
-        const wy = -(pos[1] - 0.5) * sceneH * layoutScale.y + 0.5;
-        const offset = new THREE.Vector3(wx, wy, 0);
+            const wx = (pos[0] - 0.5) * sceneW * layoutScale.x + startOffsetX;
+            const wy = -(pos[1] - 0.5) * sceneH * layoutScale.y + 0.5;
+            offset = new THREE.Vector3(wx, wy, 0);
+        }
         const scale = sylSize3D * 0.5;
 
         const cellCenter = offset.clone();
@@ -294,12 +306,151 @@ export function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = 
     };
 }
 
+// ── 음절의 한글 구조 배치 (6종) ───────────────────────────────────────────────
+// 초성/중성/종성이 음절 네모 안에서 어떻게 나뉘는지의 6가지 꼴. signal이 셀 색을
+// 칠할 영역을 나눌 때 쓰고(patternState), 채팅창이 음절마다 같은 이름의 SVG
+// (public/imgs/<type>.svg)를 얹을 때도 쓴다 — **6종 이름 = SVG 파일명**이라
+// 매핑 테이블이 없다. 새 이름을 추가하면 SVG도 같이 만들어야 한다.
+//
+//   vertical     종성✗ · F2 높음(ㅏㅓㅣ)   초성 좌 + 중성 우(세로 모음)
+//   horizontal   종성✗ · F2 낮음(ㅗㅜㅡ)   초성 위 + 중성 아래(가로 모음)
+//   per75        종성✗ · 이중모음(ㅘㅝ)    초성 좌상 + 중성이 나머지를 감쌈
+//   right_click  종성○ · F2 높음(간)       초성/중성 상단 2칸 + 종성 하단
+//   hamburger    종성○ · F2 낮음(곤)       초성/중성/종성 3단
+//   bed          종성○ · 이중모음(관)      초성 좌상 + 중성 우상·중단 + 종성 하단
+//
+// 2026-09-26: signal.js 안에 private이던 것을 여기로 옮김(채팅창이 같이 쓴다).
+export const PATTERN_TYPES = ['vertical', 'horizontal', 'per75', 'right_click', 'hamburger', 'bed'];
+
+// 세로 모음/가로 모음을 가르는 F2(Hz). 실측 F2 범위 580~2600의 가운데쯤.
+export const F2_BOUNDARY = 1100;
+
+export function getPatternType(jung, jong, jamo = JAMO) {
+    if (!jung) return 'vertical';
+    const entry = jamo[jung];
+    const diph = entry?.diphthong ?? 0;
+    const f2 = entry?.pos?.[1] ?? 1000;
+
+    if (!jong) {
+        if (diph) return 'per75';
+        return f2 >= F2_BOUNDARY ? 'vertical' : 'horizontal';
+    }
+    if (diph) return 'bed';
+    return f2 >= F2_BOUNDARY ? 'right_click' : 'hamburger';
+}
+
+// ── 레이아웃 분기 ─────────────────────────────────────────────────────────────
+// signal만 Shelf, 나머지는 Textbox. 수신자가 들고 있는 크기 값(sylSize 등)의
+// fallback도 여기서 한 번에 정한다.
+//
+// main.js / output-main.js 의 reLayout 과 handleSubmit 이 **넷 다** 이걸 부른다.
+// 예전에는 네 곳이 각자 분기를 들고 있었고, handleSubmit 두 곳만 분기를 빠뜨려
+// 늘 calcTextboxLayout을 썼다 — signal에서 제출하면 lastY(=다음 줄 기준선,
+// 캡처 높이)가 Shelf 실제 배치와 어긋나는 원인이었다.
+// rect = {x, y, w, h} (뷰포트 px). 주면 글자를 그 사각형 안에만 배치한다 —
+// 줄바꿈을 rect.w 기준으로 하고, 나온 uv를 다시 "뷰포트 기준 uv"로 되돌린다.
+// **캔버스는 뷰포트 전체를 유지**하므로 receiver 내부(전부 window.innerWidth 기준으로
+// 픽셀을 계산한다)를 하나도 안 건드리고 영역을 좁힐 수 있다.
+//
+// ⚠️ positions를 실제 배치에 쓰는 receiver에만 먹는다 — mycelium / dandelion / trail.
+//    sora는 positions를 무시하고 내부 랜덤 위치를 쓰고, signal은 _draw()가 자기
+//    PAD_X/PAD_Y로 뷰포트에 직접 shelf를 깐다. 그 둘은 별도 작업(PRD 3-A).
+//
+// refHeight — receiver가 들고 있으면 px 값(sylSize/wrapStep/wrapMargin)을 "뷰포트 높이가
+//    refHeight일 때의 값"으로 보고 H/refHeight 배로 스케일한다. mycelium처럼 월드 상수
+//    (캡슐 반경·혹·노이즈)가 셰이더에 박혀 있는 receiver는 sylSize/H 비율이 같아야
+//    글자 모양이 같다 — 안 그러면 큰 화면(TD 1440)에서 글자가 작고 뭉툭해진다.
+//    없으면 예전처럼 고정 px.
+//
+// glyphExtent — 음절 중심에서 글자 끝까지의 거리(sylSize 배수). receiver가 들고 있으면
+//    ① positions를 "슬롯 왼쪽"이 아니라 "음절 중심"으로 돌려준다(글자가 박스 가장자리에서
+//       ext만큼 안쪽에 오도록 밀어 넣음 — 가로 줄바꿈도 그 폭 기준).
+//    ② rect가 있으면 줄 수 단계(FIT_LINES)로 맞춘다(번역기 입력창처럼). 단계 N의 크기 =
+//       "rect.h에 딱 N줄이 들어가는 크기"(단 기본 크기보다 커지진 않음). 1줄 크기에 안 들어가면
+//       2줄 크기로, 그래도 넘치면 3줄 크기로. 연속값이 아니라 단계인 건, 크기가 바뀔 때마다
+//       receiver가 문장 전체를 다시 구워야 해서다.
+//       3줄로도 넘치면 안전망으로 4줄, 5줄… 크기까지 내려간다(잘리지 않게). LLM 문장 길이를
+//       제한해 두면 실제로는 3단계 안에서 끝난다.
+//    lastY는 rect 로컬 px 그대로 — 호출부가 다음 줄 기준선으로만 쓴다.
+const FIT_LINES = 3;
+const FIT_LINES_SAFETY = 12;
+
+export function layoutFor(rm, items, W, H, offsetY, rect = null) {
+    const r = rm.current;
+    const refH = r?.refHeight;
+    const k = refH ? H / refH : 1;
+    const ext = r?.glyphExtent;
+    const layoutFn = rm.name === 'signal' ? calcShelfLayout : calcTextboxLayout;
+    const boxW = rect ? rect.w : W;
+    const boxH = rect ? rect.h : H;
+
+    const layoutAt = scale => {
+        const sylSize = (r?.sylSize ?? 55) * scale;
+        const lineHeightRatio = r?.lineHeightRatio ?? 1.3;
+        const wrapStep = (r?.wrapStep ?? (sylSize / scale) * 2) * scale;
+        const wrapMargin = (r?.wrapMargin ?? sylSize / scale) * scale;
+        const meta = { sylSize, lineHeightRatio, wrapStep, wrapMargin };
+
+        if (!ext) {
+            const out = layoutFn(items, sylSize, boxW, boxH, lineHeightRatio, offsetY, wrapStep, wrapMargin);
+            if (rect) {
+                out.positions = out.positions.map(([u, v]) => [
+                    (rect.x + u * rect.w) / W,
+                    (rect.y + v * rect.h) / H,
+                ]);
+            }
+            return { ...out, ...meta, bottom: 0 };
+        }
+
+        // calcTextboxLayout의 첫 슬롯(PAD_X, PAD_Y+sylSize)을 (e, e)로 옮기는 이동량.
+        // 폭을 boxW-2dx로 줘야 오른쪽 끝 음절도 boxW-e 안에 들어온다.
+        const e = ext * sylSize;
+        const dx = e - sylSize * 0.5;
+        const dy = e - (40 + sylSize);
+        const innerW = boxW - 2 * dx;
+        const out = layoutFn(items, sylSize, innerW, boxH, lineHeightRatio, offsetY, wrapStep, wrapMargin);
+        const ox = rect ? rect.x : 0;
+        const oy = rect ? rect.y : 0;
+        out.positions = out.positions.map(([u, v]) => [(ox + u * innerW + dx) / W, (oy + v * boxH + dy) / H]);
+        out.lastY += dy;
+        const bottom = out.sylItems.length ? out.lastY + e - offsetY : 0;
+        return { ...out, ...meta, bottom };
+    };
+
+    if (!(rect && ext)) {
+        const res = layoutAt(k);
+        delete res.bottom;
+        return { ...res, fitLines: 0 };
+    }
+    // N줄 높이 = 2e + (N-1)·lineH = sylSize·(2·ext + (N-1)·lineHeightRatio)
+    const lhr = r?.lineHeightRatio ?? 1.3;
+    const baseSyl = (r?.sylSize ?? 55) * k;
+    let res;
+    for (let n = 1; n <= FIT_LINES_SAFETY; n++) {
+        const s = Math.min(1, boxH / (baseSyl * (2 * ext + (n - 1) * lhr)));
+        res = layoutAt(k * s);
+        res.fitLines = n;
+        if (res.bottom <= boxH + 0.5) break;
+    }
+    delete res.bottom;
+    return res;
+}
+
+// 제출(submit) 3단 계약(flushQueue/captureFrame/clearAccum)을 구현한 수신자인가.
+// 이름 목록 대신 계약으로 판단한다 — 수신자를 추가/교체할 때 이 분기를 같이
+// 고쳐야 하는 걸 잊어서 제출이 조용히 안 되는 사고가 반복됐다.
+// (2026-09-26 현재: 4종 전부 ○)
+export function canSubmit(receiver) {
+    return !!(receiver?.flushQueue && receiver?.captureFrame && receiver?.clearAccum);
+}
+
 // ── 수신자별 update 분기 ──────────────────────────────────────────────────────
 export function dispatchToReceiver(rm, sylItems, positions, sylSize, widths, heights) {
     if (!sylItems.length) return;
     const layoutScale = rm.current?.layoutScale ?? { x: 1, y: 1 };
     if (rm.name === 'mycelium') {
-        rm.update(syllablesToUniforms(sylItems, positions, sylSize, layoutScale), sylItems.length, sylItems);
+        const project = rm.current?.screenToWorld ? (u, v) => rm.current.screenToWorld(u, v) : null;
+        rm.update(syllablesToUniforms(sylItems, positions, sylSize, layoutScale, project), sylItems.length, sylItems);
     } else if (rm.name === 'sora') {
         rm.update(sylItems, positions, JAMO);
     } else if (rm.name === 'signal') {

@@ -161,6 +161,60 @@ float displacement(vec3 p) {
 
 ${pathSrc}
 
+// ── 경로 사전계산 텍스처 (2026-09-26) ──────────────────────────────────────────
+// 경로 점/테이퍼 노이즈/혹 위치는 음절 uniform만의 함수라 픽셀·스텝마다 다시 계산할
+// 이유가 없다. 음절이 바뀔 때 pathFrag가 151×3 float 텍스처에 한 번 구워 두고 map()은
+// 읽기만 한다(같은 GPU·같은 GLSL 식). u_usePathTex=0 이면 예전처럼 직접 계산.
+//   row0: i=0..150 → (syllablePath(i/150), taperNoise(i/150))
+//   row1: j=0..53  → (lumpPos, lumpR)      row2: j → (lt, 0, 0, 0)
+uniform sampler2D u_pathTex;
+uniform float     u_usePathTex;
+#define PATH_TEX_W 151.0
+vec4 pathTexel(float i, float row) {
+  return texture2D(u_pathTex, vec2((i + 0.5) / PATH_TEX_W, (row + 0.5) / 3.0));
+}
+
+float taperNoiseAt(float t0) {
+  return 0.8 + 0.6 * noise(vec3(t0 * 18.0, u_cho.x * 7.0, u_cho.z * 3.0));
+}
+
+// 혹 j 하나 — map()에 있던 식 그대로 옮김(growT 조건만 호출부에 남김)
+void lumpAt(int j, out float lt, out vec3 lumpPos, out float lumpR) {
+  float f1 = u_jung.x, f2 = u_jung.y, f3 = u_jung.z;
+  float amp = u_amp, yang = u_yangseong, diph = u_diphthong;
+  float k = 0.08, rad = 0.007;
+  float seed = u_cho.x * 13.7 + u_cho.z * 5.3 + f1 * 0.01;
+  float numLumps = 20.0 + u_cho.z * 34.0;
+  float fj = float(j) * 91.7;
+
+    // 문제2: 무작위 lt 대신 j마다 구간을 나눠 고르게 분산 (stratified) + 약간의 지터
+    float jitter = hash(vec3(fj + seed * 3.1, seed, fj * 0.37));
+    lt = (float(j) + 0.15 + jitter * 0.05) / numLumps;
+
+    float dt = 0.01;
+    vec3 pathPos = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, lt, yang, diph);
+
+    // tangent 기반 프레임 대신, 월드 기준 랜덤 방향 + 위/아래 알터네이션
+    // side: 위(+y) / 아래(-y) 절반씩 분배
+    float side = hash(vec3(fj * 1.7 + seed, fj, seed * 0.9)) > 0.5 ? 1.0 : -1.0;
+    vec3 perpDir = normalize(vec3(
+      hash(vec3(fj * 2.3 + seed, 1.0, fj)) * 2.0 - 1.0,
+      side * (0.6 + 0.4 * hash(vec3(fj * 4.1 + seed, 2.0, fj))), // 위/아래 쪽으로 치우침
+      hash(vec3(fj * 5.1 + seed, 3.0, fj)) * 2.0 - 1.0
+    ));
+
+// lump 크기
+    // 문제1: 본체 표면 반경 추정에 smooth-union bulge(k) 보정 추가
+    // taper에 노이즈도 반영해 실제 map()의 d1 반경과 더 가깝게
+    float taperBaseAtLt  = 0.1 + 0.9 * sin(lt * PI);
+    float taperNoiseAtLt = 0.85 + 0.05 * noise(vec3(lt * 18.0, u_cho.x * 7.0, u_cho.z * 3.0));
+    float bodyR = rad * taperBaseAtLt * taperNoiseAtLt + k * 0.75; // k*0.5: 관절 bulge 보정
+
+    lumpR  = rad * (1.0 + hash(vec3(fj * 13.7 + seed, seed, 1.0)) * 1.8) * 2.2; // 크기 0.8배
+    // lump 중심을 본체 표면 근처에 배치 → 절반은 묻히고 절반은 튀어나오는 혹 형태
+    lumpPos = pathPos + perpDir * bodyR;
+}
+
 float map(vec3 p) {
   float f1   = u_jung.x;
   float f2   = u_jung.y;
@@ -178,8 +232,20 @@ float map(vec3 p) {
     float t1  = float(i + 1) / num;
     if (t0 > u_growT) break;
     float t1c = min(t1, u_growT);
-    vec3 a = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t0,  yang, diph);
-    vec3 b = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t1c, yang, diph);
+    vec3 a, b;
+    float taperNoise;
+    if (u_usePathTex > 0.5) {
+      vec4 ta = pathTexel(float(i), 0.0);
+      a = ta.xyz;
+      taperNoise = ta.w;
+      // t1 <= growT 이면 t1c == t1 → 다음 점 그대로. 자라는 끝 구간 하나만 직접 계산
+      b = (t1 <= u_growT) ? pathTexel(float(i + 1), 0.0).xyz
+                          : syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t1c, yang, diph);
+    } else {
+      a = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t0,  yang, diph);
+      b = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t1c, yang, diph);
+      taperNoise = taperNoiseAt(t0);
+    }
     float pull = step(0.99, u_growT);
     b = mix(b, u_center + u_end, pull * step(u_growT - 0.001, t1));
 
@@ -200,7 +266,7 @@ float map(vec3 p) {
     // taper: 경로 중간(t=0.5)에서 가장 굵고 양 끝에서 얇아짐
     // + 노이즈로 불규칙한 굵기 변화 추가 (균사 매듭/잘록함 느낌, mycelium 전용)
     float taperBase  = 0.7 + 0.3 * sin(t0 * PI);  // 0.3~1.0 범위
-    float taperNoise = 0.8 + 0.6 * noise(vec3(t0 * 18.0, u_cho.x * 7.0, u_cho.z * 3.0));
+    // taperNoise: 위에서 텍스처(또는 taperNoiseAt)로 — 식은 taperNoiseAt 참고
     float taper = taperBase * taperNoise;
     float d1 = sdCapsule(p, a, b, rad * taper);
 
@@ -256,35 +322,17 @@ float map(vec3 p) {
 
   for (int j = 0; j < 54; j++) {
     if (float(j) >= numLumps * u_growT) break;
-    float fj = float(j) * 91.7;
-
-    // 문제2: 무작위 lt 대신 j마다 구간을 나눠 고르게 분산 (stratified) + 약간의 지터
-    float jitter = hash(vec3(fj + seed * 3.1, seed, fj * 0.37));
-    float lt = (float(j) + 0.15 + jitter * 0.05) / numLumps;
+    float lt, lumpR;
+    vec3 lumpPos;
+    if (u_usePathTex > 0.5) {
+      vec4 L = pathTexel(float(j), 1.0);
+      lumpPos = L.xyz;
+      lumpR = L.w;
+      lt = pathTexel(float(j), 2.0).x;
+    } else {
+      lumpAt(j, lt, lumpPos, lumpR);
+    }
     if (lt > u_growT) continue; // 아직 도달 안 한 위치 — 스킵 (트레일 방지)
-
-    float dt = 0.01;
-    vec3 pathPos = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, lt, yang, diph);
-
-    // tangent 기반 프레임 대신, 월드 기준 랜덤 방향 + 위/아래 알터네이션
-    // side: 위(+y) / 아래(-y) 절반씩 분배
-    float side = hash(vec3(fj * 1.7 + seed, fj, seed * 0.9)) > 0.5 ? 1.0 : -1.0;
-    vec3 perpDir = normalize(vec3(
-      hash(vec3(fj * 2.3 + seed, 1.0, fj)) * 2.0 - 1.0,
-      side * (0.6 + 0.4 * hash(vec3(fj * 4.1 + seed, 2.0, fj))), // 위/아래 쪽으로 치우침
-      hash(vec3(fj * 5.1 + seed, 3.0, fj)) * 2.0 - 1.0
-    ));
-
-// lump 크기
-    // 문제1: 본체 표면 반경 추정에 smooth-union bulge(k) 보정 추가
-    // taper에 노이즈도 반영해 실제 map()의 d1 반경과 더 가깝게
-    float taperBaseAtLt  = 0.1 + 0.9 * sin(lt * PI);
-    float taperNoiseAtLt = 0.85 + 0.05 * noise(vec3(lt * 18.0, u_cho.x * 7.0, u_cho.z * 3.0));
-    float bodyR = rad * taperBaseAtLt * taperNoiseAtLt + k * 0.75; // k*0.5: 관절 bulge 보정
-
-    float lumpR  = rad * (1.0 + hash(vec3(fj * 13.7 + seed, seed, 1.0)) * 1.8) * 2.2; // 크기 0.8배
-    // lump 중심을 본체 표면 근처에 배치 → 절반은 묻히고 절반은 튀어나오는 혹 형태
-    vec3 lumpPos = pathPos + perpDir * bodyR;
 
     placed[placedCount] = lumpPos;
     placedCount++;
@@ -302,6 +350,53 @@ float map(vec3 p) {
   return d;
 }
 
+
+// ── 경계 판정 (2026-09-26) ─────────────────────────────────────────────────────
+// 레이마칭은 전체 화면 픽셀마다 map()(캡슐 150개 + 혹 최대 54개)을 최대 20번 부른다.
+// 음절은 화면의 일부만 차지하므로, 광선이 음절 경계에 아예 안 닿는 픽셀은 레이마칭 전에
+// 버린다(TD 실측: growT=1 한 패스 482ms → TD fps 1~5). 닿는 픽셀은 예전과 똑같이 t=0부터
+// 레이마칭하므로 룩은 그대로 — 버려지는 픽셀은 원래도 아무것도 안 맞던 픽셀이어야 한다.
+//   경로 반경 ≤ 1.2·(r1+r2+r3) + ep4 ≈ 1.29·amp,  끝점 pull = u_center + u_end
+//   BOUND_MARGIN: 혹(≤0.11) + d2 변형(0.033) + thinD 오프셋(|a|/45 ≈ 0.13) + smooth-union
+//   부풀음 + noise — 전부 합쳐도 0.35 안쪽. 글자 끝이 잘려 보이면 이 값을 올릴 것
+#define BOUND_MARGIN 0.45
+// 연결 실: center→mid→hub, mid는 center-hub 중점에서 xy로 최대 ±0.4 → 선분에서 ≤0.57
+#define CONN_MARGIN  0.75
+
+bool hitSphere(vec3 ro, vec3 rd, vec3 c, float r) {
+  vec3 oc = ro - c;
+  float b = dot(oc, rd);
+  float h = b * b - (dot(oc, oc) - r * r);
+  return h >= 0.0 && (-b + sqrt(h)) > 0.0;
+}
+
+// 광선과 선분(pa-pb) 사이 최단거리 < r 인가 (캡슐 판정)
+bool hitCapsule(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float r) {
+  vec3 ba = pb - pa, oa = ro - pa;
+  float baba = dot(ba, ba), bard = dot(ba, rd), baoa = dot(ba, oa), rdoa = dot(rd, oa), oaoa = dot(oa, oa);
+  float a = baba - bard * bard;
+  float b = baba * rdoa - baoa * bard;
+  float c = baba * oaoa - baoa * baoa - r * r * baba;
+  float h = b * b - a * c;
+  if (h >= 0.0 && a > 1e-6) {
+    float t = (-b - sqrt(h)) / a;
+    float y = baoa + t * bard;
+    if (y > 0.0 && y < baba) return true;
+  }
+  return hitSphere(ro, rd, pa, r) || hitSphere(ro, rd, pb, r);
+}
+
+bool hitSyllableBounds(vec3 ro, vec3 rd) {
+  float R = max(1.3 * u_amp, length(u_end)) + BOUND_MARGIN;
+  if (hitSphere(ro, rd, u_center, R)) return true;
+  if (u_growT >= 0.99) {
+    for (int c = 0; c < 2; c++) {
+      if (float(c) >= u_connCount) break;
+      if (hitCapsule(ro, rd, u_center, u_hubCenters[c], CONN_MARGIN)) return true;
+    }
+  }
+  return false;
+}
 
 float raymarch(vec3 ro, vec3 rd) {
   float t = 0.0;
@@ -346,6 +441,30 @@ float rand(vec3 p){
 }
 `;
 
+// ── Pass 0: 경로 사전계산 (음절이 바뀔 때 한 번, 151×3 float) ─────────────────
+const pathFrag = `
+#ifdef GL_ES
+precision highp float;
+#endif
+
+${sdfSrc}
+
+void main() {
+    float i   = floor(gl_FragCoord.x);
+    float row = floor(gl_FragCoord.y);
+    if (row < 0.5) {
+        float t0 = i / 150.0;
+        vec3 P = syllablePath(u_start, u_center, u_cho, u_jung.x, u_jung.y, u_jung.z, u_amp, t0, u_yangseong, u_diphthong);
+        gl_FragColor = vec4(P, taperNoiseAt(t0));
+    } else {
+        float lt, lumpR;
+        vec3 lumpPos;
+        lumpAt(int(i), lt, lumpPos, lumpR);
+        gl_FragColor = row < 1.5 ? vec4(lumpPos, lumpR) : vec4(lt, 0.0, 0.0, 0.0);
+    }
+}
+`;
+
 // ── Pass 1: grow 셰이더 ────────────────────────────────────────────────────────
 const growFrag = `
 #ifdef GL_ES
@@ -365,7 +484,7 @@ void main() {
         u_camMat[2] * u_fov
     );
 
-    float t = raymarch(u_ro, rd);
+    float t = hitSyllableBounds(u_ro, rd) ? raymarch(u_ro, rd) : -1.0;
 
     if (t < 0.0) {
         gl_FragColor = vec4(0.0);
@@ -502,11 +621,23 @@ export class MyceliumReceiver {
         // hub state: syllable index -> { center: Vector3, connections: number }
         // 트리거: 자음이 비음/유음이 아니면(파열/파찰/마찰), 다음 음절로 넘어가는 순간 무조건 허브로 등록
         this._hubs = new Map();
+        this._sylHubIds = []; // 음절 i가 연결 실을 뻗은 허브 id들 — 다시 구울 때 같은 연결을 재현
+        this._bakedCenters = []; // 마지막 update의 음절 중심 — 바뀌면(크기/레이아웃 변경) 전체 재굽기
 
-        this.lineHeightRatio = 3.2;
+        // 2026-09-26 screenToWorld(정확한 역투영)로 바꾸면서 화면상 간격을 유지하도록 환산:
+        //   예전 근사식은 가로 ~0.91배 / 세로 ~0.71배로 압축돼 보였다 → 180*0.91, 3.2*0.71
+        this.lineHeightRatio = 2.3; // 3.2
         this.sylSize = 100; // per-receiver sylSize : #fontSize
-        this.wrapStep = 180; // 자간(px)
+        this.wrapStep = 165; // 자간(px) 180
         this.wrapMargin = 0;
+        // 음절 중심에서 글자 끝까지(sylSize 배수) — core.js layoutFor가 가장자리 여백과
+        // 넘침(→ 단계 축소) 판정에 쓴다. 에피사이클 이론상 최대는 ~1.84(r1+r2+r3 전부
+        // 한 방향), 실측 대부분 1.2~1.5. 글자가 rect 끝에서 잘리면 올릴 것
+        this.glyphExtent = 1.5;
+        // 위 px 값들이 기준으로 삼는 뷰포트 높이(CSS px). core.js layoutFor가 H/refHeight 배로
+        // 스케일해서, 어느 해상도에서든 이 높이에서 보던 글자 모양이 그대로 나온다.
+        // 859 = 맥북 브라우저(1512×859)에서 룩을 잡던 때의 innerHeight
+        this.refHeight = 859;
         // 카메라(0.7, 0.5, 7) 오프셋으로 화면이 압축되어 보이는 것 보정
         // x=1.0이면 보정 없음. 1.3~1.6 사이에서 화면을 꽉 채우는 값을 찾아서 조절
         this.layoutScale = { x: 1.28, y: 1.0 };
@@ -531,6 +662,8 @@ export class MyceliumReceiver {
         this._renderer.setSize(W, H);
         if (this._transparent) this._renderer.setClearColor(0x000000, 0);
         this._renderer.setPixelRatio(dpr);
+        // 밖에서 받은 캔버스는 우리 것이 아니다 — dispose 때 지우면 안 된다(receiver 전환 시 화면이 사라짐)
+        this._ownCanvas = !canvas;
         if (!canvas) {
             this._renderer.domElement.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;';
             document.body.appendChild(this._renderer.domElement);
@@ -550,6 +683,14 @@ export class MyceliumReceiver {
         this._growTarget = new THREE.WebGLRenderTarget(rW, rH, rtOpts);
         this._accumTarget = new THREE.WebGLRenderTarget(rW, rH, rtOpts);
         this._prevTarget = new THREE.WebGLRenderTarget(rW, rH, rtOpts);
+        // 경로 사전계산(pathFrag) — 해상도와 무관한 151×3 float. 음절마다 _dequeue에서 한 번 굽는다
+        this._pathTarget = new THREE.WebGLRenderTarget(151, 3, {
+            minFilter: THREE.NearestFilter,
+            magFilter: THREE.NearestFilter,
+            format: THREE.RGBAFormat,
+            type: THREE.FloatType,
+            depthBuffer: false,
+        });
 
         const { ro, camMat, fov } = this._calcCamera();
 
@@ -572,8 +713,13 @@ export class MyceliumReceiver {
             u_diphthong: { value: 0 },
             u_growT: { value: 0 },
             u_d3Displace: { value: this._d3Displace ? 1.0 : 0.0 },
+            u_pathTex: { value: this._pathTarget.texture },
+            u_usePathTex: { value: 1.0 }, // 0 = 예전처럼 map()에서 직접 계산(비교/디버그용)
         };
         this._growScene = this._makeQuadScene(vertSrc, growFrag, this._growUniforms);
+        // Pass 0 — path. 같은 uniform 객체를 공유하되 자기 출력(u_pathTex)은 빼서 피드백 바인딩을 막는다
+        const { u_pathTex, ...pathUniforms } = this._growUniforms;
+        this._pathScene = this._makeQuadScene(vertSrc, pathFrag, pathUniforms);
 
         // Pass 2 — accum
         this._accumUniforms = {
@@ -625,11 +771,20 @@ export class MyceliumReceiver {
         const { starts, centers, chos, ends, jungs, amps, yangseong, diphthong, confirmed } = uniformData;
         const prevCount = this._prevSylCount;
 
+        // 이미 있던 음절의 중심이 움직였다 = 글자 크기가 바뀌었다(layoutFor 단계 축소, TD size
+        // 노브, 리사이즈). accum에 구운 건 옮길 수 없으니 전부 새 자리에 다시 굽는다.
+        const moved =
+            newSylCount >= prevCount &&
+            this._bakedCenters.some((c, i) => i < prevCount && c.distanceToSquared(centers[i]) > 1e-8);
+        if (moved) this._rebake(uniformData, prevCount);
+        this._bakedCenters = centers.slice(0, newSylCount).map(c => c.clone());
+
         if (newSylCount < prevCount) {
             this._queue = [];
             this._growing = false;
             this._isFirstGlyph = true;
             this._hubs = new Map(); // index shifted -> reset hub state
+            this._sylHubIds = [];
             for (let i = 0; i < newSylCount; i++) {
                 this._queue.push(
                     this._makeItem(
@@ -668,6 +823,7 @@ export class MyceliumReceiver {
                     if (desired > 0) {
                         const targets = this._pickHubTargets(desired);
                         hubCenters = targets.map(t => t.center);
+                        this._sylHubIds[i] = targets.map(t => t.id);
                     }
                 }
 
@@ -710,7 +866,43 @@ export class MyceliumReceiver {
         ); // 0.6: 셀 내부 오프셋 강도, 조절 포인트
 
         const hubCenter = uniformData.centers[i].clone().add(choOffset);
-        this._hubs.set(i, { center: hubCenter, connections: 0 });
+        this._hubs.set(i, { id: i, center: hubCenter, connections: 0 });
+    }
+
+    // 음절 0..count-1을 새 uniformData 자리에 즉시(instant) 다시 굽는다. 허브 중심도 새 자리로
+    // 다시 계산하고, 각 음절이 예전에 고른 허브(_sylHubIds)에 그대로 연결 실을 뻗는다 —
+    // 랜덤 선택을 다시 하지 않으므로 크기만 바뀌고 모양은 같다.
+    _rebake(uniformData, count) {
+        const { starts, centers, chos, ends, jungs, amps, yangseong, diphthong } = uniformData;
+        for (const [id, hub] of this._hubs) {
+            const cho = chos[id];
+            const off = new THREE.Vector3((cho.x - 0.5) * 2, (cho.y - 0.5) * 2, (cho.z - 0.5) * 2).multiplyScalar(
+                amps[id] * 0.6,
+            );
+            hub.center = centers[id].clone().add(off);
+        }
+        this._queue = [];
+        this._growing = false;
+        this._forceComplete = false;
+        this._isFirstGlyph = true; // 첫 bake가 accum을 비운다
+        for (let i = 0; i < count; i++) {
+            const hubCenters = (this._sylHubIds[i] ?? []).map(id => this._hubs.get(id)?.center).filter(Boolean);
+            this._queue.push(
+                this._makeItem(
+                    starts[i],
+                    centers[i],
+                    chos[i],
+                    ends[i],
+                    jungs[i],
+                    amps[i],
+                    yangseong[i],
+                    diphthong[i],
+                    true,
+                    hubCenters,
+                    hubCenters.length,
+                ),
+            );
+        }
     }
 
     // mother tree: 가중치(연결 많은 허브일수록 잘 뽑힘)로 최대 count개의 허브를 중복 없이 선택
@@ -745,12 +937,26 @@ export class MyceliumReceiver {
         this._growTarget?.dispose();
         this._accumTarget?.dispose();
         this._prevTarget?.dispose();
+        this._pathTarget?.dispose();
         this._renderer?.dispose();
         const el = this._renderer?.domElement;
-        if (el?.parentNode) el.parentNode.removeChild(el);
+        if (this._ownCanvas && el?.parentNode) el.parentNode.removeChild(el);
     }
 
     // ── 공개 유틸 ─────────────────────────────────────────────────────────────────
+
+    // 뷰포트 uv(0~1, 위→아래) → 그 픽셀을 지나는 광선이 z=0 평면과 만나는 월드 좌표.
+    // growFrag의 rd 식(u_camMat * (uv.x, uv.y, -u_fov))을 그대로 뒤집은 것이라
+    // 음절 중심이 레이아웃이 정한 화면 px에 정확히 떨어진다. core.syllablesToUniforms가
+    // 이걸 받으면 sceneH/layoutScale 근사(화면 중심 쪽으로 ~0.71배 압축돼 보이던 원인)를
+    // 안 쓴다.
+    screenToWorld(u, v) {
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        const { ro, camMat, fov } = this._calcCamera();
+        const rd = new THREE.Vector3((u * 2 - 1) * (W / H), 1 - v * 2, -fov).applyMatrix3(camMat).normalize();
+        return ro.clone().addScaledVector(rd, -ro.z / rd.z);
+    }
 
     // d3(고주파 노이즈) 디테일 방식 전환 (UI 없음, 코드/콘솔에서 호출)
     //   false: bump map으로만 적용 — map()/raymarch에서 noise(p*95) 반복 호출 안 함, 가벼움 (기본)
@@ -816,6 +1022,8 @@ export class MyceliumReceiver {
         this._isFirstGlyph = true;
         this._prevSylCount = 0;
         this._hubs = new Map();
+        this._sylHubIds = [];
+        this._bakedCenters = [];
 
         const prevClear = this._renderer.getClearColor(new THREE.Color());
         const prevAlpha = this._renderer.getClearAlpha();
@@ -846,6 +1054,14 @@ export class MyceliumReceiver {
         };
     }
 
+    // 현재 음절 uniform으로 경로 텍스처를 굽는다(151×3 픽셀 — 사실상 공짜)
+    _bakePath() {
+        const prev = this._renderer.getRenderTarget();
+        this._renderer.setRenderTarget(this._pathTarget);
+        this._renderer.render(this._pathScene, this._quadCam);
+        this._renderer.setRenderTarget(prev);
+    }
+
     _dequeue() {
         if (this._queue.length === 0) return;
         const item = this._queue.shift();
@@ -861,6 +1077,7 @@ export class MyceliumReceiver {
         u.u_hubCenters.value[0].copy(item.hubCenters[0] ?? new THREE.Vector3());
         u.u_hubCenters.value[1].copy(item.hubCenters[1] ?? new THREE.Vector3());
         u.u_connCount.value = item.connCount ?? 0;
+        this._bakePath();
         u.u_growT.value = 0.0;
         this._growStart = this._clock.getElapsedTime();
         this._growing = true;
@@ -882,7 +1099,11 @@ export class MyceliumReceiver {
 
     _animate = timestamp => {
         this._raf = requestAnimationFrame(this._animate);
-        if (timestamp - this._lastTime < this._FRAME_INTERVAL) return;
+        // 허용오차 4ms — webrenderTOP(maxrenderrate=24) 안에서는 rAF 자체가 41.6~41.8ms
+        // 간격으로 오는데, 딱 41.67ms로 비교하면 그 중 ~40%가 "아직 이르다"로 버려져
+        // 실효 ~16fps + 불규칙하게 끊겼다(2026-09-26 TD 실측: 4초간 rAF 97번 중 66번만 그림).
+        // growT가 프레임당 전진이라 성장도 그만큼 느려진다. 브라우저(60/120Hz)는 영향 없음.
+        if (timestamp - this._lastTime < this._FRAME_INTERVAL - 4) return;
         this._lastTime = timestamp;
 
         this._growUniforms.u_time.value = this._clock.getElapsedTime();

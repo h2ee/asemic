@@ -29,6 +29,17 @@ export class ReceiverManager {
         }
         const Cls = REGISTRY[name];
         if (!Cls) throw new Error(`Unknown receiver: ${name}`);
+        // 캔버스는 컨텍스트를 한 번만 가질 수 있다(three WebGLRenderer vs 생 WebGL2).
+        // 전환할 때마다 같은 자리·같은 id/클래스/스타일로 새 캔버스를 끼워 넣어
+        // 이전 receiver 의 GL 상태가 다음 receiver 로 새지 않게 한다.
+        if (this._canvas?.parentNode) {
+            const fresh = document.createElement('canvas');
+            fresh.id = this._canvas.id;
+            fresh.className = this._canvas.className;
+            fresh.style.cssText = this._canvas.style.cssText;
+            this._canvas.parentNode.replaceChild(fresh, this._canvas);
+            this._canvas = fresh;
+        }
         this._current = new Cls(opts);
         this._name = name;
         await this._current.init(this._canvas);

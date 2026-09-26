@@ -5,10 +5,33 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>asemic — output (전시 디스플레이 / TD Web Render TOP)</title>
 <style>
-    /* 디자인 기준 해상도 1080×1920 (세로). 좌표는 전부 Figma translator 프레임(1:4) 기준.
-       뷰포트가 이 비율이면 vw/vh 로 그대로 매핑됨.
-         x% = figmaX / 1080 * 100  (vw)
-         y% = figmaY / 1920 * 100  (vh)                                             */
+    /* ── 2026-09-26 레이아웃 (PRD 2장 "화면") ─────────────────────────────────
+       기준 프레임은 TD /chat 과 같은 2560×1440(16:9). 좌표는 전부 목업 실측 비율.
+       위쪽 3D 크롬 스트립·하늘 배경·웹캠·수신자 프로필은 **TD가 그린다** — 이 페이지는
+       그 아래에 투명 배경으로 얹히는 레이어라, 여기 있는 건 네 조각뿐이다.
+
+         #glyph-window   아세믹 글자 (한 화자 · 한 문장)   x 1.8%~82%  y 38.4%~96.3%
+         #chat-panel     지나간 발화 기록 (구조 SVG)        x 83.2%~98% y 50%~88%
+         #wilson         워드마크                           x 83.2%~98% y 38.5%~42%
+         #input-bar      관람객 입력 원문 (노랑)            x 83.2%~98% y 91.6%~94.9%
+         #toast          누가 말하는 중인지                 가운데 정렬  y 90.8%~95.4%
+
+       이전 버전의 Figma 크롬 PNG(board1.png 등)는 2026-09-17 전량 삭제됨.
+       그때 남아 있던 세로(1080×1920) 기준 오프셋도 이 개편에서 전부 교체했다.     */
+
+    :root {
+        /* 목업 실측 팔레트 */
+        --navy:       #578AAE;   /* 관람객 말풍선 */
+        --navy-blk:   #E8FAFF;   /* 그 위의 구조 블록 */
+        --white-bl:   #FCFEFF;   /* 수신자 말풍선 */
+        --white-blk:  #A2DDFF;   /* 그 위의 구조 블록 */
+        --ink:        #13456D;   /* 토스트 글자 */
+        --yellow:     #FFFF00;   /* 입력 바 */
+        --yellow-ink: #003279;
+
+        --syl:        1.95vh;    /* 채팅창 음절 한 칸 */
+        --syl-gap:    0.30vh;
+    }
 
     html, body {
         margin: 0;
@@ -16,94 +39,166 @@
         height: 100%;
         background: #eef0ec;
         overflow: hidden;
-        font-family: 'Apple SD Gothic Neo', -apple-system, sans-serif;
+        font-family: 'MonoplexKR', 'Apple SD Gothic Neo', -apple-system, sans-serif;
     }
 
-    /* ── 레이어(z) ───────────────────────────────────────────────
-       0   #board          board1.png — 베젤 + 상단 타이틀바 + 글자창 배경 텍스처 (불투명)
-       1   #glyph-window   receiver 캔버스 (투명 출력) — Figma output_canvas(y408, h1079)로 클립
-       2   #panel          control panel.png — 하단 컨트롤 패널
-       3   .part           knob / button 등 (지금은 정적, 하드웨어 연결 시 회전/토글)
-       10  #input-row      입력창 (control panel userinput 위치)
-       11  #indicators     신호등·로딩 등 (미구현 — 프로필/라이트 PNG 미제공)
-       ──────────────────────────────────────────────────────────── */
+    /* ?chrome=0 — 크롬을 TD의 controller가 3D로 대체하는 모드(전시 기본).
+       배경만 투명해지고 나머지 조각은 그대로 보인다 — 목업이 곧 이 모드의 합성 결과다. */
+    html.no-chrome, body.no-chrome { background: transparent; }
 
-    #board {
-        position: fixed;
-        inset: 0;
-        width: 100vw;
-        height: 100vh;
-        object-fit: fill;
-        z-index: 0;
-        pointer-events: none;
-    }
-
-    /* Figma output_canvas: x0 y408 w1080 h1079 → 408/1920=21.25% , 1079/1920=56.20%.
-       좌우는 board1 베젤 안쪽으로 살짝 물려 글자가 베젤 밖으로 새지 않게(≈2.5vw). */
+    /* ── 글자 ───────────────────────────────────────────────────────────────
+       캔버스는 뷰포트 전체를 유지하고(모든 receiver가 window.innerWidth 기준으로
+       픽셀을 계산한다) 부모가 클립만 한다. 배치를 이 사각형 안으로 모으는 건
+       core.js layoutFor(rect) 쪽 일이고, 여기 클립은 마지막 안전망이다. */
     #glyph-window {
         position: fixed;
-        left: 2.5vw;
-        top: 21.25vh;
-        width: 95vw;
-        height: 56.20vh;
+        left: 1.8vw;
+        top: 38.4vh;
+        width: 80.2vw;
+        height: 57.9vh;
         overflow: hidden;
         z-index: 1;
     }
-    /* 캔버스는 풀 뷰포트 크기(mycelium이 window.innerWidth/Height 로 렌더).
-       부모 오프셋만큼 역방향 이동 → 글자 좌표(뷰포트 0~100) 정렬 유지, 창 밖은 클립. */
     #stage-canvas {
         position: absolute;
-        left: -2.5vw;
-        top: -21.25vh;
+        left: -1.8vw;   /* = -#glyph-window left/top — 둘은 같이 바꿀 것 */
+        top: -38.4vh;
         width: 100vw;
         height: 100vh;
         display: block;
     }
 
-    /* Figma control panel 프레임: y1493 → 77.76% . control panel.png 는 1080×427(2×:2160×854) */
-    #panel {
+    /* ── WILSON 워드마크 ────────────────────────────────────────────────────── */
+    #wilson {
         position: fixed;
-        left: 0;
-        top: 77.76vh;
-        width: 100vw;
-        height: auto;
-        z-index: 2;
+        left: 83.2vw;
+        top: 38.5vh;
+        width: 14.8vw;
+        z-index: 4;
         pointer-events: none;
     }
 
-    .part {
+    /* ── 채팅창 ─────────────────────────────────────────────────────────────
+       아래 정렬 — 새 발화가 아래에 붙고 오래된 것은 위로 밀려 잘린다. */
+    #chat-panel {
         position: fixed;
-        z-index: 3;
+        left: 83.2vw;
+        top: 50vh;
+        width: 14.8vw;
+        height: 38vh;
+        z-index: 4;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        align-items: stretch;
+        gap: 0.9vh;
+        overflow: hidden;
         pointer-events: none;
     }
-    /* sizenweightwheel 검은 원 위에 얹는 흰 노브 페이스.
-       control panel.png 의 검은 원 중심(≈17vw, 89vh)에 맞춤 — 눈대중, 조정 포인트 */
-    #knob-size {
-        left: 7vw;
-        top: 83.4vh;
-        width: 20vw;
+    .bubble {
+        box-sizing: border-box;
+        padding: 0.85vh 0.7vw;
+        border-radius: 1.1vh;
+        display: flex;
+        flex-wrap: wrap;
+        align-content: flex-start;
+        gap: var(--syl-gap);
+        flex: 0 0 auto;
     }
+    .bubble.from-receiver {         /* 흰 말풍선 = 수신자 */
+        background: var(--white-bl);
+        border: 0.12vh solid #FFFFFF;
+        --blk: var(--white-blk);
+    }
+    .bubble.from-visitor {          /* 남색 말풍선 = 관람객 */
+        background: var(--navy);
+        --blk: var(--navy-blk);
+    }
+    /* 음절 한 칸 — public/imgs/<type>.svg 의 실루엣만 mask로 가져오고 색은 여기서.
+       (SVG가 단색 #A2DDFF 로 박혀 있어 <img>로는 말풍선별 색을 못 낸다) */
+    .syl {
+        width: var(--syl);
+        height: var(--syl);
+        background-color: var(--blk);
+        -webkit-mask-image: var(--svg);
+        mask-image: var(--svg);
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+    }
+    .word-gap { width: calc(var(--syl) * 0.55); height: var(--syl); }
 
-    /* userinput: Figma abs (469, 1545) w200 → 43.4vw , 80.47vh */
-    #input-row {
+    /* ── 토스트 ─────────────────────────────────────────────────────────────
+       glassmorphism. ⚠️ backdrop-filter 는 **페이지 안의** 뒷면만 블러한다 —
+       뒤에 있는 건 TD가 그리는 다른 레이어라 이 페이지에선 블러할 대상이 없다.
+       그래서 반투명 흰 그라디언트 + 부드러운 그림자로 같은 인상을 낸다. */
+    #toast {
         position: fixed;
-        left: 43.4vw;
-        top: 80.0vh;
-        width: 18.5vw;
-        z-index: 10;
+        left: 50%;
+        transform: translateX(-50%);
+        top: 90.8vh;
+        height: 4.6vh;
+        padding: 0 1.6vh;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        gap: 0.9vh;
+        border-radius: 2.3vh;
+        background: linear-gradient(100deg,
+            rgba(255, 255, 255, 0.35) 0%,
+            rgba(255, 255, 255, 0.92) 28%,
+            rgba(255, 255, 255, 0.92) 72%,
+            rgba(255, 255, 255, 0.35) 100%);
+        box-shadow: 0 0.4vh 1.6vh rgba(120, 175, 210, 0.28);
+        color: var(--ink);
+        font-family: 'Inconsolata', ui-monospace, monospace;
+        font-size: 2.1vh;
+        letter-spacing: 0.06em;
+        white-space: nowrap;
+        pointer-events: none;
+    }
+    #toast[hidden] { display: none; }
+    #toast .icon {
+        width: 2.1vh;
+        height: 2.1vh;
+        background-color: var(--ink);
+        -webkit-mask-image: var(--svg);
+        mask-image: var(--svg);
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+    }
+    #toast .icon[hidden] { display: none; }
+
+    /* ── 입력 바 ────────────────────────────────────────────────────────────
+       관람객이 지금 치고 있는 원문. LLM 응답과는 무관하다.
+       TD 모드에선 두벌식 조합을 TD가 하고 완성 문자열을 {t:'text'}로 밀어 넣으므로,
+       이 input은 "표시용"에 가깝다(포커스는 유지 — 웹 온리로 후퇴할 때 그대로 쓴다). */
+    #input-bar {
+        position: fixed;
+        left: 83.2vw;
+        top: 91.6vh;
+        width: 14.8vw;
+        height: 3.3vh;
+        z-index: 5;
+        background: var(--yellow);
+        display: flex;
+        align-items: center;
+        padding: 0 0.6vw;
+        box-sizing: border-box;
     }
     #user-input {
         width: 100%;
-        box-sizing: border-box;
-        font-size: 1.6vh;
-        padding: 0.4vh 0.6vw;
-        background: transparent;
-        color: #123;
         border: none;
         outline: none;
+        background: transparent;
+        color: var(--yellow-ink);
         font-family: inherit;
+        font-size: 1.9vh;
     }
-    #user-input::placeholder { color: rgba(0, 0, 0, 0.35); }
+    #user-input::placeholder { color: rgba(0, 50, 121, 0.35); }
 
     #indicators {
         position: fixed;
@@ -114,16 +209,16 @@
 </style>
 </head>
 <body>
-<img id="board" alt="" src="./chrome/board1.png" onerror="this.style.display='none'" />
-
 <div id="glyph-window">
     <canvas id="stage-canvas"></canvas>
 </div>
 
-<img id="panel" alt="" src="./chrome/control panel.png" onerror="this.style.display='none'" />
-<img id="knob-size" class="part" alt="" src="./chrome/size_knob.png" onerror="this.style.display='none'" />
+<img id="wilson" alt="" />
+<div id="chat-panel"></div>
 
-<div id="input-row">
+<div id="toast" hidden><span class="icon"></span><span class="label"></span></div>
+
+<div id="input-bar">
     <input id="user-input" type="text" placeholder="한글 입력" autocomplete="off" autofocus />
 </div>
 <div id="indicators"></div>
