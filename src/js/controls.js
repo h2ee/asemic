@@ -25,6 +25,9 @@ export const CONTROLS = [
     { id: 'preset3', kind: 'button', label: '안부', text: '잘 지냈어?', cc: null },
     { id: 'preset4', kind: 'button', label: '이름', text: '이름이 뭐야?', cc: null },
 
+    { id: 'paging', kind: 'toggle', label: '5자씩', cc: null }, // glyphmode step ↔ page
+    { id: 'glyphmode', kind: 'button', label: '표시 모드', cc: null }, // glyphmode step → page → scroll → disperse 순환
+
     { id: 'joke', kind: 'toggle', label: '농담', cc: null },
     { id: 'question', kind: 'toggle', label: '질문', cc: null },
 

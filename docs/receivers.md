@@ -33,6 +33,7 @@
 - **해상도 독립 (2026-09-26)** — 글자 모양은 `sylSize/H` 비율 하나로 정해진다(셰이더의 캡슐 반경·혹·노이즈가 월드 상수라서). `refHeight`(859)를 들고 있으면 `layoutFor`가 px 값을 `H/refHeight` 배로 스케일 → 어느 화면에서든 맥북 브라우저에서 잡은 룩 그대로
 - **배치 = 정확한 역투영** — `screenToWorld(u,v)`가 셰이더 광선식을 뒤집어 음절 중심을 z=0 평면에 놓는다. 예전 `sceneH`/`layoutScale`/`startOffsetX` 근사(화면 중심 쪽으로 가로 0.91·세로 0.71배 압축)는 `project` 없을 때의 fallback으로만 남음
 - **`glyphExtent`(1.5)** — 음절 중심→글자 끝(sylSize 배수). `layoutFor(rect)`가 이걸로 가장자리 여백을 잡고, 아래로 넘치면 `FIT_STEPS`로 단계 축소(번역기 입력창식)
+- **균일 스케일 `u_glyphScale`** — 단계 축소·크기 노브로 작아질 때 모양은 늘 기준 크기(`layoutFor`의 `glyphScale` = 지금 sylSize ÷ 노브 안 댄 기본 sylSize×H/refHeight)로 계산하고, 셰이더가 음절 중심 기준으로 통째로 줄인다: `map(p) = s·map_ref(center+(p−center)/s)`, 명중 임계 `EPS·s`, 법선 오프셋 `0.005·s`, bump는 기준 공간 좌표, 허브도 기준 공간으로 변환. 안 그러면 `rad`/혹/노이즈가 월드 상수라 작을수록 두꺼워 보인다. 실측: s=0.72 면적비 0.518(=s²), s=0.5 0.249 — bbox도 정확히 s배. TD `param{size}`는 기본값 자체를 바꾸므로 모양이 바뀐다(노브 `size`는 균일 스케일)
 - **크기 변경 시 재굽기** — `update()`가 이미 있던 음절 중심이 움직였으면 `_rebake()`로 전부 instant 재굽기. 연결 실은 `_sylHubIds`에 기억해 둔 허브에 그대로 다시 붙는다(랜덤 재선택 없음)
 
 **GPU 비용 (2026-09-26, M3 Max · 2560×1440 · 음절 한 패스)** — 처음엔 growT=1 한 패스가 **392~482ms**라 TD(같은 GPU)가 fps 1~5로 떨어졌다. 두 가지로 줄였다:

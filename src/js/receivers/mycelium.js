@@ -91,6 +91,10 @@ uniform vec3  u_jung;
 uniform vec3  u_hubCenters[2]; // mother tree 허브 center들 (연결 실 타겟, 최대 2개)
 uniform float u_connCount;     // 활성 연결 개수 (0~2)
 uniform float u_amp;
+// 글자 전체 균일 스케일(음절 중심 기준). 모양은 늘 기준 크기(1단계)로 계산하고 여기서만
+// 줄인다 → 작아져도 굵기·혹·노이즈 결이 같은 비율로 줄어 "같은 글자가 작아진 것"으로 보인다.
+// map(p) = s · map_ref(center + (p-center)/s) — SDF의 정확한 균일 스케일.
+uniform float u_glyphScale;
 uniform float u_yangseong;
 uniform float u_diphthong;
 uniform float u_growT;
@@ -216,6 +220,7 @@ void lumpAt(int j, out float lt, out vec3 lumpPos, out float lumpR) {
 }
 
 float map(vec3 p) {
+  p = u_center + (p - u_center) / u_glyphScale; // 기준 크기 공간으로 (끝에서 d에 s를 곱해 되돌림)
   float f1   = u_jung.x;
   float f2   = u_jung.y;
   float f3   = u_jung.z;
@@ -301,7 +306,7 @@ float map(vec3 p) {
     if (float(c) >= u_connCount) break;
     float connOn = step(0.99, u_growT);
     if (connOn > 0.5) {
-        vec3 hub = u_hubCenters[c];
+        vec3 hub = u_center + (u_hubCenters[c] - u_center) / u_glyphScale; // 허브(실제 위치)도 기준 공간으로
         float cSeed = seed + float(c) * 7.0; // 두 연결선이 다르게 휘도록 시드 분리
 
         vec3 mid = mix(u_center, hub, 0.5);
@@ -347,7 +352,7 @@ float map(vec3 p) {
   g_matID = 1.0 - h; // 0=경로(body), 1=혹(lump)
   d = mix(dLump, d, h) - lumpK * h * (1.0 - h);
 
-  return d;
+  return d * u_glyphScale;
 }
 
 
@@ -387,12 +392,12 @@ bool hitCapsule(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float r) {
 }
 
 bool hitSyllableBounds(vec3 ro, vec3 rd) {
-  float R = max(1.3 * u_amp, length(u_end)) + BOUND_MARGIN;
+  float R = (max(1.3 * u_amp, length(u_end)) + BOUND_MARGIN) * u_glyphScale;
   if (hitSphere(ro, rd, u_center, R)) return true;
   if (u_growT >= 0.99) {
     for (int c = 0; c < 2; c++) {
       if (float(c) >= u_connCount) break;
-      if (hitCapsule(ro, rd, u_center, u_hubCenters[c], CONN_MARGIN)) return true;
+      if (hitCapsule(ro, rd, u_center, u_hubCenters[c], CONN_MARGIN * u_glyphScale)) return true;
     }
   }
   return false;
@@ -402,7 +407,7 @@ float raymarch(vec3 ro, vec3 rd) {
   float t = 0.0;
   for (int i = 0; i < MAX_STEPS; i++) {
     float d = map(ro + rd * t);
-    if (d < EPS) return t;
+    if (d < EPS * u_glyphScale) return t; // 명중 임계도 같이 스케일 — 안 하면 작을수록 뚱뚱해짐
     t += d;
     if (t > MAX_DIST) break;
   }
@@ -410,7 +415,7 @@ float raymarch(vec3 ro, vec3 rd) {
 }
 
 vec3 estimateNormal(vec3 p) {
-  vec2 e = vec2(0.005, 0.0);
+  vec2 e = vec2(0.005 * u_glyphScale, 0.0);
   return normalize(vec3(
     map(p + e.xyy) - map(p - e.xyy),
     map(p + e.yxy) - map(p - e.yxy),
@@ -425,6 +430,7 @@ float bumpMap(vec3 p) {
 }
 
 vec3 applyBump(vec3 p, vec3 n) {
+  p = u_center + (p - u_center) / u_glyphScale; // bump 결도 기준 공간에서
   vec2 e = vec2(0.005, 0.0);
   vec3 grad = vec3(
     bumpMap(p + e.xyy) - bumpMap(p - e.xyy),
@@ -561,23 +567,102 @@ void main() {
 // ── Pass 3: 표시 셰이더 ───────────────────────────────────────────────────────
 // transparent=false: 배경색 vec3(0.7)을 섞어 alpha=1로 출력 (전시 스탠드얼론 페이지)
 // transparent=true : straight alpha 그대로 출력 (크롬 PNG / TD 합성)
+// ── 흩어짐(glyphmode disperse) ────────────────────────────────────────────────
+// disperse()가 지우기 직전의 화면을 u_ghostTex로 한 번 복사해 두면, 표시 패스가 그걸
+// u_ghostT(0→1) 동안 흩어 없앤다: 저주파 노이즈 방향으로 덩어리째 흘러가며(살짝 위로 떠오름)
+// 고주파 알갱이부터 문턱 아래로 떨어져 사라진다(포자처럼). 새 글자(accum)는 그 위에 over.
+// 알파는 accum과 같은 straight alpha.
+const DISPERSE_MS = 1600; // #disperse 길이
+const composeGlsl = `
+uniform sampler2D u_accumTex;
+uniform sampler2D u_ghostTex;
+uniform float     u_ghostT;
+uniform vec2      u_resolution;
+
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+               mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
+vec4 ghostAt(vec2 uv) {
+    float p = u_ghostT;
+    if (p >= 1.0) return vec4(0.0);
+    vec2 asp = vec2(u_resolution.x / u_resolution.y, 1.0);
+    // 덩어리(저주파)마다 다른 방향으로 흘러가고 전체는 조금 떠오른다(uv.y 위 = +)
+    vec2 dir = vec2(vnoise(uv * asp * 6.0 + 3.1), vnoise(uv * asp * 6.0 + 7.7)) - 0.5;
+    vec2 suv = uv - (dir * 0.06 + vec2(0.0, 0.025)) * p * p; // #disperse 흩어지는 거리
+    vec4 g = texture2D(u_ghostTex, suv);
+    // 침식 — 고주파 알갱이 + 중간 덩어리. 문턱이 -0.1→1.05로 올라가며 전부 사라진다
+    vec2 sq = suv * asp;
+    float n = vnoise(sq * 160.0) * 0.55 + vnoise(sq * 22.0) * 0.45; // #disperse 알갱이 크기
+    float th = mix(-0.1, 1.05, p);
+    g.a *= smoothstep(th, th + 0.08, n);
+    return g;
+}
+
+// accum over ghost (straight alpha)
+vec4 compose(vec2 uv) {
+    vec4 a = texture2D(u_accumTex, uv);
+    vec4 g = ghostAt(uv);
+    float outA = a.a + g.a * (1.0 - a.a);
+    vec3 rgb = outA > 0.0 ? (a.rgb * a.a + g.rgb * g.a * (1.0 - a.a)) / outA : vec3(0.0);
+    return vec4(rgb, outA);
+}
+`;
+
+// disperse() — 지금 보이는 그대로(accum + 흩어지던 ghost)를 새 ghost로 굽는다
+const ghostFrag = `
+#ifdef GL_ES
+precision highp float;
+#endif
+${composeGlsl}
+void main() {
+    gl_FragColor = compose(gl_FragCoord.xy / u_resolution);
+}
+`;
+
 const makeDispFrag = transparent => `
 #ifdef GL_ES
 precision highp float;
 #endif
-
-uniform sampler2D u_accumTex;
-uniform vec2      u_resolution;
-
+${composeGlsl}
 void main() {
     vec2 uv  = gl_FragCoord.xy / u_resolution;
-    vec4 acc = texture2D(u_accumTex, uv);
+    vec4 acc = compose(uv);
 
     ${transparent
         ? 'gl_FragColor = vec4(acc.rgb, acc.a);'
         : 'gl_FragColor = vec4(mix(vec3(0.7), acc.rgb, acc.a), 1.0);// #bg color'}
 }
 `;
+
+// ── 스크롤 패스: 누적 버퍼를 왼쪽으로 정수 px만큼 민 사본 ──────────────────────
+// glyphmode scroll. 정수 픽셀만 밀기 때문에 텍셀 중심끼리 복사돼 몇 번을 밀어도 흐려지지 않는다.
+// 오른쪽 끝에서 들어오는 자리는 투명, 왼쪽으로 빠져나간 건 버려진다.
+const shiftFrag = `
+#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform sampler2D u_src;
+uniform vec2      u_resolution;
+uniform float     u_shift;
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy + vec2(u_shift, 0.0)) / u_resolution;
+    gl_FragColor = uv.x < 1.0 ? texture2D(u_src, uv) : vec4(0.0);
+}
+`;
+
+// 목표 스크롤 위치로 다가가는 비율(프레임당, 24fps 기준). 한 음절 폭이 ~1초에 걸쳐 흘러간다
+const SCROLL_EASE = 0.12;
 
 // ── MyceliumReceiver ──────────────────────────────────────────────────────────
 
@@ -621,6 +706,7 @@ export class MyceliumReceiver {
         // hub state: syllable index -> { center: Vector3, connections: number }
         // 트리거: 자음이 비음/유음이 아니면(파열/파찰/마찰), 다음 음절로 넘어가는 순간 무조건 허브로 등록
         this._hubs = new Map();
+        this._curScale = 1; // _makeItem 기본 scale — update()가 uniformData.scale로 갱신
         this._sylHubIds = []; // 음절 i가 연결 실을 뻗은 허브 id들 — 다시 구울 때 같은 연결을 재현
         this._bakedCenters = []; // 마지막 update의 음절 중심 — 바뀌면(크기/레이아웃 변경) 전체 재굽기
 
@@ -641,6 +727,19 @@ export class MyceliumReceiver {
         // 카메라(0.7, 0.5, 7) 오프셋으로 화면이 압축되어 보이는 것 보정
         // x=1.0이면 보정 없음. 1.3~1.6 사이에서 화면을 꽉 채우는 값을 찾아서 조절
         this.layoutScale = { x: 1.28, y: 1.0 };
+        // 룩을 그대로 둔 채 글자 전체를 키우는 배율 — core.js layoutFor 참고.
+        // sylSize를 올리면 굵기가 안 따라와 가늘어진다. 크게 보고 싶으면 이걸 올릴 것
+        this.displayScale = 1.2;
+
+        // glyphmode scroll — 누적 버퍼를 왼쪽으로 민 양(디바이스 px). scrollTo()가 목표를 주고
+        // _stepScroll()이 매 프레임 따라간다. _scrollBase는 정수(실제로 민 양), _scrollPos는 애니메이션 값
+        this._scrollTarget = 0;
+        this._scrollPos = 0;
+        this._scrollBase = 0;
+        this._scrollJump = true; // 다음 scrollTo는 애니메이션 없이 바로 그 자리로(비운 직후·리사이즈)
+        this._rect = null;
+
+        this._ghostStart = null; // glyphmode disperse — 흩어짐 시작 시각(ms), null = 진행 중 아님
 
         // d3(고주파 노이즈) 디테일 방식 — 초기값은 파일 상단 D3_DISPLACE_DEFAULT, 런타임은 setD3Displace()
         this._d3Displace = D3_DISPLACE_DEFAULT;
@@ -713,6 +812,7 @@ export class MyceliumReceiver {
             u_diphthong: { value: 0 },
             u_growT: { value: 0 },
             u_d3Displace: { value: this._d3Displace ? 1.0 : 0.0 },
+            u_glyphScale: { value: 1.0 },
             u_pathTex: { value: this._pathTarget.texture },
             u_usePathTex: { value: 1.0 }, // 0 = 예전처럼 map()에서 직접 계산(비교/디버그용)
         };
@@ -731,11 +831,32 @@ export class MyceliumReceiver {
         this._accumScene = this._makeQuadScene(vertSrc, accumFrag, this._accumUniforms);
 
         // Pass 3 — display
+        this._ghostTarget = new THREE.WebGLRenderTarget(rW, rH, rtOpts);
+        this._ghostTarget2 = new THREE.WebGLRenderTarget(rW, rH, rtOpts);
         this._dispUniforms = {
             u_accumTex: { value: this._accumTarget.texture },
+            u_ghostTex: { value: this._ghostTarget.texture },
+            u_ghostT: { value: 1.0 }, // 1 = 흩어짐 없음
             u_resolution: { value: new THREE.Vector2(rW, rH) },
         };
         this._dispScene = this._makeQuadScene(vertSrc, makeDispFrag(this._transparent), this._dispUniforms);
+
+        // disperse — accum + 이전 ghost → 새 ghost
+        this._ghostUniforms = {
+            u_accumTex: { value: null },
+            u_ghostTex: { value: null },
+            u_ghostT: { value: 1.0 },
+            u_resolution: { value: new THREE.Vector2(rW, rH) },
+        };
+        this._ghostScene = this._makeQuadScene(vertSrc, ghostFrag, this._ghostUniforms);
+
+        // scroll — accum → prev 로 민 사본
+        this._shiftUniforms = {
+            u_src: { value: null },
+            u_resolution: { value: new THREE.Vector2(rW, rH) },
+            u_shift: { value: 0 },
+        };
+        this._shiftScene = this._makeQuadScene(vertSrc, shiftFrag, this._shiftUniforms);
 
         window.addEventListener('resize', this._onResize);
         this._raf = requestAnimationFrame(this._animate);
@@ -744,6 +865,7 @@ export class MyceliumReceiver {
     forceRebake(uniformData, sylCount) {
         if (!uniformData || sylCount === 0) return;
         const { starts, centers, chos, ends, jungs, amps, yangseong, diphthong } = uniformData;
+        this._curScale = uniformData.scale ?? 1;
         this._queue = [];
         this._growing = false;
         this._isFirstGlyph = true;
@@ -770,6 +892,7 @@ export class MyceliumReceiver {
         if (!uniformData) return;
         const { starts, centers, chos, ends, jungs, amps, yangseong, diphthong, confirmed } = uniformData;
         const prevCount = this._prevSylCount;
+        this._curScale = uniformData.scale ?? 1;
 
         // 이미 있던 음절의 중심이 움직였다 = 글자 크기가 바뀌었다(layoutFor 단계 축소, TD size
         // 노브, 리사이즈). accum에 구운 건 옮길 수 없으니 전부 새 자리에 다시 굽는다.
@@ -862,7 +985,7 @@ export class MyceliumReceiver {
 
         const amp = uniformData.amps[i];
         const choOffset = new THREE.Vector3((cho.x - 0.5) * 2, (cho.y - 0.5) * 2, (cho.z - 0.5) * 2).multiplyScalar(
-            amp * 0.6,
+            amp * 0.6 * (uniformData.scale ?? 1), // amp는 기준 크기 값 — 실제 크기로
         ); // 0.6: 셀 내부 오프셋 강도, 조절 포인트
 
         const hubCenter = uniformData.centers[i].clone().add(choOffset);
@@ -877,7 +1000,7 @@ export class MyceliumReceiver {
         for (const [id, hub] of this._hubs) {
             const cho = chos[id];
             const off = new THREE.Vector3((cho.x - 0.5) * 2, (cho.y - 0.5) * 2, (cho.z - 0.5) * 2).multiplyScalar(
-                amps[id] * 0.6,
+                amps[id] * 0.6 * (uniformData.scale ?? 1),
             );
             hub.center = centers[id].clone().add(off);
         }
@@ -938,6 +1061,8 @@ export class MyceliumReceiver {
         this._accumTarget?.dispose();
         this._prevTarget?.dispose();
         this._pathTarget?.dispose();
+        this._ghostTarget?.dispose();
+        this._ghostTarget2?.dispose();
         this._renderer?.dispose();
         const el = this._renderer?.domElement;
         if (this._ownCanvas && el?.parentNode) el.parentNode.removeChild(el);
@@ -958,6 +1083,80 @@ export class MyceliumReceiver {
         return ro.clone().addScaledVector(rd, -ro.z / rd.z);
     }
 
+    // screenToWorld의 역 — 월드 점 → 뷰포트 uv + 카메라 깊이. 스크롤로 민 만큼 월드 좌표를 옮길 때 쓴다
+    _toScreen(p) {
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        const { ro, camMat, fov } = this._calcCamera();
+        const d = p.clone().sub(ro).applyMatrix3(camMat.clone().transpose()); // camMat은 정규직교
+        const t = -d.z / fov;
+        return { u: (d.x / t / (W / H) + 1) / 2, v: (1 - d.y / t) / 2, t };
+    }
+
+    // p를 화면에서 du(uv)만큼 가로로 민 자리 — 같은 카메라 깊이 유지(허브처럼 z≠0인 점용)
+    _shiftAtDepth(p, du) {
+        const { camMat } = this._calcCamera();
+        const { t } = this._toScreen(p);
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        return p.clone().add(new THREE.Vector3(-2 * du * (W / H) * t, 0, 0).applyMatrix3(camMat));
+    }
+
+    // glyphmode scroll: 페이지가 "테이프를 이만큼(CSS px) 왼쪽으로 밀어라"를 준다(core.layoutFor의 scrollX).
+    // 실제로 미는 건 _stepScroll이 매 프레임 조금씩 — 그동안 페이지는 scrollBase만큼 뺀 자리로
+    // 새 음절을 보낸다.
+    scrollTo(x) {
+        const t = Math.max(0, x) * this._renderer.getPixelRatio();
+        this._scrollTarget = t;
+        if (this._scrollJump || t < this._scrollPos) {
+            // 비운 직후·리사이즈·되돌아가기(지우기·크기 축소)는 애니메이션 없이 그 자리로.
+            // 왼쪽으로 빠져나간 건 이미 버려졌지만, 이 경우엔 어차피 update가 전부 다시 굽는다
+            // (음절 수 감소 → 재입력 경로 / 중심 이동 → _rebake).
+            this._scrollJump = false;
+            this._scrollPos = t;
+            this._scrollBase = Math.round(t);
+            return;
+        }
+        // 너무 뒤처지면(빠른 타이핑) 새 음절이 캔버스 오른쪽 밖에 구워져 사라진다 — 그만큼은 바로 민다.
+        // 새 음절 오른쪽 끝 = rect 오른쪽 + (목표 - 민 양). 캔버스 끝까지 남은 폭의 80%까지만 허용
+        const W = window.innerWidth;
+        const slackCss = this._rect ? W - (this._rect.x + this._rect.w) : W * 0.1;
+        const maxLag = Math.max(1, slackCss * 0.8 * this._renderer.getPixelRatio());
+        const k = Math.round(t - maxLag) - this._scrollBase;
+        if (k > 0) {
+            this._shiftAccum(k);
+            this._scrollPos = Math.max(this._scrollPos, this._scrollBase);
+        }
+    }
+
+    // glyphmode disperse: 지우기(clearAccum) **직전에** 부른다. 지금 보이는 그대로를 ghost로 떠 두고
+    // DISPERSE_MS 동안 흩어 없앤다 — 그사이 새 글자는 비워진 accum에 자란다.
+    // 이전 흩어짐이 아직 진행 중이면 반쯤 흩어진 그 모습째 새 ghost에 들어가 다시 흩어진다(툭 끊김 없음).
+    disperse() {
+        const r = this._renderer;
+        const gu = this._ghostUniforms;
+        gu.u_accumTex.value = this._accumTarget.texture;
+        gu.u_ghostTex.value = this._ghostTarget.texture;
+        gu.u_ghostT.value = this._dispUniforms.u_ghostT.value;
+        r.setRenderTarget(this._ghostTarget2);
+        r.render(this._ghostScene, this._quadCam);
+        r.setRenderTarget(null);
+        [this._ghostTarget, this._ghostTarget2] = [this._ghostTarget2, this._ghostTarget];
+        this._dispUniforms.u_ghostTex.value = this._ghostTarget.texture;
+        this._dispUniforms.u_ghostT.value = 0;
+        this._ghostStart = performance.now();
+    }
+
+    // 누적 버퍼가 지금 실제로 밀려 있는 양(CSS px). 페이지는 테이프 좌표에서 이걸 빼서 보낸다
+    get scrollBase() {
+        return this._scrollBase / (this._renderer?.getPixelRatio() ?? 1);
+    }
+
+    // 글자 영역 — scrollTo의 뒤처짐 한계 계산에만 쓴다(배치는 layoutFor가 positions로 끝낸다)
+    setRect(rect) {
+        this._rect = rect;
+    }
+
     // d3(고주파 노이즈) 디테일 방식 전환 (UI 없음, 코드/콘솔에서 호출)
     //   false: bump map으로만 적용 — map()/raymarch에서 noise(p*95) 반복 호출 안 함, 가벼움 (기본)
     //   true : 예전처럼 거리장에 직접 더함 — 실루엣까지 우글거리는 디테일 look, 무거움
@@ -965,6 +1164,11 @@ export class MyceliumReceiver {
     setD3Displace(on) {
         this._d3Displace = !!on;
         if (this._growUniforms) this._growUniforms.u_d3Displace.value = this._d3Displace ? 1.0 : 0.0;
+    }
+
+    // 자라는 음절도, 큐에 남은 음절도 없다 — page 모드가 "이 페이지 다 그려졌나"를 볼 때 쓴다
+    isIdle() {
+        return !this._growing && this._queue.length === 0;
     }
 
     // 진행 중 + 큐에 남은 모든 음절을 growT=1로 즉시 완성(bake). bake 버튼처럼
@@ -1024,6 +1228,8 @@ export class MyceliumReceiver {
         this._hubs = new Map();
         this._sylHubIds = [];
         this._bakedCenters = [];
+        this._scrollTarget = this._scrollPos = this._scrollBase = 0;
+        this._scrollJump = true;
 
         const prevClear = this._renderer.getClearColor(new THREE.Color());
         const prevAlpha = this._renderer.getClearAlpha();
@@ -1038,8 +1244,10 @@ export class MyceliumReceiver {
 
     // ── 내부 ─────────────────────────────────────────────────────────────────────
 
-    _makeItem(start, center, cho, end, jung, amp, yang, diph, instant, hubCenters = [], connCount = 0) {
+    // scale 기본값 = 지금 처리 중인 uniformData.scale(update/forceRebake가 _curScale에 넣어 둠)
+    _makeItem(start, center, cho, end, jung, amp, yang, diph, instant, hubCenters = [], connCount = 0, scale = this._curScale) {
         return {
+            scale,
             start: start.clone(),
             center: center.clone(),
             cho: cho.clone(),
@@ -1077,11 +1285,69 @@ export class MyceliumReceiver {
         u.u_hubCenters.value[0].copy(item.hubCenters[0] ?? new THREE.Vector3());
         u.u_hubCenters.value[1].copy(item.hubCenters[1] ?? new THREE.Vector3());
         u.u_connCount.value = item.connCount ?? 0;
+        u.u_glyphScale.value = item.scale ?? 1;
         this._bakePath();
         u.u_growT.value = 0.0;
         this._growStart = this._clock.getElapsedTime();
         this._growing = true;
         this._instantBake = item.instant;
+    }
+
+    // glyphmode scroll 한 프레임 — _scrollPos를 목표로 당기고, 정수 px가 쌓이면 그만큼 민다
+    _stepScroll() {
+        if (this._scrollPos === this._scrollTarget) return;
+        this._scrollPos += (this._scrollTarget - this._scrollPos) * SCROLL_EASE;
+        if (Math.abs(this._scrollTarget - this._scrollPos) < 0.5) this._scrollPos = this._scrollTarget;
+        const k = Math.round(this._scrollPos) - this._scrollBase;
+        if (k > 0) this._shiftAccum(k);
+    }
+
+    // 누적 버퍼를 k 디바이스 px 왼쪽으로 민다 — 다시 굽지 않고 이미지만 옮긴다.
+    // 월드 좌표로 들고 있는 것들(구운 중심·허브·자라는 음절·큐)도 같은 만큼 옮겨야
+    // ① 다음 update의 moved 판정이 스크롤을 "크기 변화"로 오해해 전체를 다시 굽지 않고
+    // ② 자라던 음절이 옛 자리에 이어서 자라지 않는다.
+    _shiftAccum(k) {
+        const r = this._renderer;
+        const src = this._accumTarget;
+        const w = Math.floor(src.width);
+        const h = Math.floor(src.height);
+        this._shiftUniforms.u_src.value = src.texture;
+        this._shiftUniforms.u_resolution.value.set(w, h);
+        this._shiftUniforms.u_shift.value = k;
+        r.setRenderTarget(this._prevTarget);
+        r.render(this._shiftScene, this._quadCam);
+        r.setRenderTarget(null);
+        this._accumTarget = this._prevTarget;
+        this._prevTarget = src;
+        this._dispUniforms.u_accumTex.value = this._accumTarget.texture;
+        this._accumUniforms.u_bckbuffer.value = this._prevTarget.texture;
+        this._scrollBase += k;
+
+        // uv 이동량은 grow 패스와 같은 분모(W·dpr, 소수일 수 있음)로 — 페이지가 빼는 scrollBase/W와 일치해야 한다.
+        // 텍스처 샘플링만 실제 텍스처 크기(내림)를 쓴다
+        const du = k / (window.innerWidth * r.getPixelRatio());
+        // z=0 평면 위의 음절 중심은 평면 위에서 정확히 옮긴다 — 페이지가 새 scrollBase로 역투영한
+        // 중심과 비트 단위로 거의 같아져 moved 판정(1e-8)을 통과한다
+        const onPlane = c => {
+            const s = this._toScreen(c);
+            return this.screenToWorld(s.u - du, s.v);
+        };
+        // 음절 하나 = 중심의 이동량만큼 통째로(모양 유지), 허브는 각자 자기 깊이에서
+        const moveItem = (start, center, hubs) => {
+            const d = onPlane(center).sub(center);
+            start.add(d);
+            center.add(d);
+            for (const hb of hubs) hb.copy(this._shiftAtDepth(hb, du));
+        };
+
+        this._bakedCenters = this._bakedCenters.map(onPlane);
+        for (const hub of this._hubs.values()) hub.center = this._shiftAtDepth(hub.center, du);
+        for (const it of this._queue) moveItem(it.start, it.center, it.hubCenters);
+        if (this._growing) {
+            const u = this._growUniforms;
+            moveItem(u.u_start.value, u.u_center.value, u.u_hubCenters.value.slice(0, u.u_connCount.value));
+            this._bakePath(); // 경로 텍스처는 절대 좌표라 다시 굽는다(151×3 — 사실상 공짜)
+        }
     }
 
     _swapAndAccum(isFirst) {
@@ -1107,6 +1373,12 @@ export class MyceliumReceiver {
         this._lastTime = timestamp;
 
         this._growUniforms.u_time.value = this._clock.getElapsedTime();
+        this._stepScroll();
+        if (this._ghostStart !== null) {
+            const p = (performance.now() - this._ghostStart) / DISPERSE_MS;
+            this._dispUniforms.u_ghostT.value = Math.min(1, p);
+            if (p >= 1) this._ghostStart = null;
+        }
 
         if (!this._growing) {
             this._renderer.setRenderTarget(null);
@@ -1195,11 +1467,16 @@ export class MyceliumReceiver {
         this._growTarget.setSize(rW, rH);
         this._accumTarget.setSize(rW, rH);
         this._prevTarget.setSize(rW, rH);
+        this._ghostTarget.setSize(rW, rH);
+        this._ghostTarget2.setSize(rW, rH);
+        this._dispUniforms.u_ghostT.value = 1; // 크기가 바뀐 ghost는 버린다
+        this._ghostStart = null;
 
         const res = new THREE.Vector2(rW, rH);
         this._growUniforms.u_resolution.value.copy(res);
         this._accumUniforms.u_resolution.value.copy(res);
         this._dispUniforms.u_resolution.value.copy(res);
+        this._ghostUniforms.u_resolution.value.copy(res);
 
         const { ro, camMat, fov } = this._calcCamera();
         this._growUniforms.u_ro.value.copy(ro);
@@ -1209,5 +1486,6 @@ export class MyceliumReceiver {
         this._queue = [];
         this._growing = false;
         this._isFirstGlyph = true;
+        this._scrollJump = true; // 다음 reLayout이 새 크기로 전부 다시 구우니 스크롤도 바로 그 자리로
     };
 }

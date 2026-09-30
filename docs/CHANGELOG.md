@@ -6,6 +6,8 @@
 
 | 날짜 | 내용 | 상태 |
 | --- | --- | --- |
+| 2026-09-30 | **문장 단위 분할 보류** — 응답이 한 문장(`Maxchars` 60, mycelium 두세 어절)이고 긴 문장은 `glyphmode`가 처리해 필요 없어짐. 여러 문장 연출을 택할 때만 되살림 (PRD 3-E) | 보류 |
+| 2026-09-27 | **`glyphmode` step/page/scroll/disperse + `LLM_MODE`(web/td/off)** — 긴 문장 표시를 모드로, LLM 주인을 페이지마다 하나로. `turn`에 `llm` 필드 | 현행 |
 | 2026-09-26 | **LLM 배관 (TD `/chat/llm`)** — 키를 웹 번들 밖에 두려고 TD가 호출을 맡는다. 비스트리밍 HTTP + TD측 느린 드러내기. `turn.speaker` 가드로 자기응답 무한루프 차단 | 현행 |
 | 2026-09-26 | **교육 라이선스 적용 확인 + `/field` → `/chat/glyph` 통합** — TOP 1280 상한이 풀려 별도 루트를 둘 이유가 없어졌다. 글자 레이어가 드디어 `/chat` 컴포짓에 들어감(`comp_glyph`), webrenderTOP도 2560×1440으로 | 현행 |
 | 2026-09-26 | **sora 제출 계약 구현** — 4종 전부 제출 가능해짐. 모프/파동 스냅 + `preserveDrawingBuffer` + 투명 PNG 캡처 | 현행 |

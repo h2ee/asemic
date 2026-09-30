@@ -21,6 +21,8 @@
 //        speaker:'visitor'|'receiver', text = 방금 끝난 문장의 원문.
 //        TD의 LLM은 speaker==='visitor' 일 때만 응답을 만든다 — 자기가 흘려보낸
 //        수신자 차례에 또 반응하면 무한루프가 된다.
+//        llm:'td'|'web'|'off' (2026-09-27) = 이 페이지의 LLM_MODE. TD는 'td'(없으면 td)일 때만
+//        응답한다 — 브라우저 페이지(?llm=web)는 자기가 Ollama를 부르므로(src/dev/llm.js).
 //   { t:'receiver', name }                                  활성 receiver(로드/전환)
 //   { t:'mode',     joke, question }                        패널 토글 상태(→ LLM 프롬프트용)
 // TD → page

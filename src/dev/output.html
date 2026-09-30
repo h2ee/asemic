@@ -1,11 +1,11 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>asemic — output (전시 디스플레이 / TD Web Render TOP)</title>
-<style>
-    /* ── 2026-09-26 레이아웃 (PRD 2장 "화면") ─────────────────────────────────
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>asemic — output (전시 디스플레이 / TD Web Render TOP)</title>
+        <style>
+            /* ── 2026-09-26 레이아웃 (PRD 2장 "화면") ─────────────────────────────────
        기준 프레임은 TD /chat 과 같은 2560×1440(16:9). 좌표는 전부 목업 실측 비율.
        위쪽 3D 크롬 스트립·하늘 배경·웹캠·수신자 프로필은 **TD가 그린다** — 이 페이지는
        그 아래에 투명 배경으로 얹히는 레이어라, 여기 있는 건 네 조각뿐이다.
@@ -19,210 +19,276 @@
        이전 버전의 Figma 크롬 PNG(board1.png 등)는 2026-09-17 전량 삭제됨.
        그때 남아 있던 세로(1080×1920) 기준 오프셋도 이 개편에서 전부 교체했다.     */
 
-    :root {
-        /* 목업 실측 팔레트 */
-        --navy:       #578AAE;   /* 관람객 말풍선 */
-        --navy-blk:   #E8FAFF;   /* 그 위의 구조 블록 */
-        --white-bl:   #FCFEFF;   /* 수신자 말풍선 */
-        --white-blk:  #A2DDFF;   /* 그 위의 구조 블록 */
-        --ink:        #13456D;   /* 토스트 글자 */
-        --yellow:     #FFFF00;   /* 입력 바 */
-        --yellow-ink: #003279;
+            :root {
+                /* 목업 실측 팔레트 */
+                --navy: #578aae; /* 관람객 말풍선 */
+                --navy-blk: #e8faff; /* 그 위의 구조 블록 */
+                --white-bl: #fcfeff; /* 수신자 말풍선 */
+                --white-blk: #a2ddff; /* 그 위의 구조 블록 */
+                --ink: #13456d; /* 토스트 글자 */
+                --yellow: #ffff00; /* 입력 바 */
+                --yellow-ink: #003279;
 
-        --syl:        1.95vh;    /* 채팅창 음절 한 칸 */
-        --syl-gap:    0.30vh;
-    }
+                --syl: 1.95vh; /* 채팅창 음절 한 칸 */
+                --syl-gap: 0.3vh;
+            }
 
-    html, body {
-        margin: 0;
-        width: 100%;
-        height: 100%;
-        background: #eef0ec;
-        overflow: hidden;
-        font-family: 'MonoplexKR', 'Apple SD Gothic Neo', -apple-system, sans-serif;
-    }
+            html,
+            body {
+                margin: 0;
+                width: 100%;
+                height: 100%;
+                background: #eef0ec;
+                overflow: hidden;
+                font-family:
+                    'MonoplexKR',
+                    'Apple SD Gothic Neo',
+                    -apple-system,
+                    sans-serif;
+            }
 
-    /* ?chrome=0 — 크롬을 TD의 controller가 3D로 대체하는 모드(전시 기본).
+            /* 임시 배경 — TD /chat 의 comp_BG(하늘 + 3D 크롬 + 웹캠)를 2560×1440 한 장으로
+       구운 것. 웹캠까지 박혀 있는 정지 이미지라 확인용일 뿐이다. 레이아웃이 vw/vh 라
+       이미지도 뷰포트에 늘려 맞춰야 좌표가 어긋나지 않는다(cover 아님). body에만 걸어
+       ?chrome=0 에서는 아래 규칙이 그대로 투명으로 덮는다 — TD가 진짜 comp_BG를 깐다. */
+            body {
+                background: #eef0ec url('./chrome/img/comp_BG.jpeg') center / 100% 100% no-repeat;
+            }
+
+            /* ?chrome=0 — 크롬을 TD의 controller가 3D로 대체하는 모드(전시 기본).
        배경만 투명해지고 나머지 조각은 그대로 보인다 — 목업이 곧 이 모드의 합성 결과다. */
-    html.no-chrome, body.no-chrome { background: transparent; }
+            html.no-chrome,
+            body.no-chrome {
+                background: transparent;
+            }
 
-    /* ── 글자 ───────────────────────────────────────────────────────────────
+            /* ── 글자 ───────────────────────────────────────────────────────────────
        캔버스는 뷰포트 전체를 유지하고(모든 receiver가 window.innerWidth 기준으로
        픽셀을 계산한다) 부모가 클립만 한다. 배치를 이 사각형 안으로 모으는 건
        core.js layoutFor(rect) 쪽 일이고, 여기 클립은 마지막 안전망이다. */
-    #glyph-window {
-        position: fixed;
-        left: 1.8vw;
-        top: 38.4vh;
-        width: 80.2vw;
-        height: 57.9vh;
-        overflow: hidden;
-        z-index: 1;
-    }
-    #stage-canvas {
-        position: absolute;
-        left: -1.8vw;   /* = -#glyph-window left/top — 둘은 같이 바꿀 것 */
-        top: -38.4vh;
-        width: 100vw;
-        height: 100vh;
-        display: block;
-    }
+            #glyph-window {
+                position: fixed;
+                left: 1.8vw;
+                top: 38.4vh;
+                width: 80.2vw;
+                height: 57.9vh;
+                overflow: hidden;
+                z-index: 1;
+            }
+            #stage-canvas {
+                position: absolute;
+                left: -1.8vw; /* = -#glyph-window left/top — 둘은 같이 바꿀 것 */
+                top: -38.4vh;
+                width: 100vw;
+                height: 100vh;
+                display: block;
+            }
 
-    /* ── WILSON 워드마크 ────────────────────────────────────────────────────── */
-    #wilson {
-        position: fixed;
-        left: 83.2vw;
-        top: 38.5vh;
-        width: 14.8vw;
-        z-index: 4;
-        pointer-events: none;
-    }
+            /* ── WILSON 워드마크 ────────────────────────────────────────────────────── */
+            #wilson {
+                position: fixed;
+                left: 83.2vw;
+                top: 38.5vh;
+                width: 14.8vw;
+                z-index: 4;
+                pointer-events: none;
+            }
 
-    /* ── 채팅창 ─────────────────────────────────────────────────────────────
-       아래 정렬 — 새 발화가 아래에 붙고 오래된 것은 위로 밀려 잘린다. */
-    #chat-panel {
-        position: fixed;
-        left: 83.2vw;
-        top: 50vh;
-        width: 14.8vw;
-        height: 38vh;
-        z-index: 4;
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-end;
-        align-items: stretch;
-        gap: 0.9vh;
-        overflow: hidden;
-        pointer-events: none;
-    }
-    .bubble {
-        box-sizing: border-box;
-        padding: 0.85vh 0.7vw;
-        border-radius: 1.1vh;
-        display: flex;
-        flex-wrap: wrap;
-        align-content: flex-start;
-        gap: var(--syl-gap);
-        flex: 0 0 auto;
-    }
-    .bubble.from-receiver {         /* 흰 말풍선 = 수신자 */
-        background: var(--white-bl);
-        border: 0.12vh solid #FFFFFF;
-        --blk: var(--white-blk);
-    }
-    .bubble.from-visitor {          /* 남색 말풍선 = 관람객 */
-        background: var(--navy);
-        --blk: var(--navy-blk);
-    }
-    /* 음절 한 칸 — public/imgs/<type>.svg 의 실루엣만 mask로 가져오고 색은 여기서.
+            /* ── 채팅창 ─────────────────────────────────────────────────────────────
+       아래 정렬 — 새 발화가 아래에 붙고 오래된 것은 위로 밀려 WILSON 밑에서 사라진다.
+       위쪽은 mask로 알파를 깎아 흐리게 한다 — 뒤가 TD 하늘이라(투명 레이어) 배경색
+       그라디언트를 덮는 방식으로는 못 가린다. Figma의 gradient mask와 같은 원리.
+       아래 끝은 입력 바 위 3.6vh에 붙는다 — 입력 바가 위로 자라면 같이 밀려 올라간다
+       (--input-h 는 output-main.js가 #input-bar 실제 높이로 갱신). */
+            #chat-panel {
+                position: fixed;
+                left: 83.2vw;
+                top: 45vh;
+                bottom: calc(5.1vh + var(--input-h, 3.3vh) + 3.6vh);
+                width: 14.8vw;
+                z-index: 4;
+                overflow: hidden;
+                pointer-events: none;
+                -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 25%);
+                mask-image: linear-gradient(to bottom, transparent 0%, #000 25%);
+            }
+            /* 말풍선 묶음. chat.js가 새 말풍선이 붙을 때 이 묶음 전체를 밀어 올린다(FLIP).
+       퇴장(clear) 중인 묶음은 absolute로 빠져 새 묶음과 겹쳐 사라진다. */
+            .chat-stack {
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.9vh;
+            }
+            .bubble {
+                box-sizing: border-box;
+                padding: 1.25vh 0.95vw;
+                --r: 1.68vh; /* 둥근 코너 */
+                --r-tail: 0.14vh; /* 화자 쪽 아래 코너 (= 2px @1440) */
+                display: flex;
+                flex-wrap: wrap;
+                align-content: flex-start;
+                gap: var(--syl-gap);
+                flex: 0 0 auto;
+            }
+            .bubble.from-receiver {
+                /* 흰 말풍선 = 수신자 */
+                background: var(--white-bl);
+                border: 0.08vh solid var(--white-blk);
+                border-radius: var(--r) var(--r) var(--r) var(--r-tail); /* 왼쪽 아래만 각지게 */
+                --blk: var(--white-blk);
+            }
+            .bubble.from-visitor {
+                /* 남색 말풍선 = 관람객 */
+                background: var(--navy);
+                border-radius: var(--r) var(--r) var(--r-tail) var(--r); /* 오른쪽 아래만 각지게 */
+                --blk: var(--navy-blk);
+                /* 오른쪽 정렬 + 글 길이만큼만. 패널 폭을 넘으면 줄바꿈되며 그때부터는 꽉 찬다 */
+                align-self: flex-end;
+                max-width: 100%;
+            }
+            /* 음절 한 칸 — public/imgs/<type>.svg 의 실루엣만 mask로 가져오고 색은 여기서.
        (SVG가 단색 #A2DDFF 로 박혀 있어 <img>로는 말풍선별 색을 못 낸다) */
-    .syl {
-        width: var(--syl);
-        height: var(--syl);
-        background-color: var(--blk);
-        -webkit-mask-image: var(--svg);
-        mask-image: var(--svg);
-        -webkit-mask-size: contain;
-        mask-size: contain;
-        -webkit-mask-repeat: no-repeat;
-        mask-repeat: no-repeat;
-    }
-    .word-gap { width: calc(var(--syl) * 0.55); height: var(--syl); }
+            .syl {
+                width: var(--syl);
+                height: var(--syl);
+                background-color: var(--blk);
+                -webkit-mask-image: var(--svg);
+                mask-image: var(--svg);
+                -webkit-mask-size: contain;
+                mask-size: contain;
+                -webkit-mask-repeat: no-repeat;
+                mask-repeat: no-repeat;
+            }
+            .word-gap {
+                width: calc(var(--syl) * 0.55);
+                height: var(--syl);
+            }
 
-    /* ── 토스트 ─────────────────────────────────────────────────────────────
+            /* ── 토스트 ─────────────────────────────────────────────────────────────
        glassmorphism. ⚠️ backdrop-filter 는 **페이지 안의** 뒷면만 블러한다 —
        뒤에 있는 건 TD가 그리는 다른 레이어라 이 페이지에선 블러할 대상이 없다.
        그래서 반투명 흰 그라디언트 + 부드러운 그림자로 같은 인상을 낸다. */
-    #toast {
-        position: fixed;
-        left: 50%;
-        transform: translateX(-50%);
-        top: 90.8vh;
-        height: 4.6vh;
-        padding: 0 1.6vh;
-        z-index: 5;
-        display: flex;
-        align-items: center;
-        gap: 0.9vh;
-        border-radius: 2.3vh;
-        background: linear-gradient(100deg,
-            rgba(255, 255, 255, 0.35) 0%,
-            rgba(255, 255, 255, 0.92) 28%,
-            rgba(255, 255, 255, 0.92) 72%,
-            rgba(255, 255, 255, 0.35) 100%);
-        box-shadow: 0 0.4vh 1.6vh rgba(120, 175, 210, 0.28);
-        color: var(--ink);
-        font-family: 'Inconsolata', ui-monospace, monospace;
-        font-size: 2.1vh;
-        letter-spacing: 0.06em;
-        white-space: nowrap;
-        pointer-events: none;
-    }
-    #toast[hidden] { display: none; }
-    #toast .icon {
-        width: 2.1vh;
-        height: 2.1vh;
-        background-color: var(--ink);
-        -webkit-mask-image: var(--svg);
-        mask-image: var(--svg);
-        -webkit-mask-size: contain;
-        mask-size: contain;
-        -webkit-mask-repeat: no-repeat;
-        mask-repeat: no-repeat;
-    }
-    #toast .icon[hidden] { display: none; }
+            /* 가운데 정렬을 transform 없이 한다 — 등장/퇴장 애니메이션(chat.js)이 transform을 쓴다. */
+            #toast {
+                position: fixed;
+                left: 0;
+                right: 0;
+                margin: 0 auto;
+                width: fit-content;
+                top: 90.8vh;
+                height: 4.6vh;
+                padding: 0.9vh 1.3vw 0.9vh 1.6vw;
+                z-index: 5;
+                display: flex;
+                align-items: center;
+                gap: 1.2vh;
+                border-radius: 10vh;
+                background: linear-gradient(
+                    100deg,
+                    rgba(255, 255, 255, 0.35) 0%,
+                    rgba(255, 255, 255, 0.92) 28%,
+                    rgba(255, 255, 255, 0.92) 72%,
+                    rgba(255, 255, 255, 0.35) 100%
+                );
+                box-shadow: inset 0.3vh 0.3vh 1.6vh rgba(120, 175, 210, 0.38);
+                color: var(--ink);
+                font-family: 'Inconsolata', ui-monospace, monospace;
+                font-size: 2vh;
+                letter-spacing: 0.06em;
+                white-space: nowrap;
+                pointer-events: none;
+            }
+            #toast[hidden] {
+                display: none;
+            }
+            #toast .icon {
+                width: 2.1vh;
+                height: 2.1vh;
+                background-color: var(--ink);
+                -webkit-mask-image: var(--svg);
+                mask-image: var(--svg);
+                -webkit-mask-size: contain;
+                mask-size: contain;
+                -webkit-mask-repeat: no-repeat;
+                mask-repeat: no-repeat;
+            }
+            #toast .icon[hidden] {
+                display: none;
+            }
 
-    /* ── 입력 바 ────────────────────────────────────────────────────────────
+            /* ── 입력 바 ────────────────────────────────────────────────────────────
        관람객이 지금 치고 있는 원문. LLM 응답과는 무관하다.
        TD 모드에선 두벌식 조합을 TD가 하고 완성 문자열을 {t:'text'}로 밀어 넣으므로,
-       이 input은 "표시용"에 가깝다(포커스는 유지 — 웹 온리로 후퇴할 때 그대로 쓴다). */
-    #input-bar {
-        position: fixed;
-        left: 83.2vw;
-        top: 91.6vh;
-        width: 14.8vw;
-        height: 3.3vh;
-        z-index: 5;
-        background: var(--yellow);
-        display: flex;
-        align-items: center;
-        padding: 0 0.6vw;
-        box-sizing: border-box;
-    }
-    #user-input {
-        width: 100%;
-        border: none;
-        outline: none;
-        background: transparent;
-        color: var(--yellow-ink);
-        font-family: inherit;
-        font-size: 1.9vh;
-    }
-    #user-input::placeholder { color: rgba(0, 50, 121, 0.35); }
+       이 input은 "표시용"에 가깝다(포커스는 유지 — 웹 온리로 후퇴할 때 그대로 쓴다).
+       글이 넘치면 한 줄씩 **위로** 자란다 — 그래서 top이 아니라 bottom에 고정하고,
+       <input> 대신 줄바꿈되는 <textarea rows=1>. 높이는 output-main.js fitInput()이 맞춘다. */
+            #input-bar {
+                position: fixed;
+                left: 83.2vw;
+                bottom: 5.1vh; /* = 100 - (91.6 + 3.3) — 한 줄일 때 예전 위치 그대로 */
+                width: 14.8vw;
+                min-height: 3.6vh;
+                z-index: 5;
+                background: var(--yellow);
+                display: flex;
+                align-items: center;
+                padding: 0.6vh 0.6vw;
+                box-sizing: border-box;
+            }
+            #user-input {
+                display: block;
+                width: 100%;
+                margin: 0;
+                padding: 0;
+                border: none;
+                outline: none;
+                background: transparent;
+                color: var(--yellow-ink);
+                font-family: inherit;
+                font-size: 1.8vh;
+                line-height: 2.1vh;
+                resize: none;
+                overflow: hidden;
+            }
+            #user-input::placeholder {
+                color: rgba(0, 50, 121, 0.35);
+            }
 
-    #indicators {
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        z-index: 11;
-    }
-</style>
-</head>
-<body>
-<div id="glyph-window">
-    <canvas id="stage-canvas"></canvas>
-</div>
+            #indicators {
+                position: fixed;
+                inset: 0;
+                pointer-events: none;
+                z-index: 10;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="glyph-window">
+            <canvas id="stage-canvas"></canvas>
+        </div>
 
-<img id="wilson" alt="" />
-<div id="chat-panel"></div>
+        <img id="wilson" alt="" />
+        <div id="chat-panel"></div>
 
-<div id="toast" hidden><span class="icon"></span><span class="label"></span></div>
+        <div id="toast" hidden><span class="icon"></span><span class="label"></span></div>
 
-<div id="input-bar">
-    <input id="user-input" type="text" placeholder="한글 입력" autocomplete="off" autofocus />
-</div>
-<div id="indicators"></div>
+        <div id="input-bar">
+            <textarea
+                id="user-input"
+                rows="1"
+                placeholder="한글 입력"
+                autocomplete="off"
+                spellcheck="false"
+                autofocus
+            ></textarea>
+        </div>
+        <div id="indicators"></div>
 
-<script type="module" src="./output-main.js"></script>
-</body>
+        <script type="module" src="./output-main.js"></script>
+    </body>
 </html>

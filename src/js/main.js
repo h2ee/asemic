@@ -192,7 +192,7 @@ async function Init() {
     function reLayout(items) {
         const W = window.innerWidth;
         const H = window.innerHeight;
-        const { positions, sylItems, widths, heights, sylSize } = layoutFor(
+        const { positions, sylItems, widths, heights, sylSize, glyphScale } = layoutFor(
             rm,
             items,
             W,
@@ -202,7 +202,7 @@ async function Init() {
         _sylItems = sylItems;
         _positions = positions;
         if (sylItems.length > 0) {
-            dispatchToReceiver(rm, sylItems, positions, sylSize, widths, heights);
+            dispatchToReceiver(rm, sylItems, positions, sylSize, widths, heights, glyphScale);
         }
     }
 

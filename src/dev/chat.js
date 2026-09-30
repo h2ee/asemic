@@ -61,6 +61,22 @@ function renderBubble(speaker, items) {
     return bubble;
 }
 
+// ── 애니메이션 ──────────────────────────────────────────────────────────────
+// Figma에서 받은 키프레임(toast-reveal / toast-slide)을 WAAPI로 옮긴 것.
+// CSS @keyframes 대신 JS인 이유: 퇴장 애니가 끝난 뒤 hidden을 걸어야 하고,
+// 퇴장 도중 다시 말하기 시작하면 끊고 되돌려야 해서.
+const EASE_OUT = 'cubic-bezier(0.22, 1, 0.36, 1)';
+
+const TOAST_REVEAL = [
+    { opacity: 0.4, clipPath: 'inset(0 100% 0 0 round 999px)', transform: 'translateX(-24px)' },
+    { opacity: 1, clipPath: 'inset(0 0 0 0 round 999px)', transform: 'translateX(0)' },
+];
+const TOAST_IN_MS = 520;
+const TOAST_OUT_MS = 280;
+
+const BUBBLE_IN_MS = 480;
+const BUBBLE_OUT_MS = 360;
+
 /**
  * @param panel  채팅창 컨테이너 (#chat-panel)
  * @param toast  토스트 컨테이너 (#toast) — .icon / .label 자식을 가진다
@@ -69,22 +85,71 @@ export function buildChat({ panel, toast }) {
     const icon = toast.querySelector('.icon');
     const label = toast.querySelector('.label');
 
+    // 말풍선은 .chat-stack 안에 쌓는다. clear 때는 묶음째 퇴장시키고 새 묶음으로 갈아끼운다.
+    let stack = document.createElement('div');
+    stack.className = 'chat-stack';
+    panel.replaceChildren(stack);
+
+    // 토스트 상태 — 매 키 입력마다 setTalking이 불리므로 "바뀔 때"만 애니메이션한다.
+    let shownKey = null; // 지금 보이는 화자('visitor' | 'receiver:<name>'), 숨김이면 null
+    let toastAnim = null;
+
+    function showToast(key) {
+        if (key === shownKey) return;
+        shownKey = key;
+        toastAnim?.cancel();
+        toast.hidden = false;
+        // 화자가 바뀌어도 새로 등장한다 — 누가 말하는지 바뀐 게 유일한 단서라서.
+        toastAnim = toast.animate(TOAST_REVEAL, { duration: TOAST_IN_MS, easing: EASE_OUT });
+    }
+
+    function hideToast() {
+        if (shownKey === null) return;
+        shownKey = null;
+        toastAnim?.cancel();
+        // reveal을 거꾸로 — 오른쪽에서 왼쪽으로 접히며 사라진다.
+        toastAnim = toast.animate(TOAST_REVEAL, {
+            duration: TOAST_OUT_MS,
+            easing: 'ease-in',
+            direction: 'reverse',
+            fill: 'forwards',
+        });
+        const a = toastAnim;
+        a.onfinish = () => {
+            if (toastAnim !== a) return; // 그 사이 다시 등장했으면 건드리지 않는다
+            toast.hidden = true;
+            a.cancel(); // fill:forwards 풀기 — 다음 등장이 깨끗한 상태에서 시작하도록
+            toastAnim = null;
+        };
+    }
+
     return {
         // 한 발화가 끝났을 때 채팅창에 남긴다.
+        // 새 말풍선이 아래에 붙으며 묶음 전체가 그 높이만큼 위로 미끄러진다(FLIP) —
+        // 새 말풍선은 패널 아래 경계 밖에서 올라오며 나타난다.
         addTurn(speaker, items) {
             if (!items?.length) return;
-            panel.appendChild(renderBubble(speaker, items));
-            while (panel.children.length > MAX_TURNS) panel.removeChild(panel.firstChild);
+            const before = stack.offsetHeight;
+            const bubble = renderBubble(speaker, items);
+            stack.appendChild(bubble);
+            while (stack.children.length > MAX_TURNS) stack.removeChild(stack.firstChild);
+            const dy = stack.offsetHeight - before;
+
+            stack.getAnimations().forEach(a => a.finish());
+            stack.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }], {
+                duration: BUBBLE_IN_MS,
+                easing: EASE_OUT,
+            });
+            bubble.animate([{ opacity: 0 }, { opacity: 1 }], { duration: BUBBLE_IN_MS, easing: EASE_OUT });
         },
 
         // speaker: 'visitor' | 'receiver' | null(아무도 말하지 않는 중 → 숨김)
         // receiverName은 speaker==='receiver'일 때 아이콘을 고르는 데 쓴다.
         setTalking(speaker, receiverName) {
             if (!speaker) {
-                toast.hidden = true;
+                hideToast();
                 return;
             }
-            toast.hidden = false;
             if (speaker === 'receiver') {
                 const url = ICONS[receiverName];
                 icon.hidden = !url;
@@ -96,11 +161,26 @@ export function buildChat({ panel, toast }) {
                 icon.hidden = true;
                 label.textContent = 'you are talking ...';
             }
+            showToast(speaker === 'receiver' ? `receiver:${receiverName}` : 'visitor');
         },
 
+        // 기록 전체 퇴장 — 묶음째 위로 밀리며 흐려진다. 도중에 새 발화가 와도 새 묶음에 붙는다.
         clear() {
-            panel.replaceChildren();
-            toast.hidden = true;
+            hideToast();
+            const old = stack;
+            stack = document.createElement('div');
+            stack.className = 'chat-stack';
+            panel.appendChild(stack);
+            if (!old.children.length) {
+                old.remove();
+                return;
+            }
+            old.getAnimations().forEach(a => a.finish());
+            old.animate([{ opacity: 1, transform: 'translateY(0)' }, { opacity: 0, transform: 'translateY(-48px)' }], {
+                duration: BUBBLE_OUT_MS,
+                easing: 'ease-in',
+                fill: 'forwards',
+            }).onfinish = () => old.remove();
         },
     };
 }

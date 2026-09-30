@@ -214,7 +214,8 @@ export function jamoToVec3(key, type, scale, offset = new THREE.Vector3()) {
 // project(u, v) → THREE.Vector3 — 주면 positions를 "음절 중심의 화면 uv"로 보고 receiver
 // 카메라로 역투영한다(mycelium.screenToWorld). 안 주면 예전 근사식(sceneH·layoutScale·
 // startOffsetX)을 쓴다.
-export function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = { x: 1, y: 1 }, project = null) {
+// glyphScale — 결과에 scale로 실어 보낸다(모양은 sylSize=기준 크기로 계산, 실제 크기 = ×scale).
+export function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = { x: 1, y: 1 }, project = null, glyphScale = 1) {
     const W = window.innerWidth;
     const H = window.innerHeight;
     const sceneH = 2.07 * 2;
@@ -303,6 +304,7 @@ export function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = 
         diphthong,
         confirmed,
         count: Math.min(sylItems.length, MAX_SYL),
+        scale: glyphScale,
     };
 }
 
@@ -372,23 +374,38 @@ export function getPatternType(jung, jong, jamo = JAMO) {
 //       3줄로도 넘치면 안전망으로 4줄, 5줄… 크기까지 내려간다(잘리지 않게). LLM 문장 길이를
 //       제한해 두면 실제로는 3단계 안에서 끝난다.
 //    lastY는 rect 로컬 px 그대로 — 호출부가 다음 줄 기준선으로만 쓴다.
+//
+// displayScale — receiver가 들고 있으면 sylSize/wrapStep/wrapMargin에 곱하되 glyphScale의
+//    기준(refSyl)에는 안 곱한다. 그래서 모양은 기준 크기로 계산되고 셰이더가 통째로 키운다 —
+//    굵기·혹·결까지 같은 비율로 커져 "같은 글자가 커진 것"이 된다(sylSize를 직접 올리면
+//    월드 상수인 굵기는 그대로라 글자가 가늘어진다).
+//
+// opts.line — 한 줄 테이프(glyphmode scroll). 줄바꿈 없이 가로로 끝없이 늘어놓고 rect 세로
+//    가운데에 둔다. 단계 축소는 안 한다(한 줄이 rect.h에 안 들어갈 때만 줄임). 결과의 scrollX =
+//    마지막 음절 오른쪽 끝이 rect 오른쪽 끝에 오도록 테이프를 왼쪽으로 밀어야 하는 양(px, ≥0).
+//    positions는 밀기 **전** 테이프 좌표 — 미는 건 receiver(scrollTo/scrollBase)가 한다.
+//    rect와 glyphExtent가 둘 다 있어야 먹는다.
 const FIT_LINES = 3;
 const FIT_LINES_SAFETY = 12;
+const LINE_TAPE_W = 1e6; // 한 줄 모드에서 "줄바꿈 안 함"을 대신하는 충분히 넓은 폭(px)
 
-export function layoutFor(rm, items, W, H, offsetY, rect = null) {
+export function layoutFor(rm, items, W, H, offsetY, rect = null, opts = {}) {
     const r = rm.current;
     const refH = r?.refHeight;
     const k = refH ? H / refH : 1;
     const ext = r?.glyphExtent;
+    const ds = r?.displayScale ?? 1;
+    const line = !!(opts.line && rect && ext);
     const layoutFn = rm.name === 'signal' ? calcShelfLayout : calcTextboxLayout;
     const boxW = rect ? rect.w : W;
     const boxH = rect ? rect.h : H;
 
     const layoutAt = scale => {
-        const sylSize = (r?.sylSize ?? 55) * scale;
+        const z = scale * ds;
+        const sylSize = (r?.sylSize ?? 55) * z;
         const lineHeightRatio = r?.lineHeightRatio ?? 1.3;
-        const wrapStep = (r?.wrapStep ?? (sylSize / scale) * 2) * scale;
-        const wrapMargin = (r?.wrapMargin ?? sylSize / scale) * scale;
+        const wrapStep = (r?.wrapStep ?? (r?.sylSize ?? 55) * 2) * z;
+        const wrapMargin = (r?.wrapMargin ?? r?.sylSize ?? 55) * z;
         const meta = { sylSize, lineHeightRatio, wrapStep, wrapMargin };
 
         if (!ext) {
@@ -406,25 +423,35 @@ export function layoutFor(rm, items, W, H, offsetY, rect = null) {
         // 폭을 boxW-2dx로 줘야 오른쪽 끝 음절도 boxW-e 안에 들어온다.
         const e = ext * sylSize;
         const dx = e - sylSize * 0.5;
-        const dy = e - (40 + sylSize);
-        const innerW = boxW - 2 * dx;
+        // 한 줄 모드는 줄 중심을 rect 세로 가운데로
+        const dy = (line ? boxH / 2 : e) - (40 + sylSize);
+        const innerW = line ? LINE_TAPE_W : boxW - 2 * dx;
         const out = layoutFn(items, sylSize, innerW, boxH, lineHeightRatio, offsetY, wrapStep, wrapMargin);
         const ox = rect ? rect.x : 0;
         const oy = rect ? rect.y : 0;
+        const n = out.positions.length;
+        const lastX = n ? out.positions[n - 1][0] * innerW + dx : 0; // 마지막 음절 중심(rect 로컬 px)
+        const scrollX = n ? Math.max(0, lastX + e - boxW) : 0;
         out.positions = out.positions.map(([u, v]) => [(ox + u * innerW + dx) / W, (oy + v * boxH + dy) / H]);
         out.lastY += dy;
         const bottom = out.sylItems.length ? out.lastY + e - offsetY : 0;
-        return { ...out, ...meta, bottom };
+        return { ...out, ...meta, bottom, scrollX };
     };
 
-    if (!(rect && ext)) {
-        const res = layoutAt(k);
+    // glyphScale — 이 배치의 sylSize가 "기준 크기"(노브 안 댄 receiver 기본값 × H/refHeight)의
+    // 몇 배인가. mycelium은 모양을 기준 크기로 계산하고 셰이더에서 이 배율로 통째로 줄인다 —
+    // 단계 축소·크기 노브로 작아져도 굵기가 같은 비율로 줄어 "같은 글자가 작아진 것"으로 보인다.
+    const refSyl = (r?._ctlBase?.sylSize ?? r?.sylSize ?? 55) * k;
+    const finish = (res, fitLines) => {
         delete res.bottom;
-        return { ...res, fitLines: 0 };
-    }
+        return { ...res, fitLines, glyphScale: res.sylSize / refSyl };
+    };
+
+    if (!(rect && ext)) return finish(layoutAt(k), 0);
     // N줄 높이 = 2e + (N-1)·lineH = sylSize·(2·ext + (N-1)·lineHeightRatio)
     const lhr = r?.lineHeightRatio ?? 1.3;
-    const baseSyl = (r?.sylSize ?? 55) * k;
+    const baseSyl = (r?.sylSize ?? 55) * k * ds;
+    if (line) return finish(layoutAt(k * Math.min(1, boxH / (baseSyl * 2 * ext))), 1);
     let res;
     for (let n = 1; n <= FIT_LINES_SAFETY; n++) {
         const s = Math.min(1, boxH / (baseSyl * (2 * ext + (n - 1) * lhr)));
@@ -432,8 +459,29 @@ export function layoutFor(rm, items, W, H, offsetY, rect = null) {
         res.fitLines = n;
         if (res.bottom <= boxH + 0.5) break;
     }
-    delete res.bottom;
-    return res;
+    return finish(res, res.fitLines);
+}
+
+// ── page 모드: 음절 size개씩 끊기 ─────────────────────────────────────────────
+// output 페이지의 글자 표시 모드는 둘이다(glyphmode):
+//   step — 문장 전체를 한 화면에, 넘치면 layoutFor가 1~3줄 단계로 축소(기본)
+//   page — 음절 size개씩 끊어서 한 페이지씩(12자면 5·5·2). 채팅창엔 문장 그대로 이어짐
+//   scroll — 한 줄 테이프, 넘치면 왼쪽으로 흘러감(layoutFor opts.line + receiver.scrollTo)
+// 페이지 경계는 (size+1)번째 음절이 들어오는 순간. 페이지 첫머리의 공백은 버린다.
+export function paginate(items, size) {
+    const pages = [[]];
+    let n = 0;
+    for (const it of items) {
+        if (!it.isSpace && n === size) {
+            pages.push([]);
+            n = 0;
+        }
+        const page = pages[pages.length - 1];
+        if (it.isSpace && page.length === 0) continue;
+        page.push(it);
+        if (!it.isSpace) n++;
+    }
+    return pages;
 }
 
 // 제출(submit) 3단 계약(flushQueue/captureFrame/clearAccum)을 구현한 수신자인가.
@@ -445,12 +493,19 @@ export function canSubmit(receiver) {
 }
 
 // ── 수신자별 update 분기 ──────────────────────────────────────────────────────
-export function dispatchToReceiver(rm, sylItems, positions, sylSize, widths, heights) {
+// glyphScale: layoutFor 결과. mycelium만 쓴다 — 모양은 sylSize/glyphScale(기준 크기)로 만들고
+// 셰이더가 glyphScale로 균일 축소. 다른 receiver는 예전처럼 sylSize 그대로.
+export function dispatchToReceiver(rm, sylItems, positions, sylSize, widths, heights, glyphScale = 1) {
     if (!sylItems.length) return;
     const layoutScale = rm.current?.layoutScale ?? { x: 1, y: 1 };
     if (rm.name === 'mycelium') {
         const project = rm.current?.screenToWorld ? (u, v) => rm.current.screenToWorld(u, v) : null;
-        rm.update(syllablesToUniforms(sylItems, positions, sylSize, layoutScale, project), sylItems.length, sylItems);
+        const gs = project ? glyphScale : 1; // 역투영(project) 없는 예전 경로는 균일 스케일 안 씀
+        rm.update(
+            syllablesToUniforms(sylItems, positions, sylSize / gs, layoutScale, project, gs),
+            sylItems.length,
+            sylItems,
+        );
     } else if (rm.name === 'sora') {
         rm.update(sylItems, positions, JAMO);
     } else if (rm.name === 'signal') {

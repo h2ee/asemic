@@ -112,7 +112,9 @@ Communication = transmission(전달) + exchange(교환) + connection(연결)로 
     - `getPatternType()`은 지금 `signal.js` 안에 private이다 → `core.js`로 옮겨 export (signal은 거기서 import). 6종 이름이 곧 SVG 파일명이라 매핑 테이블이 필요 없다
 - [x] ~~**입력 바(노랑)**~~ (2026-09-26) — 관람객 원문. LLM 응답과 무관하게 관람객 입력만 표시
 - [x] ~~**폰트**~~ (2026-09-26) — `public/fonts/Inconsolata.otf`(라틴/토스트), `public/fonts/MonoplexKR-Regular.ttf`(한글/입력 바). `@font-face`로 로컬 등록 — TD의 CEF 안에서 도는 페이지라 시스템 폰트에 기대지 않는다
-- [ ] **문장 단위 분할** — LLM 응답을 문장으로 쪼개 한 문장씩 교체. 스트리밍이 문장 끝에 도달하면 그 문장을 채팅창으로 넘기고 다음 문장을 글자 영역에 새로 시작
+- [x] ~~**글자 표시 모드 `glyphmode`**~~ (2026-09-27) — `step`(기본, 단계 축소) / `page`(5음절씩) / `scroll`(한 줄 테이프, mycelium만) / `disperse`(page + 비울 때 노이즈로 흩어짐). `?glyphmode=` 또는 컨트롤 `glyphmode` 버튼 순환. 긴 문장을 화면에 담는 문제는 여기서 푼다
+- [x] ~~**LLM 주인 분리 `LLM_MODE`**~~ (2026-09-27) — `?llm=web|td|off`. 브라우저 페이지는 `src/dev/llm.js`가 Ollama를 직접 부르고, `turn/done`의 `llm` 필드로 TD가 자기 턴만 응답
+- **문장 단위 분할 → E(보류)로 이동** (2026-09-30)
 - [ ] **포먼트 합성 사운드** — `jamo_data.csv`의 F1/F2/F3가 그대로 합성기 입력. 음원 → BiquadFilter 3개(F1/F2/F3 밴드패스) → 게인 엔벨로프. 초성은 조음방법(y)이 음원 종류를 정함(파열=버스트 / 마찰=노이즈 / 비음=저역 / 유음=글라이드), 긴장도(z)=어택, 조음위치(x)=버스트 스펙트럼 중심. **양쪽 화자 모두 소리 남, receiver별 음색 다르게.** 음절 생성이 이미 이산 이벤트라 트리거 지점은 있다. **웹에 둘 것**(음절 타이밍이 여기 있음)
 - [ ] **iPad 다이얼 웹페이지** — `/controller/dial/dial_ext`의 제스처 로직(구멍 잡기 → 시계방향 sweep → 멈추개 도달 → 놓기)을 JS로 이식 → `{t:'receiver', name}`. 원본이 `Apply(u, v, down)`으로 이미 마우스에서 분리된 패널 좌표 기반이라 알고리즘은 그대로 옮겨진다
 - [ ] `calcTextboxLayout`에 `offsetX` 추가 — 글자 영역이 고정 rect라 캔버스 배치로 우회 가능, 급하지 않음
@@ -122,8 +124,8 @@ Communication = transmission(전달) + exchange(교환) + connection(연결)로 
 
 - [x] ~~**교육 라이선스 구매·적용**~~ (2026-09-26 확인). `/chat`이 2560×1440으로 클램프 없이 렌더된다
 - [x] ~~**`/field` 글자 레이어를 컴포짓에 합치기**~~ (2026-09-26). `/field` 루트를 통째로 `/chat/glyph`로 옮기고 삭제. `comp_glyph`(over) 한 단 추가, webrenderTOP도 1280×720 → 2560×1440
-- [ ] **3D 크롬을 가로 스트립으로 재구성** — 수신자 프로필 / 기계 / 관람객 캠
-- [ ] **receiver 아이콘 프로필 스위칭** — `src/dev/chrome/img/*.png`가 여기 쓰인다
+- [x] ~~**3D 크롬을 가로 스트립으로 재구성**~~ (2026-09-30 확인) — 수신자 프로필 / 기계 / 관람객 캠(`videodevin1`). `comp_toon` + `BG` → `comp_BG` → `comp_glyph`(글자 over) → `out1`, 2560×1440
+- [x] ~~**receiver 아이콘 프로필 스위칭**~~ (2026-09-30 확인) — `/chat/icons`(`Iconname` = `op.AsemicIcons.par.Iconname` 식)가 다이얼 선택을 따라 BG 시트를 바꾼다. 웹 쪽 `src/dev/chrome/img/*.png`는 토스트·채팅창(`chat.js`)이 쓴다. 4종 전부 실제 전환 확인은 아직
 - [ ] **`midiinCHOP` ← 피지컬 패널** (노브→`param`, 프리셋 버튼→`text`+`submit`). ⚠️ `par.onebased` 기본 True라 채널 이름이 1씩 밀린다(CC 0 = `c1`)
 - [ ] **`serialDAT` → 턴테이블** + 도착 ack(`{t:'receiver', name, arrived:true}`)로 물리 도착과 화면 전환 동기화
 - [ ] 두벌식 조합기 유지 여부 재검토 — 출력이 TD 컴포짓으로 남으면 계속 필요
@@ -151,6 +153,7 @@ Communication = transmission(전달) + exchange(교환) + connection(연결)로 
 - [ ] **페르소나 다듬기** — `/chat/llm/personas` 테이블(receiver 이름이 키). 초안은 넣어뒀고, 실제 출력 보고 조정 필요
     - signal 완료 (2026-09-26) — 초안은 "빨간불! 멈춰!"(평균 ~9자)로 수렴. 길이(25~45자)·자연문(단어 나열 금지)·입력 따라 읊기 금지·말투 예시 2개를 넣어 평균 ~31자, 입력마다 다른 답으로 개선
     - mycelium/sora/dandelion도 같은 공식으로 수정 (2026-09-26) — 초안은 각각 3~13자("어둠.") / 의성어 반복+`**` 마크다운 / 9~27자. 개정 후 대부분 25~45자
+    - mycelium만 짧게 (2026-09-26) — 5~16자 목표. **gemma는 글자 수 지시를 잘 못 지킨다**(12자로 줘도 13~20자). "두세 어절(띄어쓰기 두 번 이하)"로 지시하니 9~14자로 안정. 시작어가 "뿌리는…"으로 쏠리는 경향은 남음(주어 후보 목록을 주면 목록 앞쪽으로 쏠림만 옮겨 가서 뺐다)
     - ⚠️ **말투 예시에 프리셋 문장 주제(이름·날씨·안부)를 넣지 말 것** — 같은 질문이 오면 예시를 그대로 복사한다(mycelium에서 확인)
 - [ ] **전시 셋업 때 Ollama 상주화** — 개발 중엔 불필요(오히려 메모리 ~8GB 상주가 부담)
     - `brew services start ollama` — 터미널의 `ollama serve` 없이 로그인 시 자동 기동·재시작. 먼저 터미널 쪽을 꺼서 포트 11434 충돌 방지
@@ -162,6 +165,7 @@ Communication = transmission(전달) + exchange(교환) + connection(연결)로 
 
 - **마이크 최종 역할** — 연출 장치로 잠정 확정, 실제 오디오 입력은 안 받음
 - **음성인식** — 보류 (섹션 2)
+- **문장 단위 분할** (2026-09-30 보류) — LLM 응답을 문장으로 쪼개 한 문장씩 글자 영역에 띄우고 지나간 문장은 채팅창으로. 현재 응답이 한 문장(`Maxchars` 60, mycelium은 두세 어절)이고 긴 문장 처리는 `glyphmode`가 맡아 필요 없음. **수신자가 여러 문장으로 말하게 하는 연출을 택할 때만** 되살린다
 - **아카이빙** — 의사만 확인, 설계 미착수. 현재는 순수 프론트엔드라 새로고침 시 히스토리가 전부 사라진다(의도된 프로토타입 동작). 진행한다면 로컬 서버(라즈베리파이 후보) + `captureFrame()` dataURL·원문을 제출 시점마다 저장하는 방식이 유력
 
 ---
