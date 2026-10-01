@@ -29,7 +29,11 @@ import {
     resolveControl,
     applyKnob,
     paginate,
+    voiceFor,
+    addedSyllable,
+    lateEnding,
 } from '../js/core.js';
+import { createSound } from '../js/sound.js';
 import { createBridge } from './bridge.js';
 import { createLLM } from './llm.js';
 import { buildChat } from './chat.js';
@@ -48,6 +52,9 @@ if (!CHROME) {
     document.body.classList.add('no-chrome');
 }
 const RECEIVER = params.get('receiver') ?? 'mycelium';
+// ?receiver= 를 직접 적으면 그 receiver로 고정 — 브릿지 {t:'receiver'}(TD 다이얼, 접속 시 동기화)를
+// 무시한다. 안 적으면 TD 다이얼을 따라간다. 브라우저와 TD 화면을 따로 띄워 비교할 때 쓴다.
+const RECEIVER_PINNED = params.has('receiver');
 // 수신자 응답(LLM)을 누가 만드나. ?llm=web|td|off
 //   td  — TD /chat/llm 이 만들어 브릿지 {t:'text', speaker:'receiver'}로 흘려보낸다 (TD 임베드 기본)
 //   web — 이 페이지가 직접 로컬 Ollama를 부른다(src/dev/llm.js). TD 없이 완결 (브라우저 기본)
@@ -70,6 +77,13 @@ const glyphRect = () => {
 
 const canvas = document.getElementById('stage-canvas');
 const rm = new ReceiverManager(canvas);
+// ── 사운드 — 음절이 화면에서 자라기 시작하는 순간 울린다(receiver가 onSyllableStart를 부름).
+// ?sound=0 이면 끔. 브라우저는 첫 키 입력/클릭에서 오디오가 풀린다
+const sound = createSound({ enabled: params.get('sound') !== '0' });
+rm.onSyllableStart = (syl, name) => sound.play(voiceFor(syl, name), syl);
+for (const ev of ['keydown', 'pointerdown']) window.addEventListener(ev, sound.unlock, { capture: true });
+sound.unlock(); // TD(CEF)가 autoplay를 허용하면 여기서 바로 풀린다
+window.sound = sound; // 콘솔 디버깅용
 await rm.setReceiver(RECEIVER, { transparentOutput: true });
 window.rm = rm; // 콘솔 디버깅용
 
@@ -131,6 +145,7 @@ let _sylItems = [];
 let _positions = [];
 let _allItems = [];
 let _prevSpaceCount = 0;
+let _prevSylTotal = 0; // 사운드 대체 트리거용 음절 수
 // 지금 글자 영역에 그려지는 문장이 누구 것인지. 'visitor' | 'receiver'.
 // 브릿지 {t:'text', speaker}가 정하고, 키보드 직접 입력은 항상 관람객이다.
 let _speaker = 'visitor';
@@ -143,17 +158,18 @@ let _held = false;
 let _heldItems = []; // _held 동안 화면에 남아 있는 그 문장(모드 전환 시 다시 그리려고)
 
 // ── 글자 표시 모드 (glyphmode) ──────────────────────────────────────────────
-// step(기본) = 문장 전체, 넘치면 단계 축소 / page = 음절 PAGE_SIZE개씩 한 페이지 (core.paginate)
-// scroll = 한 줄 테이프, 넘치면 왼쪽으로 흘러감. receiver가 scrollTo를 구현해야 먹는다
+// step = 문장 전체, 넘치면 단계 축소 / page = 음절 PAGE_SIZE개씩 한 페이지 (core.paginate)
+// scroll(기본) = 한 줄 테이프, 넘치면 왼쪽으로 흘러감. receiver가 scrollTo를 구현해야 먹는다
 //          (2026-09-26 현재 mycelium만) — 없으면 step처럼 그린다.
 // disperse = page처럼 끊되, 화면을 비울 때마다(페이지 넘김·제출·남겨 둔 문장 비움·화자 전환)
 //          이전 글자가 흩어지며 사라지고 그사이 새 글자가 자란다. receiver.disperse가 없으면 page와 같다
 //          (2026-09-27 현재 mycelium만).
-// ?glyphmode=page|scroll|disperse 로 시작하거나 컨트롤 'glyphmode' 버튼(순환)·'paging' 토글로 바꾼다.
+// ?glyphmode=step|page|scroll|disperse 로 시작하거나 컨트롤 'glyphmode' 버튼(순환)·'paging' 토글로 바꾼다.
 const GLYPH_MODES = ['step', 'page', 'scroll', 'disperse'];
 const PAGE_SIZE = 5;
 const PAGE_HOLD_MS = 1500; // 수신자 문장: 페이지가 다 자란 뒤 이만큼 더 보여 주고 넘긴다
-let _glyphMode = GLYPH_MODES.includes(params.get('glyphmode')) ? params.get('glyphmode') : 'step';
+// 기본은 scroll(2026-10-01). scrollTo가 없는 receiver(sora/signal/dandelion)는 어차피 step으로 그려진다.
+let _glyphMode = GLYPH_MODES.includes(params.get('glyphmode')) ? params.get('glyphmode') : 'scroll';
 const isScroll = () => _glyphMode === 'scroll' && typeof rm.current?.scrollTo === 'function';
 const isPaged = () => _glyphMode === 'page' || _glyphMode === 'disperse';
 
@@ -316,6 +332,7 @@ function setSpeaker(speaker) {
         fitInput();
         _allItems = [];
         _prevSpaceCount = 0;
+        _prevSylTotal = 0;
     }
     chat.setTalking(speaker, rm.name);
 }
@@ -368,6 +385,12 @@ function setText(value) {
     fitInput();
 
     _allItems = decomposeSyllables(_text);
+
+    // 사운드 — mycelium은 성장 시작에 직접 울리고, 나머지는 음절이 새로 생기는 순간 여기서
+    const { count, added } = addedSyllable(_allItems, _prevSylTotal);
+    _prevSylTotal = count;
+    if (added && !rm.current?.emitsSyllableStart) rm.onSyllableStart?.(added, rm.name);
+    sound.endLast(lateEnding(sound.lastSyl, _allItems)); // 받침이 소리보다 늦게 왔으면 지금 끝맺는다
 
     // 토스트 — 글자가 있는 동안만 "말하는 중"
     chat.setTalking(_allItems.length ? _speaker : null, rm.name);
@@ -453,7 +476,7 @@ bridge.on('mode', m => {
 });
 
 bridge.on('receiver', async m => {
-    if (!m.name || m.name === rm.name) return;
+    if (RECEIVER_PINNED || !m.name || m.name === rm.name) return;
     const from = rm.name;
     try {
         await rm.setReceiver(m.name, { transparentOutput: true });

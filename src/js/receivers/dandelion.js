@@ -4,7 +4,7 @@
 // sketch 프로젝트 `04_trail_gl` 의 "마우스 궤적 + GPU 밀도장 goo" 엔진으로 교체했다.
 // 구버전이 필요하면 git 이력에서 꺼낼 것.
 //
-// 엔진 파일들은 `trail/` 에 있고 sketch 쪽과 **바이트 단위로 동일**하다 — 스케치에서
+// 엔진 파일들은 `trail/` 에 있고 sketch 쪽과 '바이트 단위로 동일'하다 — 스케치에서
 // 튜닝하고 그대로 복사해 오는 워크플로를 유지하기 위함. 디렉터리 이름이 receiver 이름과
 // 다른 건 그래서다(엔진은 receiver 가 아니라 "궤적 엔진"이다). 이 파일만 asemic 전용.
 //
@@ -43,32 +43,92 @@ const LINE_HEIGHT_RATIO = 1.8;
 // 동반 곡선 생성기(루프/방황)가 작동한다. **h2ee 가 튜닝할 자리.**
 const CFG_OVERRIDE = {
     spacing: 4,
-    spineSmooth: 8,
+    spineSmooth: -8,
 
-    wanderAmp: [3, 8],
+    wanderAmp: [1, 100],
     wanderLen: [120, 240],
     weaveAmp: [6, 14],
-    weaveLen: [80, 150],
-    eventGap: [55, 110], // 음절당 루프 2~4개
+    weaveLen: [80, 500],
+    eventGap: [55, 60], // 점선 루프가 생기는 간격 : 좁을수록 루프가 많아진다
     swirlSpan: [18, 26],
-    swirlRadius: [9, 15],
+    swirlRadius: [6, 24],
     compBaseSmooth: 28,
     compStep: 2.5,
-    compSmooth: 6,
+    compSmooth: 2,
     headLag: 5,
 
-    decorGap: [30, 70],
+    decorGap: [5, 70],
     decorSpread: 12,
     decorRadius: [2, 5], // 사각형 반변 길이(px) — 2배로
     decorLineWidth: 0.75, // 윤곽선 굵기
 
-    growPx: 8, // 경로가 짧으니 프레임당 전진도 줄인다 (음절당 약 0.5초)
+    growPx: 14,
 
     // th: B(터틀)로 오면서 경로가 접혀 밀도가 올라갔다 — 실측 p10(외톨이 선) 1.23 /
     // median 2.29 / p90 3.86. 1.15 로 두면 거의 전 구간이 임계를 넘어 검은 덩어리가 된다.
-    goo: { reach: 10, th: 1.7, edge: 0.04, spine: true, companion: true, fieldScale: 1.0 },
+    goo: {
+        reach: [3, 10], // [lo, hi] 로 주면 경로를 따라 lo~hi 를 오간다 (파장 reachLen)
+        reachLen: 140,
+        th: 1.8,
+        edge: 0.004,
+        spine: true,
+        companion: true,
+        fieldScale: 1.5,
+        // 점선 자기 겹침 goo 억제 — 0 = 끔(예전), ~1.0 = 점선끼리는 임계를 못 넘고 실선과의 교차만 남는다
+        compCap: 0,
+    },
     grow: { on: false },
     part: { on: false },
+
+    // 윤곽선 — 획 시작점 근처에서 출발해 한 바퀴 돌아 닫힌다 (speed px/s)
+    outline: { anim: { on: true, speed: 850 } },
+
+    // 실선 효과 (일러스트레이터 Roughen / Pucker & Bloat). target 'ink' = 2D 실선만 / 'all' = goo·윤곽선까지
+    spineFx: {
+        target: 'ink',
+        roughen: { on: true, size: 6, gap: 6, mode: 'smooth' }, // mode 'smooth' | 'corner'
+        puckerBloat: { on: true, amount: 12, gap: 2 }, // amount > 0 bloat / < 0 pucker
+    },
+
+    // 실선을 타고 흐르는 원. main = 획마다 하나, 실선을 왕복하며 orb 의 flow field 방향을 끌고 다닌다
+    bead: {
+        on: true,
+        gap: [40, 90],
+        radius: [1.5, 3.5],
+        speed: 30,
+        fill: 'rgb(0, 0, 0)',
+        stroke: null,
+        // glow 가 켜지면 radius = 번짐이 끝나는 바깥 반경 (꽉 찬 가운데 = radius × core)
+        main: {
+            on: true,
+            radius: 18,
+            speed: 40,
+            fill: 'rgb(130, 255, 130)',
+            stroke: null,
+            glow: { on: true, core: 0.45, falloff: 1.4 },
+        },
+    },
+
+    // 노란 원 + 내부 hatch 형 flow field (goo 아래에 깔린다)
+    orb: {
+        on: true,
+        gap: [90, 200],
+        prob: 0.7,
+        radius: [6, 22],
+        spread: 26,
+        fill: '#ffe83d',
+        flow: {
+            cell: 8.6, // 대시 격자 간격(px)
+            dash: 8.2, // 대시 길이(px)
+            scale: 0.05, // 노이즈 주파수 — 클수록 잘게 굽이친다
+            turns: 1, // 기본장 각도 범위(바퀴)
+            follow: 0.85, // main bead 진행 방향을 따르는 정도 0~1
+            falloff: 220, // px — 멀수록 덜 따른다. 0 = 거리 무관
+            drift: 0.6, // bead 가 간 만큼 무늬가 흐르는 비율. 0 = 방향만 돈다
+            style: 'rgba(60, 45, 0, 0.7)',
+            width: 0.75,
+        },
+    },
 };
 
 export class DandelionReceiver {
@@ -104,6 +164,10 @@ export class DandelionReceiver {
             keys: false, // 한글 입력창과 충돌하므로 절대 등록하지 않는다
             global: false,
             cfg: CFG_OVERRIDE,
+            // 투명 합성(TD / output.html)에선 엔진이 종이색을 깔면 안 된다 — 캔버스가 뷰포트 전체라
+            // TD 에선 흰 판이 크롬을 덮는다. 종이색은 body 배경 + 맨 아래 캔버스(underlay) CSS 배경 두 곳
+            bodyBg: !this._opts.transparentOutput,
+            paperBg: !this._opts.transparentOutput,
         });
     }
 
@@ -141,16 +205,18 @@ export class DandelionReceiver {
             }
         }
         const anchorKey = g => `${g.wordId}@${g.anchor[0].toFixed(5)},${g.anchor[1].toFixed(5)}`;
-        const buildPts = (g, syls = g.syls) =>
-            jamoWordTrail(
-                this._JAMO,
-                syls,
-                g.anchor[0] * W,
-                g.anchor[1] * H,
-                WRAP_STEP,
-                this._sampleStep,
-            );
-        const seedOf = g => this._trail.hashSeed('word', g.wordId, ...g.keys);
+        const buildPts = (g, syls = g.syls, meta = null) =>
+            jamoWordTrail(this._JAMO, syls, g.anchor[0] * W, g.anchor[1] * H, WRAP_STEP, this._sampleStep, meta);
+        // 구간 계획 — 구간 = 음절, 시드 = 음절 내용만. 그래서 같은 음절은 어느 단어 어느 자리에
+        // 있든, 어떤 순서로 타이핑했든(ㅇ→아→안 / 한 번에 '안') 같은 동반 곡선·장식이 나온다.
+        const sylSeed = syl => this._trail.hashSeed('syl', syl.cho, syl.jung, syl.jong ?? '');
+        const buildWord = (g, syls = g.syls) => {
+            const meta = {};
+            const pts = buildPts(g, syls, meta);
+            return { pts, plan: meta.starts.map(st => ({ px0: st.px0, seed: sylSeed(st.syl) })) };
+        };
+        // 획 시드는 동반 곡선 개수·bead 배열만 정한다. 단어 내용만 쓴다(wordId 를 섞으면 같은 단어도 자리마다 달라진다)
+        const seedOf = g => this._trail.hashSeed('word', ...g.keys);
 
         const prev = this._groups;
         // 앞에서부터 완전히 같은 그룹은 그대로 둔다
@@ -169,11 +235,7 @@ export class DandelionReceiver {
         // 대신 마지막 음절을 뺀 앞부분을 "안정 구간"으로 보고,
         //   · 안정 구간이 그대로면 → 거기까지 되감고(rewindGrowing) 마지막 음절만 다시 뻗는다
         // jamoWordTrail 이 append-only 라 안정 구간 좌표가 변하지 않는 게 전제다.
-        if (
-            match === prev.length - 1 &&
-            match === groups.length - 1 &&
-            this._holdingIdx === match
-        ) {
+        if (match === prev.length - 1 && match === groups.length - 1 && this._holdingIdx === match) {
             const a = prev[match];
             const b = groups[match];
             const nStable = Math.max(0, b.keys.length - UNSTABLE_TAIL);
@@ -187,8 +249,8 @@ export class DandelionReceiver {
                 a.keys.slice(0, bStable.length).join('\u0000') === bStable.join('\u0000');
             if (canExtend) {
                 const stablePts = nStable > 0 ? buildPts(b, b.syls.slice(0, nStable)) : [];
-                const full = buildPts(b);
-                this._trail.replaceTail(stablePts.length, full.slice(stablePts.length));
+                const { pts: full, plan } = buildWord(b);
+                this._trail.replaceTail(stablePts.length, full.slice(stablePts.length), plan);
                 a.keys = b.keys.slice();
                 a.stableKeys = bStable;
                 a.sig = anchorKey(b) + '|' + b.keys.join('');
@@ -214,12 +276,12 @@ export class DandelionReceiver {
 
         for (let gi = from; gi < groups.length; gi++) {
             const g = groups[gi];
-            const pts = buildPts(g);
+            const { pts, plan } = buildWord(g);
             if (pts.length < 2) continue;
             const isLast = gi === groups.length - 1;
             // 마지막 단어는 아직 타이핑 중일 수 있으므로 hold — 음절이 더 붙기를 기다린다.
-            if (rebuild && !isLast) this._trail.addStroke(pts, seedOf(g));
-            else this._trail.queueStroke(pts, seedOf(g), { hold: isLast });
+            if (rebuild && !isLast) this._trail.addStroke(pts, seedOf(g), { plan });
+            else this._trail.queueStroke(pts, seedOf(g), { hold: isLast, plan });
             if (isLast) this._holdingIdx = gi;
             this._groups.push({
                 sig: anchorKey(g) + '|' + g.keys.join(''),

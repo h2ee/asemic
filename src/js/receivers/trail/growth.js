@@ -63,6 +63,7 @@ export function createGrowth(gl, quadBuf) {
         gl.uniform1f(u('u_time'), p.time);
         gl.uniform1f(u('u_dt'), p.dt);
         gl.uniform1f(u('u_th'), p.th);
+        gl.uniform1f(u('u_compCap'), p.compCap ?? 0);
         gl.uniform1f(u('u_decay'), p.decay);
         gl.uniform1f(u('u_outward'), p.outward);
         gl.uniform1f(u('u_curlAmp'), p.curlAmp);

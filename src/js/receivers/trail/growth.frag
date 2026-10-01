@@ -31,6 +31,7 @@ uniform float u_time;
 uniform float u_dt;
 
 uniform float u_th;          // goo 임계 (경계 위치의 기준)
+uniform float u_compCap;    // 동반 곡선 밀도 상한 (0 = 끔)
 uniform float u_decay;       // 프레임당 감쇠 (0.90~0.99). 작을수록 짧게 자람
 uniform float u_outward;     // 바깥으로 밀려나는 속도 (px/s)
 uniform float u_curlAmp;     // 바람 세기 (px/s)
@@ -42,8 +43,18 @@ uniform float u_bandHi;
 uniform float u_nowMin;      // 현재 시각 (분)
 uniform float u_ageDelay;    // 이 시간(분)이 지난 획부터 자란다
 
+// 동반 곡선 밀도(.a)의 soft cap — u_compCap 근처에서 포화. 0 이하면 그대로 더한다(.a 는 0).
+// 점선 자기 겹침은 cap 을 못 넘고, 실선(.r)과 만나는 곳만 임계를 넘는다.
+float capComp(float c) {
+    if (u_compCap <= 0.0) return c;
+    float r = c / u_compCap;
+    return c / pow(1.0 + r * r * r * r, 0.25);
+}
+
 float fieldAt(vec2 uv) {
-    return texture(u_baked, uv).r + texture(u_live, uv).r;
+    vec4 b = texture(u_baked, uv);
+    vec4 l = texture(u_live, uv);
+    return b.r + l.r + capComp(b.a + l.a);
 }
 
 void main() {

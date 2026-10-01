@@ -23,6 +23,7 @@ uniform vec2 u_texel;       // 1.0 / fieldResolution
 uniform float u_pxPerTexel; // field 텍셀 1개가 몇 CSS px 인가
 
 uniform float u_th;
+uniform float u_compCap;    // 동반 곡선 밀도 상한 (0 = 끔)
 uniform float u_edge;
 
 uniform vec3 u_paper;
@@ -44,8 +45,18 @@ uniform float u_growOpacity;
 
 const float GRAD = 1.5;     // 중심차분 간격 (field 텍셀)
 
+// 동반 곡선 밀도(.a)의 soft cap — u_compCap 근처에서 포화. 0 이하면 그대로 더한다(.a 는 0).
+// 점선 자기 겹침은 cap 을 못 넘고, 실선(.r)과 만나는 곳만 임계를 넘는다.
+float capComp(float c) {
+    if (u_compCap <= 0.0) return c;
+    float r = c / u_compCap;
+    return c / pow(1.0 + r * r * r * r, 0.25);
+}
+
 float fieldAt(vec2 uv) {
-    return texture(u_baked, uv).r + texture(u_live, uv).r;
+    vec4 b = texture(u_baked, uv);
+    vec4 l = texture(u_live, uv);
+    return b.r + l.r + capComp(b.a + l.a);
 }
 
 void main() {

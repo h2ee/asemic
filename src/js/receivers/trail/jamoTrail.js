@@ -261,12 +261,15 @@ function walkProgram(prog, theta) {
 
 // stepPx 간격으로 솎아낸다 (엔진 pushPoint 의 minDist 필터와 중복이지만,
 // 여기서 줄여두면 배열 크기와 성장 예산 계산이 정직해진다)
-function decimate(pts, stepPx) {
+// keptIdx 를 주면 살아남은 점의 원래 인덱스를 채운다 (음절 경계 → 출력 점 매핑용)
+function decimate(pts, stepPx, keptIdx = null) {
     const out = [];
     let last = null;
-    for (const p of pts) {
+    for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
         if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= stepPx) {
             out.push(p);
+            keptIdx?.push(i);
             last = p;
         }
     }
@@ -336,15 +339,19 @@ const wrapPi = a => Math.atan2(Math.sin(a), Math.cos(a));
 // syls      : 한 단어의 음절 배열 (순서대로)
 // ax, ay    : 첫 음절 앵커(px)
 // advancePx : 음절 하나가 가로로 전진하는 거리 — 레이아웃의 wrapStep 을 그대로 넣는다
-export function jamoWordTrail(JAMO, syls, ax, ay, advancePx, stepPx = 5) {
+// meta      : 주면 meta.starts 에 [{ px0, syl }] — 각 음절이 출력 경로의 몇 px 에서 시작하는지
+//             (엔진 plan 의 구간 경계. 획이 그려지지 않은 음절은 빠진다)
+export function jamoWordTrail(JAMO, syls, ax, ay, advancePx, stepPx = 5, meta = null) {
     let theta = null;
     let penX = 0,
         penY = 0; // walk 단위. 음절마다 순 전진 1
     const walk = [{ x: 0, y: 0 }];
+    const starts = []; // [{ walkIdx, syl }]
 
     for (const syl of syls) {
         const prog = curvatureProgram(JAMO, syl);
         if (!prog) continue;
+        starts.push({ walkIdx: walk.length - 1, syl });
 
         // 첫 음절은 자기 출발 방향으로, 이후는 heading 을 이어받되 새 초성 쪽으로 조금 튼다
         theta = theta === null ? prog.theta0 : theta + wrapPi(prog.theta0 - theta) * JOIN_STEER;
@@ -374,10 +381,27 @@ export function jamoWordTrail(JAMO, syls, ax, ay, advancePx, stepPx = 5) {
         theta += rot; // 회전 보정만큼 heading 도 같이 돌려야 다음 음절이 이어진다
     }
 
-    if (walk.length < 2) return [];
+    if (walk.length < 2) {
+        if (meta) meta.starts = [];
+        return [];
+    }
     // walk 단위 → px. 첫 점이 첫 음절 앵커에 오도록 평행이동만 한다 (refit 없음)
-    return decimate(
+    const kept = [];
+    const out = decimate(
         walk.map(p => ({ x: ax + p.x * advancePx, y: ay + p.y * advancePx })),
         stepPx,
+        kept,
     );
+    if (meta) {
+        // 음절 시작 walk 인덱스 → 그 이후 첫 출력 점 → 출력 경로 위 호길이(px).
+        // 앞 음절만으로 정해지는 값이라 append-only 가 유지된다.
+        const cum = [0];
+        for (let i = 1; i < out.length; i++) cum.push(cum[i - 1] + Math.hypot(out[i].x - out[i - 1].x, out[i].y - out[i - 1].y));
+        let m = 0;
+        meta.starts = starts.map(({ walkIdx, syl }) => {
+            while (m < kept.length - 1 && kept[m] < walkIdx) m++;
+            return { px0: cum[m], syl };
+        });
+    }
+    return out;
 }

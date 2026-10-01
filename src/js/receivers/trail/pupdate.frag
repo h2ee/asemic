@@ -28,6 +28,7 @@ uniform uint u_frame;       // 프레임 카운터 — 정수 해시의 시간�
 uniform float u_dt;
 
 uniform float u_th;
+uniform float u_compCap;    // 동반 곡선 밀도 상한 (0 = 끔)
 uniform float u_spawnTol;   // |밀도 - th| 가 이보다 작으면 경계로 인정
 uniform float u_spawnRate;  // 죽은 파티클이 한 프레임에 부활을 "시도"할 확률.
                             // 이게 없으면 전원이 첫 프레임에 동시 탄생 → 동시 사망 → 개체수가 맥동한다.
@@ -46,8 +47,18 @@ vec2 fieldUV(vec2 px) {
     return vec2(px.x / u_cssSize.x, 1.0 - px.y / u_cssSize.y);
 }
 
+// 동반 곡선 밀도(.a)의 soft cap — u_compCap 근처에서 포화. 0 이하면 그대로 더한다(.a 는 0).
+// 점선 자기 겹침은 cap 을 못 넘고, 실선(.r)과 만나는 곳만 임계를 넘는다.
+float capComp(float c) {
+    if (u_compCap <= 0.0) return c;
+    float r = c / u_compCap;
+    return c / pow(1.0 + r * r * r * r, 0.25);
+}
+
 float fieldAt(vec2 uv) {
-    return texture(u_baked, uv).r + texture(u_live, uv).r;
+    vec4 b = texture(u_baked, uv);
+    vec4 l = texture(u_live, uv);
+    return b.r + l.r + capComp(b.a + l.a);
 }
 
 // px 공간 기울기 (uv.y 는 위로, px.y 는 아래로 → y 부호 반전)

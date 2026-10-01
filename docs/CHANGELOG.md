@@ -6,6 +6,7 @@
 
 | 날짜 | 내용 | 상태 |
 | --- | --- | --- |
+| 2026-10-01 | **dandelion 결정성 + 장식 레이어** — 음절 구간 plan 으로 같은 음절 = 같은 점선(타이핑 경로 무관). `goo.compCap`(점선 자기 겹침 goo 억제), `goo.reach` 범위, 윤곽선 애니메이션, spineFx(roughen/pucker&bloat), bead, orb. 엔진 변경은 sketch `04_trail_gl` 에도 복사 | 현행 |
 | 2026-09-30 | **문장 단위 분할 보류** — 응답이 한 문장(`Maxchars` 60, mycelium 두세 어절)이고 긴 문장은 `glyphmode`가 처리해 필요 없어짐. 여러 문장 연출을 택할 때만 되살림 (PRD 3-E) | 보류 |
 | 2026-09-27 | **`glyphmode` step/page/scroll/disperse + `LLM_MODE`(web/td/off)** — 긴 문장 표시를 모드로, LLM 주인을 페이지마다 하나로. `turn`에 `llm` 필드 | 현행 |
 | 2026-09-26 | **LLM 배관 (TD `/chat/llm`)** — 키를 웹 번들 밖에 두려고 TD가 호출을 맡는다. 비스트리밍 HTTP + TD측 느린 드러내기. `turn.speaker` 가드로 자기응답 무한루프 차단 | 현행 |

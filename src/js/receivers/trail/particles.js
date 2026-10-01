@@ -85,6 +85,7 @@ export function createParticles(gl, quadBuf, side = 128) {
         gl.uniform1ui(uU('u_frame'), frame++ >>> 0);
         gl.uniform1f(uU('u_dt'), p.dt);
         gl.uniform1f(uU('u_th'), p.th);
+        gl.uniform1f(uU('u_compCap'), p.compCap ?? 0);
         gl.uniform1f(uU('u_spawnTol'), p.spawnTol);
         gl.uniform1f(uU('u_spawnRate'), p.spawnRate);
         gl.uniform1f(uU('u_lifespan'), p.lifespan);

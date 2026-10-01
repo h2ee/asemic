@@ -156,27 +156,85 @@ export function sample(s, poly) {
     };
 }
 
+// ───────────────────────── 구간 계획(plan) ─────────────────────────
+//
+// 획 하나를 호길이(px) 구간으로 나누고 구간마다 자기 시드를 준다:
+//     plan = [{ px0, seed }, ...]   px0 오름차순, 첫 구간 px0 = 0
+//
+// 동반 곡선 모양 · 루프 이벤트 · 장식 · 오브 · 선 효과 · reach 변화가 전부
+// **(구간 시드, 구간 안의 국소 px)** 만으로 정해진다. 그래서
+//   · 자모 입력  — 구간 = 음절, 시드 = 음절 내용. 같은 음절은 어느 단어 어느 자리에
+//                  있든, 어떤 순서로 타이핑했든 같은 동반 곡선이 나온다.
+//   · 마우스     — plan 이 없으면 [{px0:0, seed: 획 시드}] 한 구간. 이때는 예전의
+//                  "획 전체 한 스트림" 과 **난수 소비 순서까지 똑같다** (스케치 룩 보존).
+//                  장식은 비트 단위로 같고, 동반 곡선은 루프 위치만 조금(긴 획에서 ≤ ~15px) 다르다 —
+//                  예전엔 실선 px 로 뽑은 루프 위치를 스무딩으로 짧아진 기준 경로 px 에 그대로 써서
+//                  루프가 앞으로 밀려 있었다. 이제 toBase 로 옮긴다 (음절 경계가 앞 음절과 무관해지려면 필수)
+// 구간 경계에서는 앞 구간 값과 segBlend(px) 만큼 크로스페이드해 연속을 지킨다.
+//
+// 모든 것이 (plan, 머리 위치)의 순수 함수라 매 프레임 다시 계산한다 — 구 버전처럼
+// 이벤트를 누적해 두면, 조합 중 음절이 바뀔 때(ㅇ→아→안) 옛 시드로 만든 이벤트가 남는다.
+
+export function defaultPlan(seed) {
+    return [{ px0: 0, seed }];
+}
+
+function segIndexAt(plan, px) {
+    let j = 0;
+    while (j + 1 < plan.length && plan[j + 1].px0 <= px) j++;
+    return j;
+}
+
+const smooth01 = t => t * t * (3 - 2 * t);
+
+// f(j, localPx) 를 구간 j 기준으로 평가하고, 경계 직후 blend px 동안 앞 구간과 섞는다
+function blendSeg(plan, px, blend, f) {
+    const j = segIndexAt(plan, px);
+    const local = px - plan[j].px0;
+    const v = f(j, local);
+    if (j > 0 && blend > 0 && local < blend) {
+        const vp = f(j - 1, px - plan[j - 1].px0);
+        return vp + (v - vp) * smooth01(local / blend);
+    }
+    return v;
+}
+
+// 구간 j 의 [시작, 끝) — 마지막 구간은 머리까지
+const segLimit = (plan, j, headPx) => Math.min(j + 1 < plan.length ? plan[j + 1].px0 : Infinity, headPx);
+
+// 시드 → 해시 노이즈용 작은 수 (makeNoise 의 sin 해시가 큰 수에서 정밀도를 잃지 않게)
+const smallSeed = seed => (seed >>> 0) % 9973;
+
+// 정수 격자 해시 → [-1, 1)
+function hash1(seed, k) {
+    const x = Math.sin(k * 12.9898 + smallSeed(seed) * 78.233) * 43758.5453;
+    return (x - Math.floor(x)) * 2 - 1;
+}
+
 // ───────────────────────── 획(stroke) ─────────────────────────
 // 획 하나가 자기 상태를 다 들고 있다 (구버전의 모듈 스코프 decorLastS 같은 전역 상태 제거).
 
 // seed: 이 획의 모든 난수를 결정하는 32bit 값.
 //   마우스 입력  → hashSeed('mouse', sessionSeed, id)
-//   자모 입력    → hashSeed(cho, jung, jong ?? '', wordId)  ← 같은 글자면 항상 같은 모양
-export function createStroke(CFG, id, birth, seed = 0) {
-    // 하위 시스템별 독립 스트림 (salt 를 섞어 서로 상관 없게)
-    const rngDecor = makeRng(hashSeed(seed, 'decor'));
+//   자모 입력    → 단어 시드. 모양은 plan(음절 시드)이 정하고 이건 동반 곡선 개수·bead 정도만
+// plan: 위 "구간 계획". 없으면 획 시드 한 구간
+export function createStroke(CFG, id, birth, seed = 0, plan = null) {
+    const [lo, hi] = CFG.companions;
+    const nc = lo + Math.floor(makeRng(hashSeed(seed, 'comp'))() * (hi - lo + 1));
     return {
         id,
         birth, // 초 단위 (셰이더 field 의 .b 채널로 들어간다 — 나중에 "자람" 트리거용)
         seed,
+        plan: plan?.length ? plan : defaultPlan(seed),
+        nc,
         raw: [], // 원본 포인터 좌표
         spine: null, // 리샘플+스무딩된 실선
-        comps: makeCompCfgs(CFG, seed), // 동반 곡선 파라미터 (획 시작 시 확정)
+        spineInk: null, // spineFx 를 먹인 실선 (효과가 꺼져 있으면 null)
         compPolys: [], // 마지막으로 만들어진 동반 곡선 폴리라인들
+        compPlan: null, // 동반 곡선 기준 경로(px) 좌표로 옮긴 plan — 동반 곡선 reach 계산용
         decor: [],
-        decorLastPx: 0,
-        rngDecor,
-        decorNextGap: rnd(rngDecor, CFG.decorGap[0], CFG.decorGap[1]),
+        orbs: [],
+        segCache: null, // growStroke 가 채운다 (구간별 파라미터)
     };
 }
 
@@ -193,94 +251,190 @@ export function buildSpine(rawPts, CFG) {
     return computeFrames(smooth(rs, passesFor(CFG.spineSmooth, CFG.spacing)));
 }
 
-// 획 시작 시 동반 곡선 파라미터 뽑기 (그리는 내내 고정 → 앞부분이 안 흔들림)
-function makeCompCfgs(CFG, seed) {
-    const rngShape = makeRng(hashSeed(seed, 'comp'));
-    const [lo, hi] = CFG.companions;
-    const nc = lo + Math.floor(rngShape() * (hi - lo + 1));
+// 구간 하나의 동반 곡선 파라미터. 난수 순서는 구버전 makeCompCfgs 와 같다
+// (첫 값 = 곡선 개수 자리 → 곡선마다 amp, wanderLen, weaveAmp, weaveLen, phase, noise, swirly)
+function segComps(seg, nc, CFG) {
+    const rng = makeRng(hashSeed(seg.seed, 'comp'));
+    rng(); // 곡선 개수 자리 — 개수는 획 시드가 정한다 (createStroke)
     const out = [];
     for (let i = 0; i < nc; i++) {
-        // 곡선마다 자기 루프 이벤트 스트림을 갖는다 — 곡선끼리도 서로 안 섞이게
-        const rngEvent = makeRng(hashSeed(seed, 'event', i));
         out.push({
-            amp: rnd(rngShape, CFG.wanderAmp[0], CFG.wanderAmp[1]),
-            wanderLen: rnd(rngShape, CFG.wanderLen[0], CFG.wanderLen[1]),
-            weaveAmp: rnd(rngShape, CFG.weaveAmp[0], CFG.weaveAmp[1]),
-            weaveLen: rnd(rngShape, CFG.weaveLen[0], CFG.weaveLen[1]),
-            weavePhase: rnd(rngShape, 0, TWO_PI),
-            nz: makeNoise(rnd(rngShape, 0, 999)),
-            swirly: rngShape() >= CFG.noSwirlChance,
-            events: [],
-            lastEventPx: 0,
-            rngEvent,
-            nextGap: rnd(rngEvent, CFG.eventGap[0], CFG.eventGap[1]),
+            amp: rnd(rng, CFG.wanderAmp[0], CFG.wanderAmp[1]),
+            wanderLen: rnd(rng, CFG.wanderLen[0], CFG.wanderLen[1]),
+            weaveAmp: rnd(rng, CFG.weaveAmp[0], CFG.weaveAmp[1]),
+            weaveLen: rnd(rng, CFG.weaveLen[0], CFG.weaveLen[1]),
+            weavePhase: rnd(rng, 0, TWO_PI),
+            nz: makeNoise(rnd(rng, 0, 999)),
+            swirly: rng() >= CFG.noSwirlChance,
         });
     }
     return out;
 }
 
-// ③ 머리가 자란 만큼 루프 이벤트를 채운다. while 이라 프레임 드랍/빠른 획에도 간격이 유지된다.
-function growEvents(cc, headPx, CFG) {
-    while (
-        cc.swirly &&
-        cc.events.length < CFG.maxSwirls &&
-        headPx - cc.lastEventPx >= cc.nextGap
-    ) {
-        const rng = cc.rngEvent;
-        cc.lastEventPx += cc.nextGap; // headPx 가 아니라 누적 — 간격이 설정대로 유지된다
-        cc.nextGap = rnd(rng, CFG.eventGap[0], CFG.eventGap[1]);
-        if (rng() > CFG.eventProb) continue;
-        const span = rnd(rng, CFG.swirlSpan[0], CFG.swirlSpan[1]);
-        cc.events.push({
-            // 루프 구간을 머리보다 앞에 둔다 → 머리가 이 구간을 지나는 동안에만
-            // 조금씩 그려져서 메인 곡선의 진행 속도와 맞물린다.
-            c: cc.lastEventPx + span + rnd(rng, 0, CFG.spacing * 6),
-            span,
-            R: rnd(rng, CFG.swirlRadius[0], CFG.swirlRadius[1]),
-            turns: rnd(rng, CFG.swirlTurns[0], CFG.swirlTurns[1]),
-            dir: rng() < 0.5 ? 1 : -1,
-            phase: rnd(rng, 0, TWO_PI),
-        });
+// ③ 루프 이벤트 — 구간마다 자기 스트림. 머리(headPx)까지 들어온 것만.
+// 구버전 growEvents 의 while 루프와 같은 순서로 난수를 쓴다 (다음 간격을 먼저 뽑고 확률 판정).
+function planEvents(stroke, i, headPx, CFG) {
+    const { plan } = stroke;
+    const events = [];
+    for (let j = 0; j < plan.length && events.length < CFG.maxSwirls; j++) {
+        if (!stroke.segCache.comps[j][i].swirly) continue;
+        const rng = makeRng(hashSeed(plan[j].seed, 'event', i));
+        const limit = segLimit(plan, j, headPx);
+        let cursor = plan[j].px0;
+        let gap = rnd(rng, CFG.eventGap[0], CFG.eventGap[1]);
+        while (events.length < CFG.maxSwirls && cursor + gap <= limit) {
+            cursor += gap;
+            gap = rnd(rng, CFG.eventGap[0], CFG.eventGap[1]);
+            if (rng() > CFG.eventProb) continue;
+            const span = rnd(rng, CFG.swirlSpan[0], CFG.swirlSpan[1]);
+            events.push({
+                // 루프 구간을 머리보다 앞에 둔다 → 머리가 이 구간을 지나는 동안에만
+                // 조금씩 그려져서 메인 곡선의 진행 속도와 맞물린다.
+                c: cursor + span + rnd(rng, 0, CFG.spacing * 6),
+                span,
+                R: rnd(rng, CFG.swirlRadius[0], CFG.swirlRadius[1]),
+                turns: rnd(rng, CFG.swirlTurns[0], CFG.swirlTurns[1]),
+                dir: rng() < 0.5 ? 1 : -1,
+                phase: rnd(rng, 0, TWO_PI),
+            });
+        }
     }
+    return events;
 }
 
-function growDecor(stroke, spine, headPx, CFG) {
-    if (!CFG.decor) return;
-    const rng = stroke.rngDecor;
-    while (headPx - stroke.decorLastPx >= stroke.decorNextGap) {
-        stroke.decorLastPx += stroke.decorNextGap;
-        stroke.decorNextGap = rnd(rng, CFG.decorGap[0], CFG.decorGap[1]);
-        // 좌표를 지금 확정하지 않는다 — "경로 위 위치 + 오프셋"만 저장하고
-        // 실제 x/y 는 resolveDecor 가 매번 현재 spine 으로 다시 푼다.
-        // 생성 순간의 미완성 spine 으로 좌표를 굳히면, 같은 획이라도 몇 점씩 자랐는지에
-        // 따라 장식 위치가 달라진다 (smooth 가 끝점을 고정하므로 머리 근처가 최종본과 다름).
-        stroke.decor.push({
-            px: stroke.decorLastPx, // 경로 위 호 위치
-            off: rnd(rng, -CFG.decorSpread, CFG.decorSpread), // 법선 방향 오프셋
-            jx: rnd(rng, -4, 4),
-            jy: rnd(rng, -4, 4),
-            r: rnd(rng, CFG.decorRadius[0], CFG.decorRadius[1]),
-            x: 0,
-            y: 0, // resolveDecor 가 채움
-        });
+// 장식 사각형 — 구간마다 자기 스트림 (구버전 growDecor 와 같은 순서)
+// 좌표는 "경로 위 위치 + 오프셋"만 정하고 실제 x/y 는 resolveOnSpine 이 현재 spine 으로 푼다.
+// 생성 순간의 미완성 spine 으로 굳히면 몇 점씩 자랐는지에 따라 위치가 달라진다.
+function planDecor(stroke, headPx, CFG) {
+    if (!CFG.decor) return [];
+    const { plan } = stroke;
+    const out = [];
+    for (let j = 0; j < plan.length; j++) {
+        const rng = makeRng(hashSeed(plan[j].seed, 'decor'));
+        const limit = segLimit(plan, j, headPx);
+        let cursor = plan[j].px0;
+        let gap = rnd(rng, CFG.decorGap[0], CFG.decorGap[1]);
+        while (cursor + gap <= limit) {
+            cursor += gap;
+            gap = rnd(rng, CFG.decorGap[0], CFG.decorGap[1]);
+            out.push({
+                px: cursor, // 경로 위 호 위치
+                off: rnd(rng, -CFG.decorSpread, CFG.decorSpread), // 법선 방향 오프셋
+                jx: rnd(rng, -4, 4),
+                jy: rnd(rng, -4, 4),
+                r: rnd(rng, CFG.decorRadius[0], CFG.decorRadius[1]),
+                x: 0,
+                y: 0,
+            });
+        }
     }
+    return out;
 }
 
-// 장식 원의 실제 좌표를 현재 spine 으로 푼다. growStroke 가 매번 호출 →
-// 최종 렌더는 항상 최종 spine 기준이 되어 프레임 독립성이 보장된다.
-function resolveDecor(stroke, spine, CFG) {
+// 오브(노란 원 + 내부 flow field) — 장식과 같은 방식, 별도 스트림
+function planOrbs(stroke, headPx, CFG) {
+    const O = CFG.orb;
+    if (!O?.on) return [];
+    const { plan } = stroke;
+    const out = [];
+    for (let j = 0; j < plan.length; j++) {
+        const rng = makeRng(hashSeed(plan[j].seed, 'orb'));
+        const limit = segLimit(plan, j, headPx);
+        let cursor = plan[j].px0;
+        let gap = rnd(rng, O.gap[0], O.gap[1]);
+        let k = 0;
+        while (cursor + gap <= limit) {
+            cursor += gap;
+            gap = rnd(rng, O.gap[0], O.gap[1]);
+            const keep = rng() <= O.prob;
+            const orb = {
+                px: cursor,
+                off: rnd(rng, -O.spread, O.spread),
+                r: rnd(rng, O.radius[0], O.radius[1]),
+                seed: hashSeed(plan[j].seed, 'orb', k++),
+                x: 0,
+                y: 0,
+            };
+            if (keep) out.push(orb);
+        }
+    }
+    return out;
+}
+
+// 경로 위 위치(px) + 법선 오프셋 → 현재 spine 의 x/y
+function resolveOnSpine(items, spine, CFG) {
     const lenPx = (spine.length - 1) * CFG.spacing;
-    for (const d of stroke.decor) {
+    for (const d of items) {
         const p = sample(Math.min(d.px, lenPx) / CFG.spacing, spine);
         if (!p) continue;
-        d.x = p.x + p.nx * d.off + d.jx;
-        d.y = p.y + p.ny * d.off + d.jy;
+        d.x = p.x + p.nx * d.off + (d.jx ?? 0);
+        d.y = p.y + p.ny * d.off + (d.jy ?? 0);
     }
+}
+
+// ───────────────────────── 선 효과 (spineFx) ─────────────────────────
+// 일러스트레이터의 Roughen / Pucker & Bloat 에 해당. 실선을 법선 방향으로 민다.
+// 오프셋이 (구간 시드, 국소 px)의 함수라 자라는 중에도 앞부분이 안 흔들린다.
+//
+//   roughen      gap px 마다 앵커, 앵커마다 ±size 무작위 오프셋. mode 'smooth' 는 앵커
+//                사이를 코사인으로, 'corner' 는 직선으로 (지그재그)
+//   puckerBloat  gap px 마다 앵커. amount > 0 = bloat(앵커 사이가 둥글게 부푼다),
+//                amount < 0 = pucker(앵커가 가시처럼 튀어나오고 사이는 오목)
+function fxOffset(stroke, px, CFG) {
+    const F = CFG.spineFx;
+    const { plan } = stroke;
+    let d = 0;
+    const R = F.roughen;
+    if (R?.on && R.size) {
+        d += blendSeg(plan, px, CFG.segBlend, (j, local) => {
+            const u = local / R.gap;
+            const k = Math.floor(u);
+            const t = u - k;
+            const a = hash1(plan[j].seed, k),
+                b = hash1(plan[j].seed, k + 1);
+            const w = R.mode === 'corner' ? t : (1 - Math.cos(t * Math.PI)) * 0.5;
+            return (a + (b - a) * w) * R.size;
+        });
+    }
+    const P = F.puckerBloat;
+    if (P?.on && P.amount) {
+        d += blendSeg(plan, px, CFG.segBlend, (j, local) => {
+            const t = (local / P.gap) % 1;
+            const s = Math.sin(t * Math.PI);
+            return P.amount > 0 ? P.amount * s : -P.amount * (1 - s) * (1 - s);
+        });
+    }
+    return d;
+}
+
+function applySpineFx(stroke, spine, CFG) {
+    const F = CFG.spineFx;
+    if (!F || !(F.roughen?.on || F.puckerBloat?.on)) return null;
+    const sp = CFG.spacing;
+    const out = spine.map((p, i) => {
+        const d = fxOffset(stroke, i * sp, CFG);
+        return { x: p.x + p.nx * d, y: p.y + p.ny * d };
+    });
+    return computeFrames(out);
+}
+
+// ───────────────────────── reach 변화 ─────────────────────────
+// CFG.goo.reach 가 숫자면 고정, [lo, hi] 면 구간마다 노이즈로 lo~hi 를 오간다
+// (파장 goo.reachLen px). 커널이 길이로 정규화돼 있어 선 코어 밀도는 R 과 무관하게 ≈1 —
+// R 은 "얼마나 멀리서 이웃 선과 붙는가"(= 두께감)만 바꾼다.
+// which: 'spine' 이면 plan(실선 px), 'comp' 면 compPlan(동반 곡선 기준 경로 px)
+export function reachAt(stroke, which, px, CFG) {
+    const r = CFG.goo.reach;
+    if (!Array.isArray(r)) return r;
+    const plan = which === 'comp' && stroke.compPlan ? stroke.compPlan : stroke.plan;
+    const nz = stroke.segCache?.reachNz;
+    if (!nz) return (r[0] + r[1]) * 0.5;
+    return blendSeg(plan, px, CFG.segBlend, (j, local) => r[0] + (r[1] - r[0]) * nz[j](local / CFG.goo.reachLen));
 }
 
 // spine 위를 걸으며 동반 곡선 점들을 만든다. 모든 위치 인자가 px.
 // 시작도 끝도 실선에 붙이지 않는다 — 자기가 방황하던 자리에서 그대로 시작하고 끝난다.
-export function buildCompanion(spine, cc, CFG) {
+function buildCompanion(spine, stroke, i, events, CFG) {
     const sp = CFG.spacing;
     const lenPx = (spine.length - 1) * sp;
     const endPx = lenPx - CFG.headLag; // ⑤ 펜보다 조금 뒤에서 끝낸다
@@ -288,12 +442,26 @@ export function buildCompanion(spine, cc, CFG) {
 
     // 기준 경로: 넉넉히 스무딩 → ② 리샘플 복원 (안 하면 곡률 큰 구간에서 점이 뭉쳐
     // 인덱스 1당 거리가 달라지고, 같은 weaveLen 이 다른 파장으로 보인다)
-    let base = smooth(
+    const sm = smooth(
         spine.map(p => ({ x: p.x, y: p.y })),
         passesFor(CFG.compBaseSmooth, sp),
     );
-    base = computeFrames(resample(base, sp));
-    const baseLenPx = (base.length - 1) * sp; // 스무딩은 경로를 줄인다 → 최종본 기준
+    // 스무딩은 경로를 줄인다 — 실선 px(= 인덱스×spacing) 를 기준 경로 px 로 옮기는 표.
+    // plan 경계·이벤트 위치를 이걸로 옮겨야 앞 음절 모양과 무관하게 음절 경계가 맞는다.
+    const cum = [0];
+    for (let k = 1; k < sm.length; k++) cum.push(cum[k - 1] + Math.hypot(sm[k].x - sm[k - 1].x, sm[k].y - sm[k - 1].y));
+    const toBase = px => {
+        const f = Math.max(0, Math.min(sm.length - 1, px / sp));
+        const k = Math.floor(f);
+        return k >= sm.length - 1 ? cum[sm.length - 1] : cum[k] + (cum[k + 1] - cum[k]) * (f - k);
+    };
+    const base = computeFrames(resample(sm, sp));
+    const baseLenPx = (base.length - 1) * sp;
+
+    const plan = stroke.plan.map(s => ({ px0: toBase(s.px0), seed: s.seed }));
+    stroke.compPlan = plan;
+    const evs = events.map(e => ({ ...e, c: toBase(e.c) }));
+    const comps = stroke.segCache.comps;
 
     const pts = [];
     const stop = Math.min(endPx, baseLenPx);
@@ -303,15 +471,19 @@ export function buildCompanion(spine, cc, CFG) {
         // ① 완만한 드리프트(큰 굽이) + ② main 곡선을 넘나드는 저진폭 진동.
         // ④ 노이즈 두 샘플의 차 → 평균 0 이 보장된다. 구버전 (nz-0.5) 은 곡선마다
         //    DC 바이어스가 남아서 "한쪽으로만 도는" 곡선이 나오곤 했다.
-        const u = px / cc.wanderLen;
-        const drift = cc.amp * 1.6 * (cc.nz(u) - cc.nz(u + 111.3));
-        const weave = cc.weaveAmp * Math.sin((px / cc.weaveLen) * TWO_PI + cc.weavePhase);
-        const lateral = drift + weave;
+        // 위치는 구간 국소 px — 같은 음절이면 같은 굽이
+        const lateral = blendSeg(plan, px, CFG.segBlend, (j, local) => {
+            const cc = comps[j][i];
+            const u = local / cc.wanderLen;
+            const drift = cc.amp * 1.6 * (cc.nz(u) - cc.nz(u + 111.3));
+            const weave = cc.weaveAmp * Math.sin((local / cc.weaveLen) * TWO_PI + cc.weavePhase);
+            return drift + weave;
+        });
         let ox = p.nx * lateral,
             oy = p.ny * lateral;
 
         // ③ 루프 이벤트: 지나갈 때만 원을 그림
-        for (const e of cc.events) {
+        for (const e of evs) {
             const d = (px - e.c) / e.span; // -1..1
             if (d <= -1 || d >= 1) continue;
             const env = Math.cos((d * Math.PI) / 2) ** 2; // 가장자리 0, 중앙 1
@@ -324,24 +496,34 @@ export function buildCompanion(spine, cc, CFG) {
     return smooth(pts, passesFor(CFG.compSmooth, CFG.compStep));
 }
 
-// 매 프레임 호출: spine 갱신 + 이벤트/장식 성장 + 동반 곡선 재생성.
-// 결과는 stroke.spine / stroke.compPolys 에 들어간다.
+// 매 프레임 호출: spine 갱신 + 이벤트/장식 + 동반 곡선 재생성.
+// 결과는 stroke.spine / spineInk / compPolys / decor / orbs 에 들어간다.
 export function growStroke(stroke, CFG) {
     if (stroke.raw.length < 2) {
         stroke.spine = null;
+        stroke.spineInk = null;
         stroke.compPolys = [];
         return;
     }
     const spine = buildSpine(stroke.raw, CFG);
     const headPx = (spine.length - 1) * CFG.spacing;
-    for (const cc of stroke.comps) growEvents(cc, headPx, CFG);
-    growDecor(stroke, spine, headPx, CFG);
-    resolveDecor(stroke, spine, CFG); // 좌표는 항상 "지금의 spine" 기준으로 다시 푼다
+
+    // 구간별 파라미터 — plan 이 바뀌어도(replaceTail) 그대로 따라오도록 매번 만든다 (구간 수개라 싸다)
+    stroke.segCache = {
+        comps: stroke.plan.map(seg => segComps(seg, stroke.nc, CFG)),
+        reachNz: stroke.plan.map(seg => makeNoise(smallSeed(hashSeed(seg.seed, 'reach')))),
+    };
+
+    stroke.decor = planDecor(stroke, headPx, CFG);
+    resolveOnSpine(stroke.decor, spine, CFG);
+    stroke.orbs = planOrbs(stroke, headPx, CFG);
+    resolveOnSpine(stroke.orbs, spine, CFG);
 
     stroke.spine = spine;
+    stroke.spineInk = applySpineFx(stroke, spine, CFG);
     stroke.compPolys = [];
-    for (const cc of stroke.comps) {
-        const poly = buildCompanion(spine, cc, CFG);
+    for (let i = 0; i < stroke.nc; i++) {
+        const poly = buildCompanion(spine, stroke, i, planEvents(stroke, i, headPx, CFG), CFG);
         if (poly.length >= 2) stroke.compPolys.push(poly);
     }
 }

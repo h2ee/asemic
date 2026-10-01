@@ -19,7 +19,7 @@ import stampFragSrc from './stamp.frag';
 import quadVertSrc from './quad.vert';
 import compositeFragSrc from './composite.frag';
 
-export const FLOATS_PER_SEG = 8; // ax, ay, bx, by, R, id, birth, spare
+export const FLOATS_PER_SEG = 8; // ax, ay, bx, by, R, id, birth, kind(0 .r / 1 .a)
 
 export function createField(gl, quadBuf) {
     // RGBA16F 를 렌더타겟으로 쓰려면 둘 중 하나가 필요하다. 16F 는 블렌딩도 허용되므로
@@ -131,6 +131,7 @@ export function createField(gl, quadBuf) {
         gl.uniform2f(uComp('u_texel'), 1 / fw, 1 / fh);
         gl.uniform1f(uComp('u_pxPerTexel'), pxPerTexel);
         gl.uniform1f(uComp('u_th'), p.th);
+        gl.uniform1f(uComp('u_compCap'), p.compCap ?? 0);
         gl.uniform1f(uComp('u_edge'), p.edge);
         gl.uniform3fv(uComp('u_paper'), p.paper);
         gl.uniform3fv(uComp('u_ink'), p.ink);
@@ -180,9 +181,10 @@ export function createField(gl, quadBuf) {
             out = Array.from(probeF32);
         }
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        const [density, gAcc, bAcc] = out;
+        const [density, gAcc, bAcc, comp] = out;
         return {
             density,
+            comp, // 동반 곡선 밀도 (goo.compCap 이 켜졌을 때만 .a 에 들어간다 — cap 전 값)
             strokeId: density > 1e-4 ? gAcc / density : 0,
             birth: density > 1e-4 ? bAcc / density : 0,
         };

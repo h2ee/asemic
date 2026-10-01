@@ -182,11 +182,35 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
    난수는 전부 시드 기반(mulberry32 + FNV-1a)이고 하위 시스템마다 스트림이 분리돼 있다
    (공유하면 `decorGap` 만 바꿔도 루프 위치가 따라 변한다). 난수 소비가 **경로 길이에만** 의존하므로
    점진 렌더와 일괄 생성 결과가 동일하다.
+   - **구간 계획 `plan` (2026-10-01)** — 획을 음절 구간 `[{px0, seed}]` 으로 나누고 동반 곡선·루프·장식·orb·선 효과·reach 변화를
+     전부 (음절 시드, 음절 안 국소 px)의 순수 함수로 만든다. 시드 = 음절 내용(`hashSeed('syl', cho, jung, jong)`)이라
+     **같은 음절은 어느 단어·자리에서든, ㅇ→아→안 으로 쳤든 한 번에 '안'이든 같은 모양**(브라우저에서 픽셀 동일 확인).
+     예전엔 단어 시드가 *큐에 처음 들어간 순간의 키*로 고정돼(replaceTail 이 시드를 유지) 타이핑 경로마다 점선이 달랐다.
+     경계는 `segBlend`(24px) 크로스페이드. plan 이 없으면(sketch 마우스) 한 구간 = 예전과 같은 난수 순서
+   - 구간 경계는 `jamoWordTrail(..., meta)` 가 `meta.starts` 로 알려 준다. 동반 곡선은 스무딩으로 짧아진 기준 경로 위에서
+     만들어지므로 경계·루프 위치를 `toBase` 로 옮긴다 — 안 하면 뒤 음절 경계가 앞 음절 모양에 따라 수십 px 밀린다
 4. **GPU 밀도장 goo** (`trail/field.js`) — 세그먼트를 캡슐 SDF 커널로 누적 텍스처에 인스턴스 스탬프
    (baked = 구운 획 / live = 자라는 획), 합성 패스가 임계 + 셰이딩. 파라미터가 직교한다:
    `reach`(px 사거리) / `th`(≈겹쳐야 하는 선 개수) / `edge`(물렁함).
+   - `goo.reach` 를 `[lo, hi]` 로 주면 경로를 따라 노이즈로 오간다(파장 `reachLen`). 커널이 길이로 정규화돼 코어 밀도는 R 과 무관
+   - **`goo.compCap`** — 동반 곡선 밀도를 `.a` 채널에 따로 쌓고 읽을 때 soft cap(`c/(1+(c/cap)^4)^¼`)으로 눌러 더한다.
+     점선 자기 겹침(올록볼록 반복 goo — mycelium 캡슐과 닮아 보이던 것)은 cap 을 못 넘고 실선과의 교차만 임계를 넘는다.
+     0 = 끔(예전). th 1.8 기준 1.0 이면 점선 고리 goo 가 거의 사라진다. th 이상이면 효과 없음. 바꾸면 `engine().replay()`
 5. **단어 윤곽선** (`trail/marchingSquares.js`) — 구울 때 한 번, 밀도장을 CPU 격자로 다시 계산해
    등고선을 **폴리라인**으로 뽑는다(셰이더 isoline 과 달리 점선·벡터가 가능). 단어당 닫힌 윤곽선 1개, ~7ms.
+   `outline.anim.on` 이면 획 시작점(`spine[0]`)에 가장 가까운 꼭짓점에서 출발해 `speed` px/s 로 한 바퀴 돌아 닫힌다
+   (진행 중엔 오버레이, 다 돌면 ink2d 로 확정. `flushQueue`/`replay` 는 즉시 완성)
+6. **장식 레이어 (2026-10-01)** — 전부 `CFG_OVERRIDE` 에서 `on` 으로 켜고 끈다
+   - `spineFx` — 실선에 Roughen(`size`/`gap`/`mode` smooth·corner) · Pucker&Bloat(`amount` +bloat/−pucker, `gap`).
+     `target:'ink'` 는 2D 실선만, `'all'` 은 goo·윤곽선까지
+   - `bead` — 실선을 타고 `speed` px/s 로 흐르는 원. 굽지 않고 매 프레임 오버레이에 그린다
+   - `bead.main` — 획마다 하나, 실선을 **왕복**(ping-pong — 끝에서 처음으로 순간이동하지 않음)하는 큰 원.
+     orb 의 flow field 가 이 진행 방향을 따른다. `glow.on` 이면 배경 투명 radial gradient(가운데 `radius×core` 까지 fill 색,
+     밖은 알파 `(1-s)^falloff`) — fill 이 어떤 CSS 색이든 2D 컨텍스트로 rgb 를 뽑아 알파만 바꾼다
+   - `orb` — 경로 주변 노란 원 + 내부 **hatch 형 flow field**(짧은 대시를 격자에 놓고 벡터장 방향으로 돌림).
+     벡터장 = 노이즈 기본장을 그 획 main bead 진행 방향 쪽으로 `follow` 만큼 돌린 것(거리 `falloff` 로 약해짐),
+     bead 가 간 만큼 노이즈 표본을 `drift` 배로 밀어 무늬가 흐른다. 대시는 방향 없는 선이라 각도 차를 π 로 접는다
+     (bead 가 되돌아와도 결이 안 튄다). **goo 아래**의 underlay 캔버스에 매 프레임 다시 그린다(굽지 않음)
 
 ### 점진 렌더 · 한글 조합
 
@@ -200,7 +224,7 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
 ### 출력 · 정리
 
 - 합성 셰이더는 **straight alpha** 로 잉크만 낸다. 종이색은 캔버스 CSS 배경 → 화면은 그대로, `captureFrame()` 은 투명 PNG(99% 투명). 불투명이면 히스토리에서 앞 턴을 덮어버린다.
-- `dispose()` 가 리스너·캔버스 2장·body 배경을 전부 되돌린다. **`keys` 옵션은 끈 채로 둘 것** — 켜면 `c`/`z`/`s` 가 한글 입력창을 가로챈다.
+- `dispose()` 가 리스너·캔버스 3장(underlay/goo/overlay)·body 배경을 전부 되돌린다. 투명 합성이면 `bodyBg:false` + `paperBg:false`. **`keys` 옵션은 끈 채로 둘 것** — 켜면 `c`/`z`/`s` 가 한글 입력창을 가로챈다.
 - `sylSize = 110`, `wrapStep = 130`, `lineHeightRatio = 1.8`
 - 자주 바뀌는 값: `CFG_OVERRIDE`(dandelion.js 상단, goo/grow/part/outline 포함), `jamoTrail.js` 의 `MEANDER_*` / `DC_TURNS` / `AC_TURN` / `JOIN_STEER` / `LINE_PULL`
 - 성장장·파티클 레이어는 구현돼 있으나 **기본 off** (`grow.on` / `part.on`)

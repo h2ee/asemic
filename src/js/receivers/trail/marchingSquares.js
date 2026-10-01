@@ -24,8 +24,16 @@ function distToSeg(px, py, ax, ay, bx, by) {
     return Math.sqrt(dx * dx + dy * dy);
 }
 
-// segs: [{ax, ay, bx, by}] — 밀도장에 스탬프된 것과 같은 세그먼트들
-export function wordOutline(segs, { reach = 28, th = 0.5, cell = 4 } = {}) {
+// GPU 쪽 capComp(composite.frag)와 같은 식 — 동반 곡선 밀도의 soft cap
+function capComp(c, cap) {
+    if (!(cap > 0)) return c;
+    const r = c / cap;
+    return c / Math.pow(1 + r * r * r * r, 0.25);
+}
+
+// segs: [{ax, ay, bx, by, c?}] — 밀도장에 스탬프된 것과 같은 세그먼트들. c = 동반 곡선
+// compCap: goo.compCap 과 같은 값을 넘기면 동반 곡선 밀도를 같은 식으로 눌러서 더한다
+export function wordOutline(segs, { reach = 28, th = 0.5, cell = 4, compCap = 0 } = {}) {
     if (!segs || segs.length === 0) return [];
 
     let x0 = Infinity,
@@ -71,16 +79,19 @@ export function wordOutline(segs, { reach = 28, th = 0.5, cell = 4 } = {}) {
         for (let i = 0; i < nx; i++) {
             const px = x0 + i * cell;
             const gx = Math.max(0, Math.min(bw - 1, Math.floor((px - x0) / reach)));
-            let sum = 0;
+            let sum = 0,
+                comp = 0;
             for (const si of buckets[bi(gx, gy)]) {
                 const s = segs[si];
                 const d = distToSeg(px, py, s.ax, s.ay, s.bx, s.by);
                 if (d >= reach) continue;
                 const q = 1 - d / reach;
                 const len = Math.hypot(s.bx - s.ax, s.by - s.ay);
-                sum += q * q * q * ((KERNEL_NORM * len) / reach);
+                const k = q * q * q * ((KERNEL_NORM * len) / reach);
+                if (s.c && compCap > 0) comp += k;
+                else sum += k;
             }
-            f[j * nx + i] = sum;
+            f[j * nx + i] = sum + capComp(comp, compCap);
         }
     }
 

@@ -82,6 +82,145 @@ export function syllableData(syl) {
     };
 }
 
+// ── 사운드 — 음절 → 사물 공명 (src/js/sound.js가 그대로 연주한다). PRD 3-A ─────────────
+// 말소리처럼 들리지 않게 숫자를 "목소리"가 아니라 "사물"로 해석한다(2026-10-01):
+//   중성 F1/F2/F3 → 사물의 공명 주파수(모드). 필터가 아니라 울리는 음 자체라 모음으로 안 들린다
+//   초성          → 그 사물을 건드리는 방식. 조음방법(y)=치기/긁기/문지르기/누르기/휘기,
+//                   긴장도(z)=세기·어택, 조음위치(x)=접촉 소리의 색(노이즈 중심 주파수)
+//   종성          → 울림을 끝맺는 방식. 막기(파열·마찰) / 웅웅 이어지기(비음) / 휘어 내려가기(유음)
+//   receiver      → 사물의 재질(TIMBRE). 모드 비율·감쇠·파형이 다르다
+// 같은 음절은 언제나 같은 소리. 숫자 규칙은 그대로고 해석만 바뀐다.
+const ONSET_CENTER = [900, 4500, 3200, 1800, 1500]; // 조음위치 x = 0/0.25/0.5/0.75/1.0 → 노이즈 중심 Hz
+function onsetCenter(x) {
+    const t = Math.min(Math.max(x, 0), 1) * 4;
+    const i = Math.min(Math.floor(t), 3);
+    return ONSET_CENTER[i] + (ONSET_CENTER[i + 1] - ONSET_CENTER[i]) * (t - i);
+}
+const mannerOf = y => (y < 0.15 ? 'stop' : y < 0.4 ? 'affricate' : y < 0.6 ? 'fric' : y < 0.9 ? 'nasal' : 'liquid');
+const tensionOf = z => (z < 0.15 ? 'sonorant' : z < 0.5 ? 'lax' : z < 0.85 ? 'tense' : 'asp');
+
+// 재질 — 조절 포인트. scale: 포먼트 Hz에 곱함 / ratios: 모드마다 붙는 비정수배 배음 /
+// tau: 기본 감쇠 시간(초, 높은 모드일수록 짧아진다) / wave: 'sine' | 'square'(삑) | 'breath'(노이즈 휘파람)
+// level: receiver끼리 체감 음량 맞춤(오프라인 렌더 rms 기준) / formantAmp: F1/F2/F3 비중 덮어쓰기
+export const TIMBRE = {
+    mycelium: { scale: 0.5, ratios: [1, 2.32], ratioAmp: [1, 0.35], tau: 0.22, wave: 'sine', level: 1 }, // 젖은 나무 두드림
+    sora: { scale: 1.0, ratios: [1, 2.76, 5.4], ratioAmp: [1, 0.4, 0.15], tau: 0.8, wave: 'sine', detune: 1.5, level: 0.9 }, // 조개 — 길게 맥놀이
+    dandelion: { scale: 1.2, ratios: [1], ratioAmp: [1], tau: 0.45, wave: 'breath', q: 25, level: 2.0 }, // 화분·바람
+    signal: { scale: 2.0, ratios: [1], ratioAmp: [1], formantAmp: [1, 0.5, 0], tau: 0.09, wave: 'square', quantize: true, gate: true, level: 0.7 }, // 신호등 장난감 삑
+};
+const FORMANT_AMP = [1.0, 0.5, 0.25];
+
+// 초성 → 건드리는 방식 { attack, boost, soft, glide, noise[] }
+function onsetFor(cho) {
+    // ㅇ 초성은 살짝 누르기만 — 좌표상 연구개 비음이지만 첫소리 ㅇ은 소리가 없다
+    if (cho.jamo === 'ㅇ') return { attack: 0.008, boost: 0.8, soft: 1, glide: null, noise: [] };
+    const manner = mannerOf(cho.y);
+    const tense = tensionOf(cho.z);
+    const center = onsetCenter(cho.x);
+    const o = { attack: 0.002, boost: 1, soft: 0, glide: null, noise: [] };
+    if (tense === 'tense') o.boost = 1.3; // 된소리 — 세게, 더 짧게
+    if (manner === 'stop') {
+        // 치기 — 딱 한 번. 거센소리는 치고 나서 숨이 샌다
+        o.attack = tense === 'tense' ? 0.0005 : 0.001;
+        o.noise.push({ center, q: 1.5, at: 0, dur: 0.006, gain: 0.5 * o.boost });
+        if (tense === 'asp') o.noise.push({ center, q: 0.8, at: 0.006, dur: 0.08, gain: 0.12 });
+    } else if (manner === 'affricate') {
+        // 치고 긁기
+        o.attack = 0.002;
+        o.noise.push({ center, q: 1.5, at: 0, dur: 0.006, gain: 0.45 });
+        o.noise.push({ center, q: 2.5, at: 0.006, dur: tense === 'asp' ? 0.09 : 0.04, gain: 0.15 });
+    } else if (manner === 'fric') {
+        // 문지르기 — 울림이 천천히 차오른다. ㅎ(후두)은 넓게
+        const glottal = cho.x > 0.9;
+        const dur = glottal ? 0.08 : tense === 'tense' ? 0.13 : 0.1;
+        o.attack = dur;
+        o.noise.push({ center, q: glottal ? 0.5 : 3, at: 0, dur, gain: glottal ? 0.12 : 0.18 * o.boost });
+    } else if (manner === 'nasal') {
+        // 말랑한 채로 누르기 — 높은 모드가 덜 울린다
+        o.attack = 0.015;
+        o.soft = 1;
+    } else {
+        // 휘기 — 모드가 아래에서 제자리로 미끄러진다
+        o.attack = 0.005;
+        o.glide = { from: 0.85, dur: 0.06 };
+    }
+    return o;
+}
+
+// 종성 → 끝맺는 방식 { type, at, tau?, ratio? }. 겹받침은 대표음(cluster_front)
+function endingFor(jong) {
+    if (!jong || jong.x == null) return null;
+    const manner = mannerOf(jong.y);
+    const tense = tensionOf(jong.z);
+    const at = 0.14; // 울리기 시작해서 끝맺기까지 — 조절 포인트
+    if (manner === 'nasal') return { type: 'hum', at, stretch: 2.5 };
+    if (manner === 'liquid') return { type: 'bend', at, ratio: 0.94, dur: 0.15 };
+    // 파열·파찰·마찰 — 손으로 잡아 막는다. 된·거센일수록 빨리
+    return {
+        type: 'choke',
+        at,
+        tau: tense === 'tense' || tense === 'asp' ? 0.006 : 0.018,
+        hiss: manner === 'fric' ? { center: onsetCenter(jong.x), q: 3, dur: 0.05, gain: 0.12 } : null,
+    };
+}
+
+// 사운드 대체 트리거 — 음절 수가 늘었으면 새 마지막 음절을 돌려준다. 성장 시작을 직접 알리지 않는
+// receiver(emitsSyllableStart 없음)는 페이지가 입력 순간에 이걸로 울린다. 한 번에 여러 개가 늘면 마지막만
+export function addedSyllable(items, prevCount) {
+    const syls = items.filter(it => !it.isSpace);
+    return { count: syls.length, added: syls.length > prevCount ? syls[syls.length - 1] : null };
+}
+
+// 소리가 난 뒤에 받침이 붙었나 — 타이핑 중엔 '가'로 울리고 나서 '각'이 된다. 그러면 울리고 있는
+// 소리에 종성 끝맺음을 건다(sound.endLast). played = 마지막으로 울린 음절, 맞으면 { jong, ending }
+export function lateEnding(played, items) {
+    if (!played || played.jong) return null;
+    const last = [...items].reverse().find(it => !it.isSpace);
+    if (!last?.jong || last.cho !== played.cho || last.jung !== played.jung) return null;
+    const ending = endingFor(syllableData(last).jong);
+    return ending ? { jong: last.jong, ending } : null;
+}
+
+export function voiceFor(syl, receiverName = 'mycelium') {
+    const d = syllableData(syl);
+    const tb = TIMBRE[receiverName] ?? TIMBRE.mycelium;
+    const onset = onsetFor(d.cho);
+    const ending = endingFor(d.jong);
+    const brighten = d.jung.yang > 0 ? 1.03 : 1; // 양성모음은 살짝 밝게
+
+    const modes = [];
+    [d.jung.f1, d.jung.f2, d.jung.f3].forEach((F, k) => {
+        tb.ratios.forEach((r, j) => {
+            let freq = F * tb.scale * r * brighten;
+            if (tb.quantize) freq = 440 * 2 ** (Math.round(12 * Math.log2(freq / 440)) / 12); // 반음 격자
+            if (freq > 12000 || !(tb.formantAmp ?? FORMANT_AMP)[k]) return;
+            // 말랑한 접촉(비음)은 높은 모드를 덜 울린다
+            const amp = (tb.formantAmp ?? FORMANT_AMP)[k] * tb.ratioAmp[j] * (onset.soft ? 1 / (1 + k + j) : 1);
+            // 높은 모드일수록 빨리 사그라든다
+            const tau = tb.tau / (1 + freq / 3000);
+            modes.push({ freq, amp, tau });
+        });
+    });
+
+    let ring = Math.max(...modes.map(m => m.tau)) * 5;
+    if (ending?.type === 'hum') ring *= ending.stretch;
+    if (tb.gate) ring = ending?.type === 'hum' ? 0.35 : 0.2;
+    if (ending?.type === 'choke') ring = Math.min(ring, ending.at + 0.1);
+    return {
+        wave: tb.wave,
+        q: tb.q ?? 25,
+        detune: tb.detune ?? 0,
+        gate: !!tb.gate,
+        modes,
+        attack: onset.attack,
+        glide: onset.glide,
+        noise: onset.noise,
+        ending,
+        gain: 0.3 * onset.boost * (tb.level ?? 1),
+        length: Math.min(onset.attack + ring, 4),
+    };
+}
+
 // ── 텍스트박스 레이아웃 엔진 ──────────────────────────────────────────────────
 // offsetY: 이전 제출 줄 누적 높이(px) — 새 줄 시작 기준선
 export function calcTextboxLayout(

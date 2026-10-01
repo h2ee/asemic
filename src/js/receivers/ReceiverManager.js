@@ -42,6 +42,9 @@ export class ReceiverManager {
         }
         this._current = new Cls(opts);
         this._name = name;
+        // 음절이 화면에서 자라기 시작하는 순간 → 페이지(사운드). receiver를 바꿔도 핸들러는 유지된다.
+        // 지금은 mycelium만 부른다 — 나머지는 receiver 쪽에 같은 훅을 달면 된다
+        this._current.onSyllableStart = syl => this.onSyllableStart?.(syl, name);
         await this._current.init(this._canvas);
     }
 

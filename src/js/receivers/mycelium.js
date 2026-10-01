@@ -671,6 +671,8 @@ export class MyceliumReceiver {
     //   WebGLRenderer를 alpha:true로 만든다. TD Web Render TOP / 크롬 PNG 위 합성용.
     //   (전시 index.html은 이 옵션 없이 생성 → 기존 불투명 회색 배경 그대로.)
     constructor(opts = {}) {
+        // 사운드 — 음절이 자라기 시작할 때 onSyllableStart를 직접 부른다(_dequeue). 페이지 대체 트리거는 끈다
+        this.emitsSyllableStart = true;
         this._transparent = !!opts.transparentOutput;
         this._renderer = null;
         this._clock = null;
@@ -951,21 +953,21 @@ export class MyceliumReceiver {
                 }
 
                 const isInstant = confirmed ? confirmed[i] : false;
-                this._queue.push(
-                    this._makeItem(
-                        starts[i],
-                        centers[i],
-                        chos[i],
-                        ends[i],
-                        jungs[i],
-                        amps[i],
-                        yangseong[i],
-                        diphthong[i],
-                        isInstant,
-                        hubCenters,
-                        hubCenters.length,
-                    ),
+                const item = this._makeItem(
+                    starts[i],
+                    centers[i],
+                    chos[i],
+                    ends[i],
+                    jungs[i],
+                    amps[i],
+                    yangseong[i],
+                    diphthong[i],
+                    isInstant,
+                    hubCenters,
+                    hubCenters.length,
                 );
+                item.syl = sylItems?.[i] ?? null; // 자라기 시작할 때 onSyllableStart로 내보낼 음절
+                this._queue.push(item);
             }
             if (newSylCount > prevCount && prevCount > 0 && this._growing) {
                 this._growUniforms.u_end.value.copy(ends[prevCount - 1]);
@@ -1291,6 +1293,8 @@ export class MyceliumReceiver {
         this._growStart = this._clock.getElapsedTime();
         this._growing = true;
         this._instantBake = item.instant;
+        // 사운드 트리거 — 실제로 자라는 음절만(재굽기·확정 음절의 instant bake는 소리 없음)
+        if (!item.instant && item.syl) this.onSyllableStart?.(item.syl);
     }
 
     // glyphmode scroll 한 프레임 — _scrollPos를 목표로 당기고, 정수 px가 쌓이면 그만큼 민다

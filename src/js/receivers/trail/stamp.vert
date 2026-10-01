@@ -8,7 +8,7 @@ precision highp float;
 
 layout(location = 0) in vec2 a_corner;  // 단위 쿼드 [-1..1]^2
 layout(location = 1) in vec4 a_seg;     // ax, ay, bx, by  (CSS px, y 아래로)
-layout(location = 2) in vec4 a_meta;    // R(px), strokeId, birth, spare
+layout(location = 2) in vec4 a_meta;    // R(px), strokeId, birth, kind(0 실선 / 1 동반 곡선 → .a 채널)
 
 uniform vec2 u_cssSize;                 // 화면 크기 (CSS px)
 
@@ -16,6 +16,7 @@ out vec2 v_px;                          // 이 프래그먼트의 CSS px 좌표
 flat out vec4 v_seg;
 flat out vec3 v_meta;                   // R, id, birth
 flat out float v_w;                     // 커널 정규화 가중치
+flat out float v_kind;                  // 1 이면 .a 채널로 (goo.compCap)
 
 // 커널을 "선밀도 적분의 리만 합"으로 쓰기 위한 정규화.
 // kernel q^3 (q = 1 - d/R) 를 직선에 대해 적분하면 코어에서 0.5 → 2.0 이면 딱 1.0 이 나올 것
@@ -41,6 +42,7 @@ void main() {
     v_px = p;
     v_seg = a_seg;
     v_meta = a_meta.xyz;
+    v_kind = a_meta.w;
     // 세그먼트 길이로 가중 → 리샘플 간격(compStep)을 바꿔도 밀도가 안 변한다
     v_w = KERNEL_NORM * (L / max(R, 1e-5));
 

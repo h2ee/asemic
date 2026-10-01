@@ -25,7 +25,7 @@ export const PERSONAS = {
 const DEFAULTS = {
     endpoint: 'http://localhost:11434/api/chat',
     model: 'gemma3:12b',
-    revealRate: 4, // 초당 드러나는 글자 수
+    revealRate: 3.5, // 초당 드러나는 글자 수 (2026-10-01 4 → 3.5)
     maxChars: 60,
     temperature: 1.0,
     timeoutMs: 30000,

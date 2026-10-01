@@ -3,7 +3,8 @@
 // core.js로 옮김 — dev 페이지(dev/translator, dev/analyzer)와 공유하기 위함.
 // 이 파일엔 전시용 페이지의 DOM/UI 구성(buildUI, buildInput, buildHistory, Init)만 남음.
 import { ReceiverManager } from './receivers/ReceiverManager.js';
-import { MAX_SYL, decomposeSyllables, layoutFor, canSubmit, dispatchToReceiver } from './core.js';
+import { MAX_SYL, decomposeSyllables, layoutFor, canSubmit, dispatchToReceiver, voiceFor, addedSyllable, lateEnding } from './core.js';
+import { createSound } from './sound.js';
 
 // ── 제출된 줄 히스토리 (캡처 이미지 누적) ────────────────────────────────────
 function buildHistory() {
@@ -177,6 +178,11 @@ async function Init() {
     const initReceiver = params.get('receiver') ?? 'mycelium';
 
     const rm = new ReceiverManager();
+    // 사운드 — output-main.js와 같은 배선. 첫 키 입력/클릭에서 오디오가 풀린다
+    const sound = createSound({ enabled: new URLSearchParams(location.search).get('sound') !== '0' });
+    rm.onSyllableStart = (syl, name) => sound.play(voiceFor(syl, name), syl);
+    for (const ev of ['keydown', 'pointerdown']) window.addEventListener(ev, sound.unlock, { capture: true });
+    window.sound = sound;
     await rm.setReceiver(initReceiver);
     window.rm = rm; // 콘솔 디버깅용 — 예: rm.current.setD3Displace(true)
 
@@ -188,6 +194,7 @@ async function Init() {
     let _allItems = [];
     let _submitOffsetY = 0; // 제출된 줄 누적 높이(px) — 새 줄 기준선
     let _prevSpaceCount = 0; // 띄어쓰기 개수 — 늘어나면 현재 자라는 음절을 즉시 완성
+    let _prevSylTotal = 0; // 사운드 대체 트리거용 음절 수
 
     function reLayout(items) {
         const W = window.innerWidth;
@@ -234,6 +241,10 @@ async function Init() {
     buildInput(
         text => {
             _allItems = decomposeSyllables(text);
+            const { count, added } = addedSyllable(_allItems, _prevSylTotal);
+            _prevSylTotal = count;
+            if (added && !rm.current?.emitsSyllableStart) rm.onSyllableStart?.(added, rm.name);
+            sound.endLast(lateEnding(sound.lastSyl, _allItems));
             // 띄어쓰기(단어 경계)가 새로 생기면 다음 음절 입력과 동일하게
             // 현재 자라는 중인 음절을 즉시 완성시킴
             const spaceCount = _allItems.reduce((n, it) => n + (it.isSpace ? 1 : 0), 0);
