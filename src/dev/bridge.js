@@ -23,8 +23,10 @@
 //        수신자 차례에 또 반응하면 무한루프가 된다.
 //        llm:'td'|'web'|'off' (2026-09-27) = 이 페이지의 LLM_MODE. TD는 'td'(없으면 td)일 때만
 //        응답한다 — 브라우저 페이지(?llm=web)는 자기가 Ollama를 부르므로(src/dev/llm.js).
+//        hint:string|null (2026-10-01) = 프리셋이 붙인 상황 설명(controls.js hints, 예: 안녕 hi/bye).
+//        LLM 시스템 프롬프트(페르소나) 뒤에 덧붙인다. 관람객이 직접 친 문장이면 null.
 //   { t:'receiver', name }                                  활성 receiver(로드/전환)
-//   { t:'mode',     joke, question }                        패널 토글 상태(→ LLM 프롬프트용)
+//   { t:'mode',     joke, question, bye }                   패널 토글 상태(→ LLM 프롬프트용)
 // TD → page
 //   { t:'param',    size?, lineHeight?, letterSpacing? }    하드웨어 노브/슬라이더
 //   { t:'text',     value, speaker?:'visitor'|'receiver' }  입력 텍스트 주입(원격 키보드 / LLM 응답)

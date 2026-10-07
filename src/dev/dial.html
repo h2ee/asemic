@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>asemic — dial</title>
+<style>
+    /* iPad 로터리 다이얼 (TD /controller 의 three.js 이식). 보내는 건 {t:'receiver', name} 뿐.
+       장면 값(카메라·조명·재질·구멍 좌표)은 전부 dial.js 상단 SCENE — TD 에서 그대로 옮겨 적었다. */
+    html, body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+        /* iPad: 끌기가 스크롤·확대·되돌리기 제스처로 새지 않게 */
+        touch-action: none;
+        overscroll-behavior: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+    }
+    #dial {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: min(100vw, 100vh);
+        height: min(100vw, 100vh);
+        display: block;
+        touch-action: none;
+    }
+    #status {
+        position: fixed;
+        right: 12px;
+        bottom: 10px;
+        font: 11px ui-monospace, Menlo, monospace;
+        color: #555;
+    }
+    #status.ok { color: #3cb371; }
+</style>
+</head>
+<body>
+<canvas id="dial"></canvas>
+<div id="status">bridge …</div>
+<script type="module" src="./dial.js"></script>
+</body>
+</html>

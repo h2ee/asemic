@@ -3,7 +3,7 @@
 // core.js로 옮김 — dev 페이지(dev/translator, dev/analyzer)와 공유하기 위함.
 // 이 파일엔 전시용 페이지의 DOM/UI 구성(buildUI, buildInput, buildHistory, Init)만 남음.
 import { ReceiverManager } from './receivers/ReceiverManager.js';
-import { MAX_SYL, decomposeSyllables, layoutFor, canSubmit, dispatchToReceiver, voiceFor, addedSyllable, lateEnding } from './core.js';
+import { MAX_SYL, decomposeSyllables, layoutFor, canSubmit, dispatchToReceiver, voiceFor, TIMBRE, addedSyllable, lateEnding } from './core.js';
 import { createSound } from './sound.js';
 
 // ── 제출된 줄 히스토리 (캡처 이미지 누적) ────────────────────────────────────
@@ -183,6 +183,7 @@ async function Init() {
     rm.onSyllableStart = (syl, name) => sound.play(voiceFor(syl, name), syl);
     for (const ev of ['keydown', 'pointerdown']) window.addEventListener(ev, sound.unlock, { capture: true });
     window.sound = sound;
+    window.TIMBRE = TIMBRE; // 콘솔 튜닝용 — 예: TIMBRE.sora.tau = 1.2
     await rm.setReceiver(initReceiver);
     window.rm = rm; // 콘솔 디버깅용 — 예: rm.current.setD3Displace(true)
 

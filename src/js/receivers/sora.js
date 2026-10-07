@@ -401,6 +401,20 @@ export class SoraReceiver {
         this._rect = rect ?? null;
     }
 
+    // 화면에 떠 있는 단어 원들 — [{ wordId, x, y, r }](뷰포트 px, r = 보이는 반경). sora는 positions를
+    // 안 쓰므로 페이지의 음절 네모가 이걸로 단어마다 원 가운데 아래에 붙는다(2026-10-08)
+    wordAnchors() {
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        return (this._slotWordIds ?? []).map((wordId, i) => ({
+            wordId,
+            x: this._positions[i][0] * W,
+            y: this._positions[i][1] * H,
+            // 반경은 y-uv 단위, 셰이더 presence가 0.6r~1.2r에서 사라진다 — 눈에 보이는 끝 ≈ r
+            r: this._radii[i] * H,
+        }));
+    }
+
     // 캔버스 전체 기준 uv(0~1)를 rect 안쪽 uv로 접는다. rect가 없으면 그대로.
     _toRect(u, v) {
         const r = this._rect;
@@ -497,6 +511,7 @@ export class SoraReceiver {
         }
 
         this._sylCount = slotCount;
+        this._slotWordIds = wordIds.slice(0, slotCount);
         for (let i = slotCount; i < MAX_SYL; i++) {
             this._frozen[i] = false;
         }
@@ -540,6 +555,7 @@ export class SoraReceiver {
         this._frozen = Array(MAX_SYL).fill(false);
         this._wordPositions.clear();
         this._wordRadii.clear();
+        this._slotWordIds = [];
         this._sylCount = 0;
         this._render(); // 다음 _animate를 기다리면 방금 캡처한 화면이 한 프레임 더 남는다
     }

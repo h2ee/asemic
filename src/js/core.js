@@ -262,7 +262,9 @@ export function calcTextboxLayout(
     }
 
     const lastY = sylItems.length > 0 ? curY : PAD_Y + sylSize + offsetY;
-    return { positions, sylItems, lastY };
+    // firstY/topY/padBottom — layoutFor stack(ext 없는 receiver = dandelion)용: 첫 줄 기준선, 첫 줄 위끝, 기준선 아래 여백.
+    // dandelion 획은 기준선 위로 자라고 음절 네모는 기준선 바로 밑에 붙어서, 아래 여백은 반 칸이면 된다
+    return { positions, sylItems, lastY, firstY: PAD_Y + sylSize + offsetY, topY: PAD_Y + offsetY, padBottom: sylSize * 0.5 };
 }
 
 // ── signal 전용 Shelf 레이아웃 ────────────────────────────────────────────────
@@ -289,47 +291,68 @@ export function calcSignalLatticeSize(syl, sylSizeBase) {
 }
 
 // 반환: { positions(uv 0~1), sylItems, widths[], heights[], lastY }
-export function calcShelfLayout(items, sylSize, W, H, lineHeightRatio = 1.0, offsetY = 0, wrapStep = sylSize, wrapMargin = 0) {
+// positions = 음절 **중심** — signal._draw()가 이 값으로 그대로 그리고(2026-10-08), 페이지의 음절 네모도
+// 같은 값을 쓴다. 예전엔 signal이 positions를 줄 구분에만 쓰고 자기 규칙(단어 사이 sylSize·0.6, 줄 안 세로
+// 가운데 정렬)으로 따로 깔아서, 네모(positions = 음절 왼쪽 끝)와 글자가 어긋나고 자간(wrapStep)은 안 먹었다.
+// letterGap — 음절 사이 추가 간격(px). 자간 노브를 안 대면 0(음절이 붙어 "구슬이 이어진" 룩 그대로).
+// 띄어쓰기는 sylSize·SHELF_WORD_GAP(= signal.js WORD_GAP_RATIO) + letterGap.
+const SHELF_WORD_GAP = 0.6;
+export function calcShelfLayout(items, sylSize, W, H, lineHeightRatio = 1.0, offsetY = 0, wrapStep = sylSize, wrapMargin = 0, letterGap = 0) {
     const PAD_X = sylSize * 0.5;
     const PAD_Y = 40;
     const LINE_GAP = sylSize * Math.max(0, lineHeightRatio - 1); // 줄 사이 추가 여백
 
-    const positions = [];
-    const sylItems = [];
-    const widths = [];
-    const heights = [];
-
+    // 1차: 줄 나누기 + 가로 위치(음절 왼쪽 끝)
+    const rows = [];
+    let row = [];
     const rightLimit = W - PAD_X;
     let curX = PAD_X;
-    let rowTop = PAD_Y + offsetY;
-    let rowMaxH = 0;
-
     const newRow = () => {
-        rowTop += rowMaxH + LINE_GAP;
+        rows.push(row);
+        row = [];
         curX = PAD_X;
-        rowMaxH = 0;
     };
 
     for (const item of items) {
         if (item.isSpace) {
-            curX += wrapStep * 0.2; // #띄어쓰기 — calcTextboxLayout과 동일 비율
+            curX += sylSize * SHELF_WORD_GAP; // #띄어쓰기 — 음절 뒤 letterGap은 이미 붙어 있다
             if (curX > rightLimit) newRow();
             continue;
         }
         const { width, height } = calcSignalLatticeSize(item, sylSize);
         if (curX + width > rightLimit && curX > PAD_X) newRow();
-        // positions.y는 signal._syncRows의 줄 그룹핑(0.05*H 임계)에만 쓰이므로,
-        // 같은 줄 음절이 항상 정확히 같은 y가 되도록 height가 아니라 sylSize(상수) 기준.
-        positions.push([curX / W, (rowTop + sylSize * 0.5) / H]);
-        sylItems.push(item);
-        widths.push(width);
-        heights.push(height);
-        curX += width;
-        if (height > rowMaxH) rowMaxH = height;
+        row.push({ item, x: curX, width, height });
+        curX += width + letterGap;
+    }
+    if (row.length) rows.push(row);
+
+    // 2차: 세로 위치 — 줄 높이 = 그 줄 음절 height 최댓값, 단어(wordId)는 줄 안에서 세로 가운데,
+    // 음절은 단어 박스 위쪽 정렬(signal의 점이 단어 상단 기준으로 생성된다)
+    const positions = [];
+    const sylItems = [];
+    const widths = [];
+    const heights = [];
+    let rowTop = PAD_Y + offsetY;
+    let lastY = rowTop;
+    let firstY = null;
+    for (const r of rows) {
+        const wordH = new Map();
+        for (const s of r) wordH.set(s.item.wordId, Math.max(wordH.get(s.item.wordId) ?? 0, s.height));
+        const rowMaxH = Math.max(...wordH.values());
+        for (const s of r) {
+            const top = rowTop + (rowMaxH - wordH.get(s.item.wordId)) * 0.5;
+            positions.push([(s.x + s.width * 0.5) / W, (top + s.height * 0.5) / H]);
+            sylItems.push(s.item);
+            widths.push(s.width);
+            heights.push(s.height);
+        }
+        lastY = rowTop + rowMaxH;
+        firstY ??= lastY;
+        rowTop += rowMaxH + LINE_GAP;
     }
 
-    const lastY = sylItems.length > 0 ? rowTop + rowMaxH : PAD_Y + offsetY;
-    return { positions, sylItems, widths, heights, lastY };
+    // firstY/topY/padBottom — layoutFor stack용: 첫 줄 아래끝, 첫 줄 위끝, 아래 여백(위 PAD_Y와 대칭)
+    return { positions, sylItems, widths, heights, lastY, firstY: firstY ?? lastY, topY: PAD_Y + offsetY, padBottom: PAD_Y };
 }
 
 // ── 자모 pos → 3D 좌표 ────────────────────────────────────────────────────────
@@ -535,25 +558,53 @@ export function layoutFor(rm, items, W, H, offsetY, rect = null, opts = {}) {
     const ext = r?.glyphExtent;
     const ds = r?.displayScale ?? 1;
     const line = !!(opts.line && rect && ext);
+    // stack(2026-10-07, glyphmode scroll) — 줄바꿈은 하되 크기는 줄이지 않고, 마지막 줄이 늘 rect 아래에
+    // 오도록 위로 민다(채팅처럼 아래에서 쌓여 올라감). 테이프 좌표에서 0번 줄이 rect 맨 아랫줄이고
+    // scrollY = (마지막 줄 번호) × 줄 높이 — receiver가 그만큼 위로 밀면 마지막 줄이 맨 아래에 온다.
+    // ext 없는 receiver(signal/dandelion, 2026-10-08)도 scrollTo가 있으면 stack을 탄다 — 아래 !ext 분기
+    const stack = !line && !!(opts.stack && rect && (ext || typeof r?.scrollTo === 'function'));
     const layoutFn = rm.name === 'signal' ? calcShelfLayout : calcTextboxLayout;
     const boxW = rect ? rect.w : W;
     const boxH = rect ? rect.h : H;
 
+    // 크기 노브(applyKnob이 sylSize에 곱한 배율)는 ext가 있는 receiver(mycelium)에선 배치에 안 쓴다 —
+    // 음절 중심은 노브 안 댄 크기로 놓고, 노브는 glyphScale로만 곱해 글자마다 **제자리(중심 기준)**에서
+    // 커지고 작아지게 한다(2026-10-08). 예전엔 줄 간격·여백까지 같이 바뀌어 글자들이 rect 모서리 쪽으로 쏠렸다.
+    const rawSyl = r?.sylSize ?? 55;
+    const baseSize = ext ? (r?._ctlBase?.sylSize ?? rawSyl) : rawSyl;
+    const knob = rawSyl / baseSize;
+
+    // 행간만은 예전처럼 노브를 따른다 — 글자가 작아지면 줄도 같이 붙는다. 가로(자간·왼쪽 여백)는 그대로라
+    // 줄마다 왼쪽 정렬이 유지되고, 글자는 각자 중심에서 커지고 작아진다
     const layoutAt = scale => {
         const z = scale * ds;
-        const sylSize = (r?.sylSize ?? 55) * z;
-        const lineHeightRatio = r?.lineHeightRatio ?? 1.3;
-        const wrapStep = (r?.wrapStep ?? (r?.sylSize ?? 55) * 2) * z;
-        const wrapMargin = (r?.wrapMargin ?? r?.sylSize ?? 55) * z;
+        const sylSize = baseSize * z;
+        const lineHeightRatio = (r?.lineHeightRatio ?? 1.3) * knob;
+        const wrapStep = (r?.wrapStep ?? baseSize * 2) * z;
+        const wrapMargin = (r?.wrapMargin ?? baseSize) * z;
         const meta = { sylSize, lineHeightRatio, wrapStep, wrapMargin };
+        // signal(calcShelfLayout)은 음절이 붙어 있는 게 기본이라 wrapStep을 보폭으로 못 쓴다 —
+        // 자간 노브가 기본값에서 늘린/줄인 만큼만 음절 사이 간격으로 준다(노브 가운데 = 0)
+        // receiver.minSpacing(배율)이 있으면 그 아래로는 안 좁힌다(signal 0.96 — 더 겹치면 형태가 무너짐)
+        const baseStep = r?._ctlBase?.wrapStep ?? r?.wrapStep ?? 0;
+        const step = Math.max(r?.wrapStep ?? 0, baseStep * (r?.minSpacing ?? 0));
+        const letterGap = (step - baseStep) * z;
 
         if (!ext) {
-            const out = layoutFn(items, sylSize, boxW, boxH, lineHeightRatio, offsetY, wrapStep, wrapMargin);
+            const out = layoutFn(items, sylSize, boxW, boxH, lineHeightRatio, offsetY, wrapStep, wrapMargin, letterGap);
+            // stack — 크기는 그대로, 첫 줄을 rect 맨 아래(padBottom 여백)로 내리고 scrollY = 첫 줄 → 마지막 줄 거리.
+            // 줄 높이가 음절마다 다른 signal도 되도록 줄 번호가 아니라 실제 위치 차로 잰다
+            const dy = stack ? boxH - out.padBottom - out.firstY : 0;
             if (rect) {
                 out.positions = out.positions.map(([u, v]) => [
                     (rect.x + u * rect.w) / W,
-                    (rect.y + v * rect.h) / H,
+                    (rect.y + v * rect.h + dy) / H,
                 ]);
+            }
+            if (stack) {
+                const scrollY = out.sylItems.length ? Math.max(0, out.lastY - out.firstY) : 0;
+                // top: 다 민 뒤 화면에서 첫 줄 위끝(말풍선 높이 fitBubble용)
+                return { ...out, ...meta, bottom: 0, scrollY, top: rect.y + dy + out.topY - scrollY };
             }
             return { ...out, ...meta, bottom: 0 };
         }
@@ -562,8 +613,8 @@ export function layoutFor(rm, items, W, H, offsetY, rect = null, opts = {}) {
         // 폭을 boxW-2dx로 줘야 오른쪽 끝 음절도 boxW-e 안에 들어온다.
         const e = ext * sylSize;
         const dx = e - sylSize * 0.5;
-        // 한 줄 모드는 줄 중심을 rect 세로 가운데로
-        const dy = (line ? boxH / 2 : e) - (40 + sylSize);
+        // 한 줄 모드는 줄 중심을 rect 세로 가운데로, stack은 0번 줄을 rect 맨 아래로
+        const dy = (line ? boxH / 2 : stack ? boxH - e : e) - (40 + sylSize);
         const innerW = line ? LINE_TAPE_W : boxW - 2 * dx;
         const out = layoutFn(items, sylSize, innerW, boxH, lineHeightRatio, offsetY, wrapStep, wrapMargin);
         const ox = rect ? rect.x : 0;
@@ -572,8 +623,14 @@ export function layoutFor(rm, items, W, H, offsetY, rect = null, opts = {}) {
         const lastX = n ? out.positions[n - 1][0] * innerW + dx : 0; // 마지막 음절 중심(rect 로컬 px)
         const scrollX = n ? Math.max(0, lastX + e - boxW) : 0;
         out.positions = out.positions.map(([u, v]) => [(ox + u * innerW + dx) / W, (oy + v * boxH + dy) / H]);
+        const lineH = sylSize * lineHeightRatio;
+        // stack: 마지막 줄 번호(0부터). 빈 문장이면 0 — lastY는 비어도 첫 줄 자리를 준다
+        const lastLine = stack && n ? Math.round((out.lastY - (40 + sylSize + offsetY)) / lineH) : 0;
         out.lastY += dy;
         const bottom = out.sylItems.length ? out.lastY + e - offsetY : 0;
+        // extent: 말풍선 높이(fitBubble)용 — 맨 아랫줄 중심은 기준 크기 e 자리, 맨 윗줄 글자 위끝은 노브만큼 커진 e
+        if (stack)
+            return { ...out, ...meta, bottom, scrollY: lastLine * lineH, lines: lastLine + 1, lineH, extent: (e * (1 + knob)) / 2 };
         return { ...out, ...meta, bottom, scrollX };
     };
 
@@ -583,14 +640,15 @@ export function layoutFor(rm, items, W, H, offsetY, rect = null, opts = {}) {
     const refSyl = (r?._ctlBase?.sylSize ?? r?.sylSize ?? 55) * k;
     const finish = (res, fitLines) => {
         delete res.bottom;
-        return { ...res, fitLines, glyphScale: res.sylSize / refSyl };
+        // sylSize도 노브를 곱해 돌려준다 — 페이지의 음절 네모가 커진 글자 아래 끝을 따라가게
+        return { ...res, fitLines, sylSize: res.sylSize * knob, glyphScale: (res.sylSize / refSyl) * knob };
     };
 
     if (!(rect && ext)) return finish(layoutAt(k), 0);
     // N줄 높이 = 2e + (N-1)·lineH = sylSize·(2·ext + (N-1)·lineHeightRatio)
-    const lhr = r?.lineHeightRatio ?? 1.3;
-    const baseSyl = (r?.sylSize ?? 55) * k * ds;
-    if (line) return finish(layoutAt(k * Math.min(1, boxH / (baseSyl * 2 * ext))), 1);
+    const lhr = (r?.lineHeightRatio ?? 1.3) * knob;
+    const baseSyl = baseSize * k * ds;
+    if (line || stack) return finish(layoutAt(k * Math.min(1, boxH / (baseSyl * 2 * ext))), 1);
     let res;
     for (let n = 1; n <= FIT_LINES_SAFETY; n++) {
         const s = Math.min(1, boxH / (baseSyl * (2 * ext + (n - 1) * lhr)));

@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 210 297"
+     font-family="-apple-system, 'Apple SD Gothic Neo', sans-serif" fill="none" stroke="#000" stroke-width="0.3">
+  <!-- 턴테이블 밑판 도안, A4 1:1. 중심 C=(105,125) = 모터 축 = 회전판 중심.
+       28BYJ-48 표준 치수(몸통 Ø28, 귀 구멍 간격 35, 축 오프셋 8) 기준 — 실물에 대 보고 확인할 것 -->
+  <rect width="210" height="297" fill="#fff" stroke="none"/>
+  <text x="105" y="11" font-size="5" fill="#000" stroke="none" text-anchor="middle">턴테이블 밑판 도안 (1:1, A4)</text>
+  <text x="105" y="17" font-size="3" fill="#555" stroke="none" text-anchor="middle">실선 = 자르기 · 점선 = 표시만 · 인쇄 배율 100%</text>
+
+  <!-- 회전판 / 스페이서 -->
+  <circle cx="105" cy="125" r="100" stroke-dasharray="3 2"/>
+  <circle cx="105" cy="125" r="72.5" stroke-dasharray="3 2"/>
+  <text x="105" y="23.5" font-size="3" fill="#000" stroke="none" text-anchor="middle">회전판 바깥 Ø200</text>
+  <text x="105" y="193" font-size="3" fill="#000" stroke="none" text-anchor="middle">회전판 안쪽 구멍 Ø145</text>
+
+  <!-- 축 중심 -->
+  <path d="M95 125 H115 M105 115 V135" stroke-width="0.2"/>
+  <circle cx="105" cy="125" r="2.5" stroke-width="0.2"/>
+  <text x="118" y="122" font-size="3" fill="#000" stroke="none">축 중심 = 회전판 중심</text>
+
+  <!-- 모터 구멍: 몸통 Ø29 + 파란 덮개 홈 (자르기) -->
+  <path d="M97.5 145.41 A14.5 14.5 0 1 1 112.5 145.41 V151.5 H97.5 Z" stroke-width="0.5"/>
+  <!-- 귀 (자르지 않음) -->
+  <path d="M87.5 129.5 H122.5 A3.5 3.5 0 0 1 122.5 136.5 H87.5 A3.5 3.5 0 0 1 87.5 129.5 Z" stroke-dasharray="1.5 1" stroke-width="0.2"/>
+  <circle cx="87.5" cy="133" r="2.1" stroke-width="0.2"/>
+  <circle cx="122.5" cy="133" r="2.1" stroke-width="0.2"/>
+  <text x="128" y="134" font-size="3" fill="#000" stroke="none">모터 귀 (자르지 않음)</text>
+  <text x="105" y="157" font-size="3" fill="#000" stroke="none" text-anchor="middle">모터 구멍 — 파란 덮개(전선) 쪽이 아래</text>
+
+  <!-- 센서 창 + 테이프가 지나가는 원 -->
+  <circle cx="105" cy="125" r="50" stroke-dasharray="0.6 1.2" stroke-width="0.2"/>
+  <rect x="98" y="70" width="14" height="10" stroke-width="0.5"/>
+  <text x="115" y="69" font-size="3" fill="#000" stroke="none">센서 창 14×10</text>
+  <text x="115" y="72.5" font-size="2.6" fill="#555" stroke="none">TCRT5000이 밑에서 위를 봄</text>
+  <text x="105" y="86" font-size="2.6" fill="#555" stroke="none" text-anchor="middle">검은 테이프가 지나가는 원 (반지름 50)</text>
+
+  <!-- 축척 확인 -->
+  <path d="M55 240 H155 M55 237 V243 M155 237 V243 M105 238.5 V241.5" stroke-width="0.4"/>
+  <text x="105" y="235" font-size="3" fill="#000" stroke="none" text-anchor="middle">이 선이 정확히 100mm인지 자로 확인</text>
+
+  <g font-size="3" fill="#000" stroke="none">
+    <text x="20" y="256">1. 밑판(우드락)에 대고 축 중심·모터 구멍·센서 창을 송곳으로 찍어 옮긴다</text>
+    <text x="20" y="262">2. 모터를 실제로 대 보고 몸통·덮개가 선 안에 들어가는지 확인 후 자른다</text>
+    <text x="20" y="268">3. 스페이서(우드락 1장)는 Ø200 바깥 · Ø145 안쪽 고리 모양으로 자른다</text>
+    <text x="20" y="274">4. 윗판 아랫면에도 이 도안을 대고 Ø200 원 · 반지름 50 원을 옮겨 그린다</text>
+  </g>
+</svg>

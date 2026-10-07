@@ -33,16 +33,18 @@
 - **해상도 독립 (2026-09-26)** — 글자 모양은 `sylSize/H` 비율 하나로 정해진다(셰이더의 캡슐 반경·혹·노이즈가 월드 상수라서). `refHeight`(859)를 들고 있으면 `layoutFor`가 px 값을 `H/refHeight` 배로 스케일 → 어느 화면에서든 맥북 브라우저에서 잡은 룩 그대로
 - **배치 = 정확한 역투영** — `screenToWorld(u,v)`가 셰이더 광선식을 뒤집어 음절 중심을 z=0 평면에 놓는다. 예전 `sceneH`/`layoutScale`/`startOffsetX` 근사(화면 중심 쪽으로 가로 0.91·세로 0.71배 압축)는 `project` 없을 때의 fallback으로만 남음
 - **`glyphExtent`(1.5)** — 음절 중심→글자 끝(sylSize 배수). `layoutFor(rect)`가 이걸로 가장자리 여백을 잡고, 아래로 넘치면 `FIT_STEPS`로 단계 축소(번역기 입력창식)
-- **균일 스케일 `u_glyphScale`** — 단계 축소·크기 노브로 작아질 때 모양은 늘 기준 크기(`layoutFor`의 `glyphScale` = 지금 sylSize ÷ 노브 안 댄 기본 sylSize×H/refHeight)로 계산하고, 셰이더가 음절 중심 기준으로 통째로 줄인다: `map(p) = s·map_ref(center+(p−center)/s)`, 명중 임계 `EPS·s`, 법선 오프셋 `0.005·s`, bump는 기준 공간 좌표, 허브도 기준 공간으로 변환. 안 그러면 `rad`/혹/노이즈가 월드 상수라 작을수록 두꺼워 보인다. 실측: s=0.72 면적비 0.518(=s²), s=0.5 0.249 — bbox도 정확히 s배. TD `param{size}`는 기본값 자체를 바꾸므로 모양이 바뀐다(노브 `size`는 균일 스케일)
+- **균일 스케일 `u_glyphScale`** — 단계 축소·크기 노브로 작아질 때 모양은 늘 기준 크기(`layoutFor`의 `glyphScale` = 지금 sylSize ÷ 노브 안 댄 기본 sylSize×H/refHeight)로 계산하고, 셰이더가 음절 중심 기준으로 통째로 줄인다: `map(p) = s·map_ref(center+(p−center)/s)`, 명중 임계 `EPS·s`, 법선 오프셋 `0.005·s`, bump는 기준 공간 좌표, 허브도 기준 공간으로 변환. 안 그러면 `rad`/혹/노이즈가 월드 상수라 작을수록 두꺼워 보인다. 실측: s=0.72 면적비 0.518(=s²), s=0.5 0.249 — bbox도 정확히 s배. 브릿지 `param{size}`(TD 시절 노브)는 기본값 자체를 바꾸므로 모양이 바뀐다(노브 `size`는 균일 스케일 — 2026-10-08부터 배치는 그대로 두고 글자마다 중심 기준으로만 커진다)
 - **크기 변경 시 재굽기** — `update()`가 이미 있던 음절 중심이 움직였으면 `_rebake()`로 전부 instant 재굽기. 연결 실은 `_sylHubIds`에 기억해 둔 허브에 그대로 다시 붙는다(랜덤 재선택 없음)
 
 **GPU 비용 (2026-09-26, M3 Max · 2560×1440 · 음절 한 패스)** — 처음엔 growT=1 한 패스가 **392~482ms**라 TD(같은 GPU)가 fps 1~5로 떨어졌다. 두 가지로 줄였다:
 - **경계 판정** `hitSyllableBounds()` — 광선이 음절 경계 구(`1.3·amp` 또는 `|u_end|` + `BOUND_MARGIN`)와 연결 실 캡슐에 안 닿으면 레이마칭 생략. 닿는 픽셀은 예전 그대로라 **비트 단위 동일**(실측 diff 0). 글자 끝이 잘려 보이면 `BOUND_MARGIN`을 올릴 것
 - **경로 사전계산** `pathFrag` → `_pathTarget`(151×3 float) — 경로 점·테이퍼 노이즈·혹 위치를 음절마다 `_dequeue()`→`_bakePath()`에서 한 번 굽고 `map()`은 읽기만. `u_usePathTex=0`이면 예전 직접 계산(비교용). 실루엣 가장자리 픽셀 수십 개만 float 오차로 다름
 - 결과: growT 0.5 → 21ms, growT 1 → 49ms, 연결 실 2개 → 66ms (처음 대비 ~8~10배)
-- 측정은 TD에서 `web_glyph.executeJavaScript()`로 페이지 안에 프로브를 넣고 `bridge.send({t:'jserror'})`로 받아 `bridge.par.Lasterror`에서 읽었다. ANGLE에선 `gl.finish()`가 안 기다리므로 `readPixels(1px)`로 동기화해야 시간이 잡힌다
+- 측정은 당시 TD에서 `web_glyph.executeJavaScript()`로 페이지 안에 프로브를 넣고 `bridge.send({t:'jserror'})`로 받아 `bridge.par.Lasterror`에서 읽었다. ANGLE에선 `gl.finish()`가 안 기다리므로 `readPixels(1px)`로 동기화해야 시간이 잡힌다
 
 **프레임레이트**: 성장 루프가 자체적으로 24fps로 스로틀된다(`_FRAME_INTERVAL = 1000/24`) — webrenderTOP의 `maxrenderrate=24`에 맞춘 값. `growT`는 **렌더된 프레임당** `prev + (1-prev)*0.08`로 전진하며 경과시간 기준이 아니다.
+
+**사운드 훅**: `emitsSyllableStart = true` — `_dequeue()`가 instant가 아닌 음절을 꺼낼 때 `onSyllableStart(item.syl)`를 부른다(`ReceiverManager`가 페이지로 넘김). `item.syl`은 큐에 넣을 때의 스냅샷이라 그 뒤 붙은 받침은 페이지의 `lateEnding`이 처리한다. 다른 3종은 이 훅이 없어 페이지가 입력 순간에 대신 울린다 — 같은 훅을 달면 페이지 대체 트리거는 자동으로 꺼진다
 
 **알려진 이슈**: 연결 실/mother tree 효과가 화면에서 잘 안 보일 수 있다 — `growT >= 0.99`에서만 그려지므로 instant bake 음절은 한 프레임만 노출될 가능성. 해결됐는지 파일 재확인 필요.
 
@@ -75,7 +77,7 @@
 
 - **신호등 랜덤 셀**: 음절당 개수는 `SIGNAL_DENSITY_MIN`/`MAX`(현재 2~3개). 색 인덱스와 state가 `appendSyllable()` 시점에 함께 확정된다(`SIGNAL_STATE_FOR_COLOR` — 빨강→JONG / 초록→CHO / 노랑→JUNG).
 - **플래싱 사이클** (음절 단위 자율 순환, `CYCLE_*`/`MONO_*` 상수): 음절 생성 순간부터 무한 반복 `NORMAL`(원본 CA 렌더링) → `BLINK`(모노 흑백 도형 ↔ 원본 교차 노출, `CYCLE_BLINK_RATE_MS` 반주기) → `FREEZE`(CA 전이·밝기 완전 정지) → 다시 NORMAL. 사이클 시작 시각 = `performance.now() + sylIndex * CYCLE_PHASE_STEP_MS`(음절마다 지연 → 신호가 순차 전파). `getCyclePhase()`(JS)와 셰이더가 `u_time`/`u_sylPhaseStart[]`로 **같은 공식을 재현**한다(단일 소스는 JS 상수, `#define`으로 주입). BLINK 모노 도형은 셀의 CA state에 따라 `.`=BLANK / `/`=CHO / `\`=JUNG / `X`=JONG.
-- **유휴 정지**: 입력 없이 30초(`IDLE_PAUSE_MS`) 지나면 rAF 루프를 멈춘다. 마지막 화면은 남고 입력이 오면 즉시 재개하며, 멈춰 있던 만큼 `cyclePhaseStart`를 밀어 신호등 위상이 안 건너뛴다. TD에서는 `web_glyph.par.alwayscook = Off`여야 TOP 쿡도 같이 멈춘다.
+- **유휴 정지**: 입력 없이 30초(`IDLE_PAUSE_MS`) 지나면 rAF 루프를 멈춘다. 마지막 화면은 남고 입력이 오면 즉시 재개하며, 멈춰 있던 만큼 `cyclePhaseStart`를 밀어 신호등 위상이 안 건너뛴다. (TD 임베드 시절엔 `web_glyph.par.alwayscook = Off`여야 TOP 쿡도 같이 멈췄다.)
 - **가변 음절 크기**: `calcSignalLatticeSize()`가 `w = clamp((F1-250)/600, 0, 1)`, `scaleX = 1 + (yang ? +1 : -1) * K * w`로 계산(`K`는 파일에서 확인 — 0.2~0.5 사이로 자주 바뀜). 비이중모음은 등방(width = height = `base*scaleX`), 이중모음은 가로축만(`width = base*scaleX`, `height = base`). `update(...,widths,heights)` → `_syncRows`가 음절 item에 `w/h` 부착 → `appendSyllable(...,sylW,sylH)`가 `sylMeta.w/h`에 저장. `offsetX`는 `wordWidth()`(이전 음절 폭 누적합) 기반이고 `recomputeAdjacency`의 `cols`·`_draw`/`_drawWord`도 누적합 기반. 셰이더는 `u_sylOffsetX/Width/Height[MAX_SYL_UNIFORM]` 배열로 픽셀→음절 매핑을 나눗셈 대신 오프셋 구간 탐색으로 한다. squircle은 `radialWarp` 정규화 원을 `sylW×sylH` 박스로 되돌려 비등방 실루엣을 만든다.
 - 글자 크기 기준(base)은 `DEFAULT_SYL_SIZE`(현재 180) 하나 — 실제 음절 크기는 `calcShelfLayout`이 음절마다 계산해 넘긴다.
 
@@ -84,15 +86,21 @@
 - **음절 센터 배경 radial gradient**: 셀을 그리기 전 단계에서 각 음절 중심을 기준으로 배경(`BG_GRAY`)보다 밝은 halo가 깔리고 바깥으로 페이드 → 셀 색은 `mix(bg, cellShaded, edge)`로 그 위에 얹힌다. 상수 `SYL_GRADIENT_STRENGTH` / `SYL_GRADIENT_RADIUS_RATIO` / `SYL_GRADIENT_FALLOFF`. 단어 quad 밖(단어 사이 여백)엔 안 깔린다.
 - **셀 내부 미세 radial gradient (컬러 모드 전용)**: `cellT = pow(clamp(|v_local - bestPos| / (√bestW * CELL_GRADIENT_RADIUS_RATIO)), CELL_GRADIENT_FALLOFF)`, 채도항 `mix(vec3(luma), color, 1 + CELL_GRADIENT_SAT*cellT)` + 명도항 `*(1 - CELL_GRADIENT_DEPTH*cellT)`, 최종 clamp. 둘 다 `cellT` 구동이라 각 상수가 0이면 그 항만 꺼진다. 기준 반경을 `√bestW`(≈ `currentScale × MIN_DIST`)에 맞춘 것은 셀 크기가 weight로 제각각이기 때문. mono(BLINK) 모드는 `finalColor`를 통째로 덮어쓰므로 영향 없음.
 
-### 글자 영역 — `setRect()` (2026-09-26)
+### 배치 — `calcShelfLayout`이 원본 (2026-10-08)
 
-signal은 `positions`를 줄 그룹핑에만 쓰고 실제 x/y는 `_draw()`가 자기 `PAD_X`/`PAD_Y`로 깐다. 그래서 `core.js layoutFor(rect)`만으론 영역이 안 좁혀지고 **`setRect({x,y,w,h})`**(뷰포트 px)를 따로 받는다 — 원점만 rect로 옮기는 것이고, 줄바꿈 폭은 `layoutFor`가 이미 `rect.w` 기준으로 끊어서 넘긴다.
+`core.js calcShelfLayout`이 음절 **중심**(positions)·폭·높이를 정하고 `_draw()`는 그걸 그대로 그린다 — `_syncRows`가 단어마다 첫 음절 왼쪽 위를 `ws._origin`에, 음절마다 단어 안 x(`sylMeta.x`, 자간 포함)를 둔다. 줄 구분은 x가 뒤로 돌아가는 것으로 본다(y는 음절 높이마다 달라서 못 씀). 단어는 줄 안 세로 가운데, 음절은 단어 박스 위쪽 정렬. 띄어쓰기 = `sylSize × SHELF_WORD_GAP`(0.6).
 
-같이 고친 것: `_syncRows()`의 줄바꿈 판정이 uv 고정값(`> 0.05`)이었는데 **px 기준(`sylSize * 0.3`)으로 바꿨다.** 글자 영역이 rect로 좁아지면 같은 줄 간격이라도 uv 차이가 `rect.h/H` 배로 줄어 여러 줄이 한 줄로 뭉쳤다.
+- **자간**: `layoutFor`가 `letterGap = (wrapStep − _ctlBase.wrapStep) × z`를 넘긴다 — 노브 가운데면 0(음절이 붙은 기본 룩), 줄이면 음수(겹침). 하한은 `minSpacing`(×0.96) — 그보다 겹치면 형태가 무너진다. 셰이더의 `u_sylOffsetX`도 `sylMeta.x`라 틈 픽셀은 site 박스 클리핑으로 비어 보인다.
+- **크기·자간이 바뀌면 단어를 다시 만든다** — 점은 생성 때 크기로 박히므로 `syncWord`가 글자뿐 아니라 w/h/x도 비교한다. 다시 만들 때 `cyclePhaseStart`와 텍스처는 이어받는다.
+- 예전(2026-09-26)엔 `_draw()`가 `PAD_X/PAD_Y`로 직접 깔고 rect는 `setRect()`로 받았다. 지금 `setRect()`는 값만 든다 — 영역은 `layoutFor(rect)`가 positions에 넣는다.
+
+### 세로 scroll — 2026-10-08
+
+`scrollTo(t)`는 `scrollBase`를 바로 t로 두고(페이지가 positions에서 뺀다) 화면은 `_slide`만큼 뒤처져 있다가 그린 프레임마다 `SCROLL_EASE`(0.12)로 따라간다 — `_draw()`가 단어 원점에 `_slide`를 더할 뿐, 단어 캐시는 안 건드린다. 줄 높이가 음절마다 달라서 `layoutFor`는 줄 번호가 아니라 첫 줄·마지막 줄 아래끝 차로 `scrollY`를 잰다.
 
 ### 투명 출력 — 2026-09-26
 
-`new SignalReceiver({ transparentOutput: true })`면 배경을 안 칠하고 **셀 + halo만** 알파로 내보낸다(TD 합성용). 안 주면 예전처럼 `BG_GRAY` 위에 그린다(스탠드얼론 페이지).
+`new SignalReceiver({ transparentOutput: true })`면 배경을 안 칠하고 **셀 + halo만** 알파로 내보낸다(output.html — 배경은 페이지 CSS가 깐다). 안 주면 예전처럼 `BG_GRAY` 위에 그린다(index.html 스탠드얼론).
 
 분기는 유니폼 **`u_bgAlpha`** 하나(1.0 = 불투명, 0.0 = 투명):
 
@@ -119,7 +127,7 @@ outColor = vec4(finalColor * alpha, alpha);        // premultiplied
 - `captureFrame()` — `u_time`을 0으로 두고 한 장 그린 뒤 `toDataURL()`. 셰이더가 `elapsed = max(0, u_time - u_sylPhaseStart[i])`로 위상을 구하므로 모든 음절이 NORMAL이 된다. **안 그러면 제출 순간 BLINK에 걸린 음절이 흑백 모노 카드로 굳는다.** `init()`의 `getContext('webgl2', { preserveDrawingBuffer: true })`가 전제 — 기본값이면 빈 PNG가 나온다.
 - `clearAccum()` — 단어 캐시의 GPU 텍스처 해제 + `_rows`/`_sylItems` 비우고 빈 배경 한 장. 다음 `_animate`를 기다리면 방금 캡처한 화면이 한 프레임 더 남는다.
 
-> 캡처의 투명 여부는 `transparentOutput`을 따라간다 — TD 모드에선 투명 PNG(실측 88% 완전투명), 스탠드얼론에선 불투명. 어느 쪽이든 화면에는 안 쓰이고 아카이빙(PRD 3-E)용이다.
+> 캡처의 투명 여부는 `transparentOutput`을 따라간다 — output.html에선 투명 PNG(실측 88% 완전투명), 스탠드얼론에선 불투명. 어느 쪽이든 화면에는 안 쓰이고 아카이빙(PRD 3-E)용이다.
 
 ### 죽은 코드 / 미구현
 
@@ -142,6 +150,8 @@ outColor = vec4(finalColor * alpha, alpha);        // premultiplied
 - 색상: `heatmap3()` — 초성 조음위치(choX)→hue, 긴장도(choZ)→채도, 근접 가중 평균으로 슬롯 간 보간
 - displacement(사인/노이즈)로 클라드니 마디선을 비틀어 손그림 느낌 추가
 - `sylSize = 150`, `MAX_SYL = 9`(단어 슬롯 최대 개수)
+- **음절 네모 = 단어마다 하나 (2026-10-08)** — `wordAnchors()`가 떠 있는 원들의 중심·보이는 반경(px)을 내놓고, 페이지(`sylTags`)가 원 가운데 아래(`SORA_TAG_Y` × 반경)에 그 단어 음절을 한 네모에 이어 붙인다(관람객 = 원문, 수신자 = 구조 블록 여럿). 세로 scroll은 없다(랜덤 자리라 줄 개념이 없음)
+- **LLM 드러내기 0.8자/초** (`llm.js revealRateFor.sora`, 다른 수신자 2) — 2자/초면 모프가 끝나기 전에 다음 음절이 덮는다
 
 ---
 
@@ -226,6 +236,7 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
 - 합성 셰이더는 **straight alpha** 로 잉크만 낸다. 종이색은 캔버스 CSS 배경 → 화면은 그대로, `captureFrame()` 은 투명 PNG(99% 투명). 불투명이면 히스토리에서 앞 턴을 덮어버린다.
 - `dispose()` 가 리스너·캔버스 3장(underlay/goo/overlay)·body 배경을 전부 되돌린다. 투명 합성이면 `bodyBg:false` + `paperBg:false`. **`keys` 옵션은 끈 채로 둘 것** — 켜면 `c`/`z`/`s` 가 한글 입력창을 가로챈다.
 - `sylSize = 110`, `wrapStep = 130`, `lineHeightRatio = 1.8`
+- **세로 scroll (2026-10-08)** — 밀도장·윤곽선·잉크가 따로 구워져 픽셀로 못 민다. 줄이 늘면 페이지가 민 positions로 앵커가 바뀌어 **전부 다시 굽고**(결정론이라 같은 모양), 캔버스 세 장을 민 거리만큼 CSS `translateY`로 내려 뒀다가 `SCROLL_EASE`로 0까지 끌어올린다. 다시 굽는 앞 단어들은 윤곽선이 한 바퀴 도는 애니메이션 없이 바로 그린다(`addStroke` 동안만 `CFG.outline.anim.on = false`). 엔진이 body 끝에 붙이는 오버레이 캔버스는 `init()`이 goo 캔버스 뒤(`#glyph-window` 안)로 옮긴다 — 안 그러면 위쪽 페이드 mask·말풍선 clip이 안 걸린다
 - 자주 바뀌는 값: `CFG_OVERRIDE`(dandelion.js 상단, goo/grow/part/outline 포함), `jamoTrail.js` 의 `MEANDER_*` / `DC_TURNS` / `AC_TURN` / `JOIN_STEER` / `LINE_PULL`
 - 성장장·파티클 레이어는 구현돼 있으나 **기본 off** (`grow.on` / `part.on`)
 - 콘솔: `rm.current.cfg()` / `rm.current.engine()` / `rm.current.setGenerator('anchor')`(구 앵커 보간 방식과 A/B)

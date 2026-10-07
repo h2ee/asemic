@@ -643,9 +643,10 @@ void main() {
 }
 `;
 
-// ── 스크롤 패스: 누적 버퍼를 왼쪽으로 정수 px만큼 민 사본 ──────────────────────
-// glyphmode scroll. 정수 픽셀만 밀기 때문에 텍셀 중심끼리 복사돼 몇 번을 밀어도 흐려지지 않는다.
-// 오른쪽 끝에서 들어오는 자리는 투명, 왼쪽으로 빠져나간 건 버려진다.
+// ── 스크롤 패스: 누적 버퍼를 정수 px만큼 민 사본 ───────────────────────────────
+// glyphmode scroll/tape. 정수 픽셀만 밀기 때문에 텍셀 중심끼리 복사돼 몇 번을 밀어도 흐려지지 않는다.
+// u_shift = (k, 0) 왼쪽으로(tape, 가로) / (0, -k) 위로(scroll, 세로 — GL은 y가 위로 증가).
+// 새로 들어오는 자리는 투명, 밖으로 빠져나간 건 버려진다.
 const shiftFrag = `
 #ifdef GL_ES
 precision highp float;
@@ -653,11 +654,12 @@ precision highp float;
 
 uniform sampler2D u_src;
 uniform vec2      u_resolution;
-uniform float     u_shift;
+uniform vec2      u_shift;
 
 void main() {
-    vec2 uv = (gl_FragCoord.xy + vec2(u_shift, 0.0)) / u_resolution;
-    gl_FragColor = uv.x < 1.0 ? texture2D(u_src, uv) : vec4(0.0);
+    vec2 uv = (gl_FragCoord.xy + u_shift) / u_resolution;
+    bool inside = uv.x >= 0.0 && uv.x < 1.0 && uv.y >= 0.0 && uv.y < 1.0;
+    gl_FragColor = inside ? texture2D(u_src, uv) : vec4(0.0);
 }
 `;
 
@@ -711,6 +713,10 @@ export class MyceliumReceiver {
         this._curScale = 1; // _makeItem 기본 scale — update()가 uniformData.scale로 갱신
         this._sylHubIds = []; // 음절 i가 연결 실을 뻗은 허브 id들 — 다시 구울 때 같은 연결을 재현
         this._bakedCenters = []; // 마지막 update의 음절 중심 — 바뀌면(크기/레이아웃 변경) 전체 재굽기
+        this._bakedScale = 1; // 마지막 update의 glyphScale — 크기 노브는 중심을 안 옮기고 이것만 바꾼다
+        // 재굽기 중(instant bake가 큐에 남음)에는 표시 패스를 안 그려서 화면엔 예전 모습이 남는다.
+        // 페이지의 음절 네모가 이 동안 새 자리로 먼저 뛰지 않게 알려 준다(get rebaking)
+        this._rebaking = false;
 
         // 2026-09-26 screenToWorld(정확한 역투영)로 바꾸면서 화면상 간격을 유지하도록 환산:
         //   예전 근사식은 가로 ~0.91배 / 세로 ~0.71배로 압축돼 보였다 → 180*0.91, 3.2*0.71
@@ -738,7 +744,11 @@ export class MyceliumReceiver {
         this._scrollTarget = 0;
         this._scrollPos = 0;
         this._scrollBase = 0;
+        this._shownScrollBase = 0; // 마지막으로 화면(표시 패스)에 나간 _scrollBase — 음절 네모가 이걸 따라간다
         this._scrollJump = true; // 다음 scrollTo는 애니메이션 없이 바로 그 자리로(비운 직후·리사이즈)
+        // 미는 방향 — 'x' = 왼쪽(가로 테이프, glyphmode tape) / 'y' = 위(줄이 쌓이는 세로 스크롤, 2026-10-07).
+        // 페이지가 setScrollAxis로 정한다. scrollTo/scrollBase는 이 축의 값(CSS px)이다
+        this._scrollAxis = 'x';
         this._rect = null;
 
         this._ghostStart = null; // glyphmode disperse — 흩어짐 시작 시각(ms), null = 진행 중 아님
@@ -856,7 +866,7 @@ export class MyceliumReceiver {
         this._shiftUniforms = {
             u_src: { value: null },
             u_resolution: { value: new THREE.Vector2(rW, rH) },
-            u_shift: { value: 0 },
+            u_shift: { value: new THREE.Vector2() },
         };
         this._shiftScene = this._makeQuadScene(vertSrc, shiftFrag, this._shiftUniforms);
 
@@ -900,9 +910,11 @@ export class MyceliumReceiver {
         // 노브, 리사이즈). accum에 구운 건 옮길 수 없으니 전부 새 자리에 다시 굽는다.
         const moved =
             newSylCount >= prevCount &&
-            this._bakedCenters.some((c, i) => i < prevCount && c.distanceToSquared(centers[i]) > 1e-8);
+            (this._bakedCenters.some((c, i) => i < prevCount && c.distanceToSquared(centers[i]) > 1e-8) ||
+                (prevCount > 0 && Math.abs(this._curScale - this._bakedScale) > 1e-6)); // 크기 노브(제자리 확대)
         if (moved) this._rebake(uniformData, prevCount);
         this._bakedCenters = centers.slice(0, newSylCount).map(c => c.clone());
+        this._bakedScale = this._curScale;
 
         if (newSylCount < prevCount) {
             this._queue = [];
@@ -1010,6 +1022,7 @@ export class MyceliumReceiver {
         this._growing = false;
         this._forceComplete = false;
         this._isFirstGlyph = true; // 첫 bake가 accum을 비운다
+        this._rebaking = count > 0;
         for (let i = 0; i < count; i++) {
             const hubCenters = (this._sylHubIds[i] ?? []).map(id => this._hubs.get(id)?.center).filter(Boolean);
             this._queue.push(
@@ -1095,18 +1108,26 @@ export class MyceliumReceiver {
         return { u: (d.x / t / (W / H) + 1) / 2, v: (1 - d.y / t) / 2, t };
     }
 
-    // p를 화면에서 du(uv)만큼 가로로 민 자리 — 같은 카메라 깊이 유지(허브처럼 z≠0인 점용)
-    _shiftAtDepth(p, du) {
+    // p를 화면에서 du(uv)만큼 왼쪽 / dv(uv)만큼 위로 민 자리 — 같은 카메라 깊이 유지(허브처럼 z≠0인 점용)
+    _shiftAtDepth(p, du, dv = 0) {
         const { camMat } = this._calcCamera();
         const { t } = this._toScreen(p);
         const W = window.innerWidth;
         const H = window.innerHeight;
-        return p.clone().add(new THREE.Vector3(-2 * du * (W / H) * t, 0, 0).applyMatrix3(camMat));
+        return p.clone().add(new THREE.Vector3(-2 * du * (W / H) * t, 2 * dv * t, 0).applyMatrix3(camMat));
     }
 
     // glyphmode scroll: 페이지가 "테이프를 이만큼(CSS px) 왼쪽으로 밀어라"를 준다(core.layoutFor의 scrollX).
     // 실제로 미는 건 _stepScroll이 매 프레임 조금씩 — 그동안 페이지는 scrollBase만큼 뺀 자리로
     // 새 음절을 보낸다.
+    // 미는 축 바꾸기. 이미 민 버퍼는 옛 축 기준이라 페이지가 모드를 바꿀 때 비운 뒤에 부른다
+    setScrollAxis(axis) {
+        if (axis === this._scrollAxis) return;
+        this._scrollAxis = axis;
+        this._scrollTarget = this._scrollPos = this._scrollBase = 0;
+        this._scrollJump = true;
+    }
+
     scrollTo(x) {
         const t = Math.max(0, x) * this._renderer.getPixelRatio();
         this._scrollTarget = t;
@@ -1122,7 +1143,15 @@ export class MyceliumReceiver {
         // 너무 뒤처지면(빠른 타이핑) 새 음절이 캔버스 오른쪽 밖에 구워져 사라진다 — 그만큼은 바로 민다.
         // 새 음절 오른쪽 끝 = rect 오른쪽 + (목표 - 민 양). 캔버스 끝까지 남은 폭의 80%까지만 허용
         const W = window.innerWidth;
-        const slackCss = this._rect ? W - (this._rect.x + this._rect.w) : W * 0.1;
+        const H = window.innerHeight;
+        const slackCss =
+            this._scrollAxis === 'y'
+                ? this._rect
+                    ? H - (this._rect.y + this._rect.h)
+                    : H * 0.1
+                : this._rect
+                  ? W - (this._rect.x + this._rect.w)
+                  : W * 0.1;
         const maxLag = Math.max(1, slackCss * 0.8 * this._renderer.getPixelRatio());
         const k = Math.round(t - maxLag) - this._scrollBase;
         if (k > 0) {
@@ -1152,6 +1181,15 @@ export class MyceliumReceiver {
     // 누적 버퍼가 지금 실제로 밀려 있는 양(CSS px). 페이지는 테이프 좌표에서 이걸 빼서 보낸다
     get scrollBase() {
         return this._scrollBase / (this._renderer?.getPixelRatio() ?? 1);
+    }
+    // 화면에 실제로 보이는 스크롤 양(CSS px). scrollBase는 scrollTo가 뒤처짐을 메우느라 즉시 밀 때 먼저 바뀌고,
+    // 그 결과는 다음 표시 패스(24fps)에야 보인다 — 화면 위 DOM(음절 네모)은 이쪽을 따라가야 글자와 같이 움직인다
+    get shownScrollBase() {
+        return this._shownScrollBase / (this._renderer?.getPixelRatio() ?? 1);
+    }
+    // 재굽기 중 — 화면엔 아직 예전 배치·크기가 떠 있다
+    get rebaking() {
+        return this._rebaking;
     }
 
     // 글자 영역 — scrollTo의 뒤처짐 한계 계산에만 쓴다(배치는 layoutFor가 positions로 끝낸다)
@@ -1317,7 +1355,8 @@ export class MyceliumReceiver {
         const h = Math.floor(src.height);
         this._shiftUniforms.u_src.value = src.texture;
         this._shiftUniforms.u_resolution.value.set(w, h);
-        this._shiftUniforms.u_shift.value = k;
+        const vertical = this._scrollAxis === 'y';
+        this._shiftUniforms.u_shift.value.set(vertical ? 0 : k, vertical ? -k : 0);
         r.setRenderTarget(this._prevTarget);
         r.render(this._shiftScene, this._quadCam);
         r.setRenderTarget(null);
@@ -1329,23 +1368,24 @@ export class MyceliumReceiver {
 
         // uv 이동량은 grow 패스와 같은 분모(W·dpr, 소수일 수 있음)로 — 페이지가 빼는 scrollBase/W와 일치해야 한다.
         // 텍스처 샘플링만 실제 텍스처 크기(내림)를 쓴다
-        const du = k / (window.innerWidth * r.getPixelRatio());
+        const du = vertical ? 0 : k / (window.innerWidth * r.getPixelRatio());
+        const dv = vertical ? k / (window.innerHeight * r.getPixelRatio()) : 0;
         // z=0 평면 위의 음절 중심은 평면 위에서 정확히 옮긴다 — 페이지가 새 scrollBase로 역투영한
         // 중심과 비트 단위로 거의 같아져 moved 판정(1e-8)을 통과한다
         const onPlane = c => {
             const s = this._toScreen(c);
-            return this.screenToWorld(s.u - du, s.v);
+            return this.screenToWorld(s.u - du, s.v - dv);
         };
         // 음절 하나 = 중심의 이동량만큼 통째로(모양 유지), 허브는 각자 자기 깊이에서
         const moveItem = (start, center, hubs) => {
             const d = onPlane(center).sub(center);
             start.add(d);
             center.add(d);
-            for (const hb of hubs) hb.copy(this._shiftAtDepth(hb, du));
+            for (const hb of hubs) hb.copy(this._shiftAtDepth(hb, du, dv));
         };
 
         this._bakedCenters = this._bakedCenters.map(onPlane);
-        for (const hub of this._hubs.values()) hub.center = this._shiftAtDepth(hub.center, du);
+        for (const hub of this._hubs.values()) hub.center = this._shiftAtDepth(hub.center, du, dv);
         for (const it of this._queue) moveItem(it.start, it.center, it.hubCenters);
         if (this._growing) {
             const u = this._growUniforms;
@@ -1385,8 +1425,9 @@ export class MyceliumReceiver {
         }
 
         if (!this._growing) {
-            this._renderer.setRenderTarget(null);
-            this._renderer.render(this._dispScene, this._quadCam);
+            // 재굽기 instant bake 사이(다음 음절 dequeue 대기) — 반쯤 다시 구운 accum을 내보내지 않는다
+            if (this._queue.length) return;
+            this._renderDisplay();
             return;
         }
 
@@ -1399,8 +1440,12 @@ export class MyceliumReceiver {
             this._swapAndAccum(this._isFirstGlyph);
             this._isFirstGlyph = false;
             this._growing = false;
-            // 다음 프레임에 dequeue — 현재 프레임 렌더가 완전히 끝난 후 uniform 교체
-            requestAnimationFrame(() => this._dequeue());
+            // 다음 프레임에 dequeue — 현재 프레임 렌더가 완전히 끝난 후 uniform 교체.
+            // 그사이 update()가 이미 다음 음절을 꺼냈으면(_rebake → _dequeue) 건너뛴다 — 안 그러면 방금 꺼낸
+            // 음절(재굽기의 첫 음절)의 uniform을 다음 음절이 덮어써서 그 글자가 빠진 채 구워진다(노브를 돌릴 때 첫 글자 깜박임)
+            requestAnimationFrame(() => {
+                if (!this._growing) this._dequeue();
+            });
             return;
         } else {
             const prev = this._growUniforms.u_growT.value;
@@ -1415,8 +1460,7 @@ export class MyceliumReceiver {
         this._swapAndAccum(this._isFirstGlyph);
         this._isFirstGlyph = false;
 
-        this._renderer.setRenderTarget(null);
-        this._renderer.render(this._dispScene, this._quadCam);
+        this._renderDisplay();
 
         if (growT >= 1.0) {
             this._growing = false;
@@ -1426,6 +1470,14 @@ export class MyceliumReceiver {
             }
         }
     };
+
+    // 표시 패스 — 이 순간의 스크롤 양과 "재굽기 끝남"을 같이 기록한다(화면과 DOM을 맞추는 기준)
+    _renderDisplay() {
+        this._renderer.setRenderTarget(null);
+        this._renderer.render(this._dispScene, this._quadCam);
+        this._shownScrollBase = this._scrollBase;
+        this._rebaking = false; // 자라는 음절이 보인다 = 그 앞의 instant 재굽기는 끝났다
+    }
 
     _calcCamera() {
         const cam = this._camPos.clone();

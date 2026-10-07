@@ -37,6 +37,8 @@ const UNSTABLE_TAIL = 2;
 const SYL_SIZE = 110;
 const WRAP_STEP = 100; // SYL_SIZE 보다 작게 두면 이웃 음절 궤적이 reach 안에 들어와 goo 로 이어진다
 const LINE_HEIGHT_RATIO = 1.8;
+// glyphmode scroll 따라가기 — 그린 프레임(24fps 기준)마다 남은 거리의 이만큼. mycelium과 같은 값
+const SCROLL_EASE = 0.12;
 
 // 스케치 기본값은 "화면을 가로지르는 긴 마우스 획"(1000px+) 기준이다.
 // 음절 하나 = 획 하나면 경로가 200~260px 밖에 안 되므로 길이 계열 파라미터를 줄여야
@@ -148,6 +150,15 @@ export class DandelionReceiver {
         this.wrapStep = WRAP_STEP;
         this.wrapMargin = SYL_SIZE * 0.6;
         this.lineHeightRatio = LINE_HEIGHT_RATIO;
+
+        // glyphmode scroll(세로, 2026-10-08). 밀도장은 픽셀로 밀 수가 없어서(goo·윤곽선·잉크가 따로 구워진다)
+        // 줄이 늘면 페이지가 민 positions로 **새 자리에 전부 다시 굽고**(결정론이라 같은 모양), 캔버스 세 장을
+        // 밀린 거리만큼 CSS로 내려 두었다가 0으로 끌어올린다 — 화면에선 위로 미끄러지는 것으로 보인다
+        this._scrollAxis = 'y';
+        this._scrollBase = 0;
+        this._slide = 0;
+        this._slideRaf = 0;
+        this._scrollJump = true;
     }
 
     async init(canvas) {
@@ -169,6 +180,56 @@ export class DandelionReceiver {
             bodyBg: !this._opts.transparentOutput,
             paperBg: !this._opts.transparentOutput,
         });
+        // 엔진은 오버레이(얇은 잉크·bead)를 body 끝에 붙인다 — 그러면 글자 창(#glyph-window)의 위쪽 페이드
+        // mask·말풍선 clip이 안 걸린다. goo 캔버스 바로 뒤로 옮긴다(trail/은 sketch 사본이라 여기서)
+        const { gl, overlay } = this._trail?.canvases ?? {};
+        if (gl?.parentNode && overlay && overlay.parentNode !== gl.parentNode) gl.parentNode.insertBefore(overlay, gl.nextSibling);
+    }
+
+    // ── glyphmode scroll — mycelium과 같은 인터페이스(scrollTo/scrollBase/shownScrollBase/setScrollAxis) ──
+    setScrollAxis(axis) {
+        if (axis === this._scrollAxis) return;
+        this._scrollAxis = axis;
+        this._resetScroll();
+    }
+    scrollTo(t) {
+        t = Math.max(0, t);
+        const d = t - this._scrollBase;
+        // 비운 직후·되돌아가기(지우기)는 애니메이션 없이 그 자리로
+        if (this._scrollJump || d < 0) this._slide = 0;
+        else this._slide += d;
+        this._scrollJump = false;
+        this._scrollBase = t;
+        this._applySlide();
+        if (this._slide && !this._slideRaf) {
+            let last = performance.now();
+            const step = now => {
+                this._slide *= Math.pow(1 - SCROLL_EASE, ((now - last) * 24) / 1000);
+                last = now;
+                if (Math.abs(this._slide) < 0.3) this._slide = 0;
+                this._applySlide();
+                this._slideRaf = this._slide ? requestAnimationFrame(step) : 0;
+            };
+            this._slideRaf = requestAnimationFrame(step);
+        }
+    }
+    get scrollBase() {
+        return this._scrollBase;
+    }
+    // 화면에 실제로 보이는 스크롤 양 — 음절 네모가 이걸 따라간다
+    get shownScrollBase() {
+        return this._scrollBase - this._slide;
+    }
+    _applySlide() {
+        const v = this._slide ? `translate${this._scrollAxis === 'x' ? 'X' : 'Y'}(${this._slide.toFixed(1)}px)` : '';
+        for (const cv of Object.values(this._trail?.canvases ?? {})) if (cv.parentNode) cv.style.transform = v;
+    }
+    _resetScroll() {
+        cancelAnimationFrame(this._slideRaf);
+        this._slideRaf = 0;
+        this._scrollBase = this._slide = 0;
+        this._scrollJump = true;
+        this._applySlide();
     }
 
     // sylItems : { cho, jung, jong, wordId } 배열 (공백 제외)
@@ -280,7 +341,15 @@ export class DandelionReceiver {
             if (pts.length < 2) continue;
             const isLast = gi === groups.length - 1;
             // 마지막 단어는 아직 타이핑 중일 수 있으므로 hold — 음절이 더 붙기를 기다린다.
-            if (rebuild && !isLast) this._trail.addStroke(pts, seedOf(g), { plan });
+            if (rebuild && !isLast) {
+                // 다시 그리는 앞 단어들은 이미 화면에 있던 것 — 윤곽선이 한 바퀴 도는 애니메이션 없이 바로(2026-10-08).
+                // 엔진(trail/, sketch 사본)은 안 고치고 그 순간만 CFG를 끈다
+                const anim = this._trail.CFG.outline.anim;
+                const on = anim.on;
+                anim.on = false;
+                this._trail.addStroke(pts, seedOf(g), { plan });
+                anim.on = on;
+            }
             else this._trail.queueStroke(pts, seedOf(g), { hold: isLast, plan });
             if (isLast) this._holdingIdx = gi;
             this._groups.push({
@@ -317,9 +386,11 @@ export class DandelionReceiver {
         this._trail?.clear();
         this._groups = [];
         this._holdingIdx = -1;
+        this._resetScroll();
     }
 
     dispose() {
+        this._resetScroll(); // 캔버스 transform을 남기면 ReceiverManager가 cssText째 다음 캔버스로 옮긴다
         this._trail?.dispose(); // 리스너·오버레이 캔버스·body 배경 전부 되돌린다
         this._trail = null;
         if (this._ownCanvas && this._canvas?.parentNode) this._canvas.parentNode.removeChild(this._canvas);

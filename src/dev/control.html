@@ -82,6 +82,16 @@
     button[aria-pressed='true'] { background: var(--on); color: #fff; border-color: var(--on); }
     button .key { display: block; font-size: 10px; color: var(--muted); margin-top: 4px; }
     button[aria-pressed='true'] .key { color: #fff; }
+    .slider { display: grid; grid-template-columns: 44px 1fr 52px; align-items: center; gap: 10px; max-width: 460px; }
+    #knobs { display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 24px; }
+    #knobs .knob { grid-row: span 2; }
+    .slider .label { font-size: 13px; }
+    .slider .num { font-size: 11px; color: var(--muted); text-align: right; }
+    .slider input { width: 100%; accent-color: var(--on); }
+    .led { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; background: var(--line); vertical-align: 1px; }
+    button[aria-pressed='true'] .led { background: #ff4d4d; box-shadow: 0 0 8px #ff4d4d; }
+    #usb { min-width: 0; padding: 8px 14px; font-size: 12px; }
+    #usb-status { font-size: 11px; color: var(--muted); }
     footer { font-size: 11px; color: var(--muted); line-height: 1.6; }
     code { font-size: 11px; }
 </style>
@@ -92,7 +102,9 @@
         <h1>Asemic · Control</h1>
         <span id="status" class="off">연결 안 됨</span>
     </header>
-    <section><h2>KNOB — 세로로 드래그 · 더블클릭 = 기본값</h2><div class="row" id="knobs"></div></section>
+    <section><h2>USB 패널 — 아두이노를 직접 읽는다 (크롬)</h2><div class="row" style="align-items:center"><button id="usb">USB 패널 연결</button><span id="usb-status">—</span></div></section>
+    <section><h2>RECEIVER — 튜닝용 (전시에선 iPad 다이얼)</h2><div class="row" id="receivers"></div></section>
+    <section><h2>KNOB / SLIDER — 드래그 · 더블클릭 = 기본값</h2><div class="row" id="knobs"></div></section>
     <section><h2>PRESET</h2><div class="row" id="buttons"></div></section>
     <section><h2>MODE</h2><div class="row" id="toggles"></div></section>
     <section><h2>ACTION</h2><div class="row" id="actions"></div></section>

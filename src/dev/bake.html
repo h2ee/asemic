@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>asemic — bake (음절 PNG 일괄 굽기)</title>
+        <style>
+            /* 음절 하나씩 mycelium으로 끝까지 키워 투명 PNG로 저장하는 도구 페이지.
+               npm run dev 에서만 동작 — 저장은 vite.config.js의 /__bake 미들웨어가 한다.
+               체커보드는 투명 확인용 배경일 뿐 PNG에는 안 들어간다(누적 버퍼를 직접 읽음). */
+            html,
+            body {
+                margin: 0;
+                height: 100%;
+                overflow: hidden;
+                background: repeating-conic-gradient(#555 0 25%, #666 0 50%) 0 0 / 32px 32px;
+                font: 13px/1.5 ui-monospace, Menlo, monospace;
+                color: #eee;
+            }
+            #panel {
+                position: fixed;
+                top: 12px;
+                left: 12px;
+                z-index: 10;
+                width: 300px;
+                padding: 12px;
+                background: rgba(0, 0, 0, 0.75);
+                border-radius: 8px;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            #panel textarea {
+                height: 120px;
+                resize: vertical;
+                font: inherit;
+            }
+            #panel label {
+                display: flex;
+                justify-content: space-between;
+                gap: 8px;
+                align-items: center;
+            }
+            #panel input[type='number'] {
+                width: 80px;
+            }
+            #panel button {
+                padding: 6px;
+                font: inherit;
+            }
+            #status {
+                white-space: pre-wrap;
+            }
+            #last {
+                width: 120px;
+                height: 120px;
+                align-self: center;
+                background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 16px 16px;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="panel">
+            <textarea id="text" spellcheck="false" placeholder="비우면 KS X 1001 한글 2350자"></textarea>
+            <label>출력 크기(px, 0=원본 해상도)<input id="size" type="number" min="0" step="1" /></label>
+            <label>글자가 차지할 비율<input id="fill" type="number" min="0.2" max="1" step="0.02" /></label>
+            <label>폴더 (bake/…)<input id="dir" type="text" size="12" /></label>
+            <label><span>성장 생략(instant)</span><input id="instant" type="checkbox" /></label>
+            <label><span>이미 있는 파일 건너뛰기</span><input id="skip" type="checkbox" checked /></label>
+            <button id="go">시작</button>
+            <div id="status">준비 중…</div>
+            <img id="last" alt="" />
+        </div>
+        <script type="module" src="./bake.js"></script>
+    </body>
+</html>

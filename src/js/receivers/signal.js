@@ -193,7 +193,9 @@ function gain(x, k) {
 // 그냥 잘라냄)이 담당. 다시 시도한다면 site 재배치가 아니라 power distance에
 // 비등방 메트릭을 직접 곱하는 방식으로.
 
+const SCROLL_EASE = 0.12; // glyphmode scroll 따라가기 — mycelium과 같은 값
 const WORD_GAP_RATIO = 0.6; // 단어 사이 여백 = sylSize × 이 값 (signal.js의 yeoback 폭과 동일 비율)
+// ↑ 2026-10-08부터 안 쓴다 — 배치가 core.js calcShelfLayout으로 갔다(SHELF_WORD_GAP이 같은 값). 기록용
 
 // ── CA 전이 규칙 상수 (signal_ca_rework_prompt.md 최종안) ─────────────────────
 // 순환 규칙(CHO→JUNG→JONG→CHO) — 전체 이웃 개수 기준 / 방향 이웃 개수 기준, OR로 결합
@@ -423,9 +425,10 @@ function createWordState() {
 
 // 한 단어의 음절별 폭/높이 누적 유틸 — 음절마다 크기가 달라서(shelf 레이아웃)
 // "sylIndex * sylSize"류 계산을 전부 이 누적합으로 대체해야 함.
+// 자간(2026-10-08)이 생겨 음절 사이가 벌어지거나 겹칠 수 있다 — 폭 = 가장 오른쪽 음절의 오른쪽 끝.
 function wordWidth(wordState) {
     let w = 0;
-    for (const s of wordState.syllables) w += s.w;
+    for (const s of wordState.syllables) w = Math.max(w, s.x + s.w);
     return w;
 }
 function wordHeight(wordState) {
@@ -436,7 +439,8 @@ function wordHeight(wordState) {
 // 새 음절의 point들을 word에 append (기존 점은 그대로 유지)
 // sylW/sylH = 이 음절 lattice의 픽셀 폭/높이(main.js calcShelfLayout이 포먼트로 계산).
 // 생략되면 sylSize 정사각으로 fallback.
-function appendSyllable(wordState, syl, sylIndex, JAMO, sylSize, sylW, sylH) {
+// sylX = 단어 왼쪽 끝에서 이 음절 왼쪽 끝까지(px, 자간 포함) — 생략되면 앞 음절에 바로 붙인다.
+function appendSyllable(wordState, syl, sylIndex, JAMO, sylSize, sylW, sylH, sylX) {
     sylW = sylW ?? sylSize;
     sylH = sylH ?? sylSize;
     const jungEntry = JAMO[syl.jung];
@@ -458,7 +462,8 @@ function appendSyllable(wordState, syl, sylIndex, JAMO, sylSize, sylW, sylH) {
     sylMeta.cyclePhaseStart = performance.now() + sylIndex * CYCLE_PHASE_STEP_MS;
 
     // 이전 음절들의 누적 너비 (현재 음절은 아직 push 전이므로 그대로 합산)
-    const offsetX = wordWidth(wordState);
+    const offsetX = sylX ?? wordWidth(wordState);
+    sylMeta.x = offsetX;
     wordState.syllables.push(sylMeta);
 
     const raw = jitteredGridSample(sylW, sylH, MIN_DIST, JITTER);
@@ -573,9 +578,14 @@ function recomputeAdjacency(wordState, sylSize) {
 
 // wordItems(현재 텍스트의 해당 단어 음절들)와 캐시를 비교해서 append-only면 이어붙이고,
 // 중간 수정/삭제가 감지되면(prefix 불일치) 그 단어를 통째로 다시 만든다.
+// 글자가 같아도 크기·자리(w/h/x)가 바뀌었으면(크기·자간 노브) 불일치로 본다 — 점은 생성 시 크기로
+// 박혀 있어서, 안 그러면 예전 크기로 남아 음절 네모와 어긋난다(2026-10-08). 다시 만들 때 신호등
+// 위상(cyclePhaseStart)은 이어받아 노브를 돌리는 동안 깜박임 사이클이 처음부터 다시 돌지 않게 한다.
+const GEOM_EPS = 0.5; // px
 function syncWord(cache, wordId, wordItems, JAMO, sylSize) {
     let entry = cache.get(wordId);
     const newCount = wordItems.length;
+    let phases = null;
 
     if (entry) {
         let matchLen = 0;
@@ -585,22 +595,37 @@ function syncWord(cache, wordId, wordItems, JAMO, sylSize) {
             const b = wordItems[matchLen].syl;
             if (a.cho !== b.cho || a.jung !== b.jung || a.jong !== b.jong) break;
         }
+        phases = entry.syllables.slice(0, matchLen).map(m => m.cyclePhaseStart);
+        // 남은 앞부분이라도 크기·자리가 바뀌었으면 통째로 다시
+        for (let i = 0; i < matchLen; i++) {
+            const a = entry.syllables[i];
+            const b = wordItems[i];
+            if (Math.abs(a.w - b.w) > GEOM_EPS || Math.abs(a.h - b.h) > GEOM_EPS || Math.abs(a.x - b.x) > GEOM_EPS) {
+                matchLen = -1;
+                break;
+            }
+        }
 
         if (matchLen === entry.syllables.length) {
             // 순수 append — 새로 늘어난 음절만 이어붙임
             if (newCount > matchLen) {
                 for (let i = matchLen; i < newCount; i++)
-                    appendSyllable(entry, wordItems[i].syl, i, JAMO, sylSize, wordItems[i].w, wordItems[i].h);
+                    appendSyllable(entry, wordItems[i].syl, i, JAMO, sylSize, wordItems[i].w, wordItems[i].h, wordItems[i].x);
                 recomputeAdjacency(entry, sylSize);
             }
             return entry;
         }
-        // prefix 불일치(중간 수정) 또는 길이 감소 — 통째로 재생성
+        // prefix 불일치(중간 수정) 또는 길이 감소 또는 크기·자리 변화 — 통째로 재생성
     }
 
+    // 텍스처는 이어 쓴다(uploadWordData가 크기째 다시 올린다) — 노브를 돌릴 때마다 새로 만들면 샌다
+    const tex = entry?._glTex ?? null;
     entry = createWordState();
-    for (let i = 0; i < newCount; i++)
-        appendSyllable(entry, wordItems[i].syl, i, JAMO, sylSize, wordItems[i].w, wordItems[i].h);
+    entry._glTex = tex;
+    for (let i = 0; i < newCount; i++) {
+        appendSyllable(entry, wordItems[i].syl, i, JAMO, sylSize, wordItems[i].w, wordItems[i].h, wordItems[i].x);
+        if (phases?.[i] !== undefined) entry.syllables[i].cyclePhaseStart = phases[i];
+    }
     recomputeAdjacency(entry, sylSize);
     cache.set(wordId, entry);
     return entry;
@@ -1161,10 +1186,19 @@ export class SignalReceiver {
         this._paused = false;
         this._pausedAt = 0;
         this._rect = null; // 글자 영역(뷰포트 px). null이면 뷰포트 전체 — setRect() 참고
+        // glyphmode scroll(세로, 2026-10-08) — 페이지가 scrollTo로 "테이프를 이만큼 밀어라"를 주면
+        // scrollBase는 바로 그 값이 되고(페이지가 positions에서 빼서 보낸다), 화면은 _slide만큼 뒤처져 있다가
+        // SCROLL_EASE로 따라간다. signal은 매 프레임 다시 그리므로 버퍼를 밀 필요 없이 그릴 때 더하면 된다
+        this._scrollAxis = 'y';
+        this._scrollBase = 0;
+        this._slide = 0;
+        this._scrollJump = true;
 
         // main.js 레이아웃 엔진이 참조하는 값들 — signal.js와 동일하게 맞춤
         this.sylSize = DEFAULT_SYL_SIZE;
         this.wrapStep = DEFAULT_SYL_SIZE;
+        // 자간 노브 하한(기본 자간의 배율) — 이보다 더 겹치면 음절 형태가 무너진다. core.js layoutFor가 읽는다
+        this.minSpacing = 0.96;
         this.wrapMargin = 0;
     }
 
@@ -1254,11 +1288,35 @@ export class SignalReceiver {
     }
 
     // 글자 영역을 뷰포트 일부로 좁힌다. {x, y, w, h}(뷰포트 px) 또는 null(=전체).
-    // signal은 positions를 실제 배치에 쓰지 않고 _draw()가 직접 shelf를 깔기 때문에,
-    // core.js layoutFor(rect)만으로는 영역이 안 좁혀진다 — 이 메서드가 그 짝이다.
-    // (줄바꿈 자체는 layoutFor가 rect.w 기준으로 이미 끊어서 넘겨준다)
+    // 2026-10-08부터 _draw()가 positions(layoutFor가 rect 안에 배치)를 그대로 쓰므로 영역은
+    // layoutFor만으로 좁혀진다 — 이 메서드는 값만 들고 있다(페이지가 계속 불러도 무해).
     setRect(rect) {
         this._rect = rect ?? null;
+    }
+
+    // ── glyphmode scroll — mycelium과 같은 인터페이스(scrollTo/scrollBase/shownScrollBase/setScrollAxis) ──
+    setScrollAxis(axis) {
+        if (axis === this._scrollAxis) return;
+        this._scrollAxis = axis;
+        this._scrollBase = this._slide = 0;
+        this._scrollJump = true;
+    }
+    scrollTo(t) {
+        t = Math.max(0, t);
+        const d = t - this._scrollBase;
+        // 비운 직후·되돌아가기(지우기)는 애니메이션 없이 그 자리로
+        if (this._scrollJump || d < 0) this._slide = 0;
+        else this._slide += d;
+        this._scrollJump = false;
+        this._scrollBase = t;
+        if (this._slide) this._wake();
+    }
+    get scrollBase() {
+        return this._scrollBase;
+    }
+    // 화면에 실제로 보이는 스크롤 양 — 음절 네모가 이걸 따라간다
+    get shownScrollBase() {
+        return this._scrollBase - this._slide;
     }
 
     // ── 제출(submit) 계약 — flushQueue → captureFrame → clearAccum ────────────
@@ -1306,6 +1364,8 @@ export class SignalReceiver {
         this._heights = null;
         this._stepCount = 0;
         this._active = false;
+        this._scrollBase = this._slide = 0;
+        this._scrollJump = true;
         this._draw();
     }
 
@@ -1355,29 +1415,28 @@ export class SignalReceiver {
     _syncRows(sylItems, positions, JAMO) {
         const lines = [];
         let curLine = [],
-            prevY = -1;
-        // 줄바꿈 판정은 **px**로 한다. positions는 뷰포트 uv인데, 글자 영역이 뷰포트보다
-        // 작은 rect로 좁혀지면(layoutFor의 rect) 같은 줄 간격이라도 uv 차이가 rect.h/H
-        // 배로 줄어든다 — 예전처럼 uv 고정값(0.05)으로 비교하면 여러 줄이 한 줄로 뭉친다.
-        const lineBreakPx = this._sylSize * 0.3;
+            prevX = -Infinity;
+        // positions = 음절 중심(calcShelfLayout). 줄바꿈은 **x가 뒤로 돌아가는 것**으로 본다 —
+        // 한 줄 안에선 x가 늘 늘어나고, 새 줄은 왼쪽에서 다시 시작한다(줄마다 한 음절이면 x가 같다 — 그것도 새 줄). (예전엔 y 차이로 봤는데,
+        // 이제 y가 음절 높이마다 달라 같은 줄 안에서도 sylSize·0.3 넘게 벌어진다.)
+        const W = this._cssWidth ?? window.innerWidth;
+        const H = this._cssHeight ?? window.innerHeight;
         for (let i = 0; i < sylItems.length; i++) {
-            const py = positions[i][1] * (this._cssHeight ?? window.innerHeight);
-            if (prevY >= 0 && Math.abs(py - prevY) > lineBreakPx) {
+            const cx = positions[i][0] * W;
+            if (cx <= prevX + 0.5) {
                 lines.push(curLine);
                 curLine = [];
             }
-            curLine.push({
-                syl: sylItems[i],
-                pos: positions[i],
-                w: this._widths?.[i] ?? this._sylSize,
-                h: this._heights?.[i] ?? this._sylSize,
-            });
-            prevY = py;
+            const w = this._widths?.[i] ?? this._sylSize;
+            const h = this._heights?.[i] ?? this._sylSize;
+            // 음절 왼쪽 위 모서리(뷰포트 px)
+            curLine.push({ syl: sylItems[i], left: cx - w * 0.5, top: positions[i][1] * H - h * 0.5, w, h });
+            prevX = cx;
         }
         if (curLine.length > 0) lines.push(curLine);
 
         const seenWordIds = new Set();
-        this._rows = lines.map(line => {
+        this._rows = lines.map((line, li) => {
             const words = [];
             let cur = [];
             for (const item of line) {
@@ -1390,9 +1449,16 @@ export class SignalReceiver {
             if (cur.length > 0) words.push(cur);
 
             return words.map(wordItems => {
-                const wordId = wordItems[0].syl.wordId;
-                seenWordIds.add(wordId);
-                return syncWord(this._wordCache, wordId, wordItems, JAMO, this._sylSize);
+                // 단어 원점 = 첫 음절 왼쪽 위. 음절 x는 거기서부터(자간 포함), 단어는 음절 위쪽 정렬
+                const ox = wordItems[0].left;
+                const oy = wordItems[0].top;
+                for (const it of wordItems) it.x = it.left - ox;
+                // 한 단어가 줄바꿈으로 두 줄에 걸치면 줄마다 따로 — 같은 키를 두 번 쓰면 매번 서로 덮어쓴다
+                const key = `${wordItems[0].syl.wordId}:${li}`;
+                seenWordIds.add(key);
+                const ws = syncWord(this._wordCache, key, wordItems, JAMO, this._sylSize);
+                ws._origin = [ox, oy];
+                return ws;
             });
         });
 
@@ -1442,6 +1508,12 @@ export class SignalReceiver {
                     wordState._needsUpload = false;
                 }
             }
+        }
+
+        // 스크롤 따라가기 — 그린 프레임마다(24fps) 남은 거리의 SCROLL_EASE만큼
+        if (this._slide) {
+            this._slide *= 1 - SCROLL_EASE;
+            if (Math.abs(this._slide) < 0.3) this._slide = 0;
         }
 
         this._draw();
@@ -1494,40 +1566,18 @@ export class SignalReceiver {
         gl.activeTexture(gl.TEXTURE0);
         gl.uniform1i(this._uniforms.data, 0);
 
-        const sylW = this._sylSize;
-        const PAD_X = sylW * 0.5;
-        const PAD_Y = 40;
-        const gapPx = sylW * WORD_GAP_RATIO;
-        const LINE_GAP = sylW * Math.max(0, this.lineHeightRatio - 1);
-
-        // 글자 영역 원점 — setRect()로 받은 rect가 있으면 거기서 시작한다.
-        // ⚠️ 배경(gl.clearColor)은 여전히 캔버스 전체를 칠한다. signal은 자기 배경을
-        //    그리는 receiver라 rect만 칠할 수가 없다 — 투명 출력은 별건(PRD 3-A).
-        const originX = (this._rect?.x ?? 0) + PAD_X;
-        const originY = (this._rect?.y ?? 0) + PAD_Y;
-
-        // Shelf 레이아웃 — 줄 높이 = 그 줄 음절 height 최댓값. main.js calcShelfLayout과
-        // 같은 규칙(rowTop 누적)이지만 여기선 캐시된 wordState.syllables[].h에서 직접 읽음.
-        let rowTop = originY;
-        for (let li = 0; li < this._rows.length; li++) {
-            const row = this._rows[li];
-            let rowMaxH = 0;
-            for (const ws of row) rowMaxH = Math.max(rowMaxH, wordHeight(ws));
-            if (rowMaxH === 0) rowMaxH = sylW;
-
-            let curX = originX;
-            for (let wi = 0; wi < row.length; wi++) {
-                const wordState = row[wi];
-                const wH = wordHeight(wordState);
-                const ox = curX;
-                const oy = rowTop + (rowMaxH - wH) * 0.5; // 줄 안에서 가운데 정렬
-
-                this._drawWord(gl, wordState, ox, oy);
-
-                curX += wordWidth(wordState);
-                if (wi < row.length - 1) curX += gapPx; // 단어 사이 여백(흰 배경 그대로 노출)
+        // 단어 자리 = calcShelfLayout(core.js)이 준 positions 그대로(_syncRows가 ws._origin에 둔다).
+        // 예전엔 여기서 PAD_X/PAD_Y·단어 사이 sylSize·0.6·줄 높이를 따로 계산해 깔았는데, 그러면
+        // 음절 네모(positions)와 글자가 어긋나고 자간이 안 먹었다(2026-10-08). 글자 영역(rect)도
+        // layoutFor가 positions에 이미 넣어 준다 — setRect()는 이제 기록만 한다.
+        // ⚠️ 배경(gl.clearColor)은 여전히 캔버스 전체를 칠한다(불투명 모드).
+        for (const row of this._rows) {
+            for (const wordState of row) {
+                const [ox, oy] = wordState._origin ?? [0, 0];
+                const sx = this._scrollAxis === 'x' ? this._slide : 0;
+                const sy = this._scrollAxis === 'y' ? this._slide : 0;
+                this._drawWord(gl, wordState, ox + sx, oy + sy);
             }
-            rowTop += rowMaxH + LINE_GAP;
         }
     }
 
@@ -1544,12 +1594,10 @@ export class SignalReceiver {
         const offX = new Float32Array(MAX_SYL_UNIFORM);
         const wArr = new Float32Array(MAX_SYL_UNIFORM);
         const hArr = new Float32Array(MAX_SYL_UNIFORM);
-        let acc = 0;
         for (let i = 0; i < nSyl; i++) {
-            offX[i] = acc;
+            offX[i] = meta[i].x;
             wArr[i] = meta[i].w;
             hArr[i] = meta[i].h;
-            acc += meta[i].w;
         }
 
         gl.bindTexture(gl.TEXTURE_2D, wordState._glTex);
