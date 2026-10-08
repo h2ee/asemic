@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="ko">
+    <head>
+        <meta charset="UTF-8" />
+        <title>아세믹 한글 — 시연</title>
+        <!-- 시연 입구 (gh-pages): LLM 대신 한글 로렘 입숨 + 화면 옆 lil-gui 패널.
+             붙여 온 쿼리(?receiver=, ?lorem_len= 등)는 그대로 넘긴다 -->
+        <script>
+            const q = new URLSearchParams(location.search);
+            if (!q.has('llm')) q.set('llm', 'lorem');
+            if (!q.has('gui')) q.set('gui', '1');
+            location.replace(`./output.html?${q}`);
+        </script>
+    </head>
+    <body></body>
+</html>
