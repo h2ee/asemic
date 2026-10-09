@@ -210,6 +210,8 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
    등고선을 **폴리라인**으로 뽑는다(셰이더 isoline 과 달리 점선·벡터가 가능). 단어당 닫힌 윤곽선 1개, ~7ms.
    `outline.anim.on` 이면 획 시작점(`spine[0]`)에 가장 가까운 꼭짓점에서 출발해 `speed` px/s 로 한 바퀴 돌아 닫힌다
    (진행 중엔 오버레이, 다 돌면 ink2d 로 확정. `flushQueue`/`replay` 는 즉시 완성)
+   - **`outline.live` (2026-10-09)** — 자라는 중에도 `interval`(ms)마다 윤곽선을 다시 뽑아 실선과 같이 자란다(한 단어 ~6ms). 켜면 위 `anim`은 안 쓴다. 구울 때 최종 기하로 한 번 더 계산(`dropLiveCache`)
+   - **`halo` (2026-10-09)** — 윤곽선 뒤 회색 픽셀 블록. 같은 밀도장(`reach`/`th` null = outline 값)을 화면 고정 격자 `cell` px의 칸 중심에서 재서(`wordCells`) 넘는 칸을 칠한다. underlay(orb 아래)에 깔리고 자라는 획도 `interval`마다 다시 잰다. 격자 원점 `ox`/`oy`는 dandelion.js `update()`가 스크롤만큼 민다. `fill`은 불투명으로(겹친 칸이 두 번 칠해지지 않게 — 옅게는 `opacity`)
 6. **장식 레이어 (2026-10-01)** — 전부 `CFG_OVERRIDE` 에서 `on` 으로 켜고 끈다
    - `spineFx` — 실선에 Roughen(`size`/`gap`/`mode` smooth·corner) · Pucker&Bloat(`amount` +bloat/−pucker, `gap`).
      `target:'ink'` 는 2D 실선만, `'all'` 은 goo·윤곽선까지
@@ -217,6 +219,8 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
    - `bead.main` — 획마다 하나, 실선을 **왕복**(ping-pong — 끝에서 처음으로 순간이동하지 않음)하는 큰 원.
      orb 의 flow field 가 이 진행 방향을 따른다. `glow.on` 이면 배경 투명 radial gradient(가운데 `radius×core` 까지 fill 색,
      밖은 알파 `(1-s)^falloff`) — fill 이 어떤 CSS 색이든 2D 컨텍스트로 rgb 를 뽑아 알파만 바꾼다
+   - **orb = 종성 후크 (2026-10-09)** — 무작위 배치 대신 dandelion.js `ORB_JAMO`가 구간(음절)마다 `plan[j].orbs = [{at, r, fill, off, auto}]`로 지정한다. 받침 있는 음절만, 후크 자리(구간 길이 × 0.93), 반지름 = 중성 F1, 색 = 초성 x/y/z → 노란 계열 hue/채도/명도. `auto`면 법선 양쪽 중 실선이 덜 붐비는 쪽으로 (r+22)px(`settleSide` — orb 자리 + 40px까지만 세서 뒤에 자라는 경로가 쪽을 안 뒤집는다). `orb.bulge`가 orb를 윤곽선·halo 밀도장에 원으로 더해 윤곽이 orb를 감싸며 부푼다
+   - **`goo.pixel` / `goo.grain` (2026-10-09)** — 캡슐 이어진 metaball 상쇄. pixel = 칸(CSS px, halo와 같은 원점) 안 3×3 최댓값으로 칸 단위 칠하기(노멀도 칸마다 하나). grain = 밀도값을 띠 좌표로(등고선이 획과 나란하므로 띠도 획을 따라간다) 띠마다 밀도를 `amount`만큼 깎고 노이즈(`warp`/`scale`)로 흔든다. 둘 다 composite.frag
    - `orb` — 경로 주변 노란 원 + 내부 **hatch 형 flow field**(짧은 대시를 격자에 놓고 벡터장 방향으로 돌림).
      벡터장 = 노이즈 기본장을 그 획 main bead 진행 방향 쪽으로 `follow` 만큼 돌린 것(거리 `falloff` 로 약해짐),
      bead 가 간 만큼 노이즈 표본을 `drift` 배로 밀어 무늬가 흐른다. 대시는 방향 없는 선이라 각도 차를 π 로 접는다

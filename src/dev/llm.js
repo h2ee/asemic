@@ -33,6 +33,11 @@ const DEFAULTS = {
     maxChars: 60,
     temperature: 1.0,
     timeoutMs: 30000,
+    lorem: false, // true면 Ollama 대신 loremKo — 시연용(gh-pages)
+    // 음절 수(공백 제외) — 답마다 loremMin~loremMax 중 무작위 (2026-10-08 30 고정 → 10~20). 페이지 MAX_SYL(50)을 넘으면 잘린다
+    loremMin: 10,
+    loremMax: 20,
+    loremDelayMs: 900,
 };
 
 // ── 영어 입력 fallback (2026-10-08) ─────────────────────────────────────────────
@@ -68,6 +73,29 @@ export async function translateToKorean(text, opts = {}) {
     } finally {
         clearTimeout(to);
     }
+}
+
+// ── 한글 로렘 입숨 (2026-10-08, 시연용 ?llm=lorem) ─────────────────────────────
+// Ollama 없이(gh-pages) 수신자 차례를 보여 줄 때. 무엇을 입력하든 정해진 음절 수의 뜻 없는 문장.
+// 낱말은 실제 한국어라 자모 분포는 자연스럽고, 순서만 무작위라 뜻이 안 이어진다.
+const LOREM_WORDS = (
+    '바람 물결 그늘 소리 이슬 뿌리 저녁 안개 모래 나무 기억 조각 숨결 마음 하늘 별빛 계절 구름 ' +
+    '빗방울 들판 골목 창문 노을 새벽 강물 돌담 언덕 손끝 발자국 이야기 천천히 조용히 멀리 가끔 ' +
+    '어느새 다시 함께 오래 흘러가는 머무는 떨리는 번지는 스며드는 깊은 작은 낮은 둥근 투명한 ' +
+    '흩어지고 이어지고 남아 있다 지나간다 기다린다 돌아온다 흔들린다 피어난다 잠긴다'
+).split(' ');
+
+export function loremKo(sylCount = 30) {
+    const out = [];
+    let n = 0;
+    while (n < sylCount) {
+        let w = LOREM_WORDS[Math.floor(Math.random() * LOREM_WORDS.length)];
+        const room = sylCount - n;
+        if ([...w].length > room) w = [...w].slice(0, room).join('');
+        out.push(w);
+        n += [...w].length;
+    }
+    return out.join(' ') + '.';
 }
 
 // 한 문장, 상한 길이. 모델이 줄바꿈이나 따옴표를 붙여 오는 걸 잘라낸다 (llm_ext._Clean).
@@ -127,6 +155,14 @@ export function createLLM({ receiver, onText, onDone, onAsk, onError, ...opts })
         status.lastError = '';
         onAsk?.();
         let reply;
+        if (cfg.lorem) {
+            clearTimeout(to);
+            // 생각하는 척 잠깐 — 말풍선이 떠오를 틈
+            const lo = Math.min(cfg.loremMin, cfg.loremMax);
+            const n = lo + Math.floor(Math.random() * (Math.abs(cfg.loremMax - cfg.loremMin) + 1));
+            timer = setTimeout(() => my === gen && reveal((status.lastReply = loremKo(n)), my, name), cfg.loremDelayMs);
+            return;
+        }
         try {
             const res = await fetch(cfg.endpoint, {
                 method: 'POST',

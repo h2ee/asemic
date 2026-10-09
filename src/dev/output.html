@@ -387,11 +387,18 @@
                 --shadow-y: 0.5;
                 --shadow-blur: 1.6;
                 --shadow-color: rgba(20, 70, 110, 0.22);
-                /* 유리(glassmorphism) — 배경을 말풍선 모양으로 오려 일렁이게. 브라우저 모드에서만(TD 투명 모드엔 없음) */
+                /* 유리 — Figma Glass 효과 값 그대로(0~100, 각도는 도). bubble.js → glass.js(WebGL). 브라우저 모드에서만 */
+                --glass-light-angle: -45; /* 빛이 오는 쪽 — -45 = 왼쪽 위 */
+                --glass-light: 20; /* 가장자리 빛 세기 */
+                --glass-refraction: 100; /* 가장자리 굴절 세기 (100 = 화면 높이 6%) */
+                --glass-depth: 100; /* 굴절 띠 폭 (100 = 화면 높이 5%) */
+                --glass-dispersion: 30; /* 색 분산 */
+                --glass-frost: 54; /* 뒤 흐림 (100 = 반경 화면 높이 4%) */
+                --glass-lift: 0.01; /* 뿌옇게 밝히기 0~1 */
+                /* 아래 셋은 WebGL2가 없을 때 물러나는 예전 SVG 유리(난류 변위)용 */
                 --glass-distort: 18; /* 변위 세기(vh) — 클수록 강하게 일그러진다 */
                 --glass-freq: 0.004; /* 일렁임 무늬 촘촘함 (1440px 높이 기준) */
                 --glass-blur: 0.15; /* 흐림(vh) */
-                --glass-lift: 0.06; /* 뿌옇게 밝히기 0~1 */
             }
             #bubble {
                 position: fixed;

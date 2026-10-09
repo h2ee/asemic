@@ -102,10 +102,11 @@ const RECEIVER_PINNED = params.has('receiver');
 // 수신자 응답(LLM)을 누가 만드나. ?llm=web|td|off
 //   td  — TD /chat/llm 이 만들어 브릿지 {t:'text', speaker:'receiver'}로 흘려보낸다 (TD 임베드 기본)
 //   web — 이 페이지가 직접 로컬 Ollama를 부른다(src/dev/llm.js). TD 없이 완결 (브라우저 기본)
+//   lorem — 무엇을 입력하든 정해진 분량의 한글 로렘 입숨(llm.js loremKo). Ollama 없는 시연용(gh-pages, demo.html)
 //   off — 응답 없음
 // 페이지 둘(TD 임베드 + 브라우저)이 같은 허브에 붙어도 한 번의 제출에 LLM이 한 번만 돌도록
 // turn/done 에 이 값을 실어 보낸다 — TD bridge_ext 는 llm==='td' 인 턴에만 응답한다.
-const LLM_MODE = ['web', 'td', 'off'].includes(params.get('llm'))
+const LLM_MODE = ['web', 'td', 'lorem', 'off'].includes(params.get('llm'))
     ? params.get('llm')
     : CHROME
       ? 'web'
@@ -214,10 +215,12 @@ function syncIdle() {
 const llmOpts = {};
 if (params.get('llm_model')) llmOpts.model = params.get('llm_model');
 if (params.get('llm_rate')) llmOpts.revealRate = Number(params.get('llm_rate'));
+if (params.get('lorem_len')) llmOpts.loremMin = llmOpts.loremMax = Number(params.get('lorem_len')); // 고정 길이
 const llm =
-    LLM_MODE === 'web'
+    LLM_MODE === 'web' || LLM_MODE === 'lorem'
         ? createLLM({
               ...llmOpts,
+              lorem: LLM_MODE === 'lorem',
               receiver: () => rm.name,
               onAsk: () => setTalking('receiver'), // 응답 기다리는 동안 "… is talking …"
               onText: value => {
@@ -681,7 +684,7 @@ function syncBackground({ instant = false } = {}) {
     const on = BG_ALT_RECEIVERS.has(rm.name);
     root.classList.toggle('bg-instant', instant);
     root.classList.toggle('bg-alt', on);
-    bubble.setGlassAlt(on);
+    bubble.setGlassAlt(on, { instant });
     if (instant) requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('bg-instant')));
 }
 
@@ -841,3 +844,10 @@ serial.turntable(rm.name); // 턴테이블이 호밍을 끝내면(homed) 이 자
 
 // 첫 화면 — 아직 아무도 말하지 않았으니 안내부터
 syncIdle();
+
+// ── 시연용 lil-gui 패널 (?gui=1, demo.html) — 가상 패널(control.html) 대신 화면 옆에 붙는다.
+// 브릿지 허브 없이 같은 applyControl/switchReceiver를 직접 부른다
+if (params.get('gui') === '1')
+    import('./gui.js').then(({ mountGui }) =>
+        mountGui({ rm, llm, applyControl, switchReceiver, setGlyphMode, glyphModes: GLYPH_MODES, glyphMode: () => _glyphMode, input }),
+    );

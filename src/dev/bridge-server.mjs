@@ -1,7 +1,11 @@
 // ── bridge-server.mjs ────────────────────────────────────────────────────────
 // 개발용 WebSocket 허브 — 전시에선 TouchDesigner의 WebSocket DAT 가 이 역할을 함.
 //
-//   node src/dev/bridge-server.mjs      (또는  npm run bridge)
+//   node src/dev/bridge-server.mjs      (또는  npm run bridge)      — localhost만
+//   node src/dev/bridge-server.mjs --lan (또는  npm run bridge:lan)  — LAN에도 (iPad 다이얼용)
+//
+//  기본은 localhost만 받는다(2026-10-08) — 허브는 받은 걸 확인 없이 output에 릴레이하므로,
+//  공용 와이파이에서 열려 있으면 아무나 화면에 text/receiver/clear를 보낼 수 있다.
 //
 //  - output.html 이 ws://localhost:9980 로 접속
 //  - 페이지가 보내는 메시지를 콘솔에 로그  (page → ...)
@@ -17,8 +21,10 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import { networkInterfaces } from 'node:os';
 
 const PORT = Number(process.env.BRIDGE_PORT ?? 9980);
+const LAN = process.argv.includes('--lan');
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const clients = new Set();
 
@@ -144,8 +150,19 @@ function relay(payload, exclude) {
 
 const log = m => console.log(`[bridge ${new Date().toISOString().slice(11, 19)}] ${m}`);
 
-server.listen(PORT, () => {
+// LAN이면 호스트를 안 줘서 모든 인터페이스에서 받는다. 아니면 루프백 둘 다 — 'localhost' 하나로 주면
+// Node가 ::1만 잡아서 127.0.0.1로 연 페이지(bridge.js는 location.hostname으로 붙는다)가 못 붙는다.
+// http.Server는 listen이 한 번뿐이라 127.0.0.1은 같은 핸들러를 넘겨받는 두 번째 서버로
+if (!LAN) {
+    const v4 = createServer((req, res) => server.emit('request', req, res));
+    v4.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
+    v4.listen(PORT, '127.0.0.1');
+}
+server.listen(PORT, ...(LAN ? [] : ['::1']), () => {
     log(`listening  ws://localhost:${PORT}`);
+    if (LAN)
+        for (const a of Object.values(networkInterfaces()).flat())
+            if (a.family === 'IPv4' && !a.internal) log(`           ws://${a.address}:${PORT}  (LAN)`);
     log('stdin: JSON 한 줄 → 접속된 모든 페이지로 전송  (예: {"t":"param","size":150})');
 });
 

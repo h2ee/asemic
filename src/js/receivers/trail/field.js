@@ -110,7 +110,7 @@ export function createField(gl, quadBuf) {
     }
 
     // p: { th, edge, paper, ink, shade, light, normalZ, amb, diff, spec, specPow, fres, bands,
-    //      growthTex, growInk, growGain, growOpacity }
+    //      growthTex, growInk, growGain, growOpacity, pixel, origin, grain }
     function composite(p, viewW, viewH) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, viewW, viewH);
@@ -147,6 +147,12 @@ export function createField(gl, quadBuf) {
         gl.uniform3fv(uComp('u_growInk'), p.growInk);
         gl.uniform1f(uComp('u_growGain'), p.growGain);
         gl.uniform1f(uComp('u_growOpacity'), p.growOpacity);
+        gl.uniform2f(uComp('u_cssSize'), cssW, cssH);
+        gl.uniform1f(uComp('u_pixel'), p.pixel ?? 0);
+        gl.uniform2fv(uComp('u_origin'), p.origin ?? [0, 0]);
+        const G = p.grain ?? {};
+        gl.uniform4f(uComp('u_grain'), G.amount ?? 0, G.freq ?? 1, G.warp ?? 0, G.scale ?? 0.03);
+        gl.uniform1f(uComp('u_grainWidth'), G.width ?? 0.35);
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
         gl.bindVertexArray(null);

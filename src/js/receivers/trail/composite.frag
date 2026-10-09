@@ -43,6 +43,14 @@ uniform vec3 u_growInk;     // 성장 잉크 색
 uniform float u_growGain;   // 성장장 → 불투명도 게인 (0 이면 성장 레이어 꺼짐)
 uniform float u_growOpacity;
 
+uniform vec2 u_cssSize;     // 화면 크기 (CSS px)
+uniform float u_pixel;      // 픽셀화 칸(CSS px). 0 = 끔
+uniform vec2 u_origin;      // 칸·결 노이즈의 원점 (CSS px) — halo 격자와 같다
+uniform vec4 u_grain;       // 결: amount, freq(밀도 1 당 띠), warp(띠 단위), scale(노이즈 1/px). amount 0 = 끔
+uniform float u_grainWidth; // 띠에서 깎이는 폭 0~1
+
+#include './noise.glsl';
+
 const float GRAD = 1.5;     // 중심차분 간격 (field 텍셀)
 
 // 동반 곡선 밀도(.a)의 soft cap — u_compCap 근처에서 포화. 0 이하면 그대로 더한다(.a 는 0).
@@ -59,8 +67,32 @@ float fieldAt(vec2 uv) {
     return b.r + l.r + capComp(b.a + l.a);
 }
 
+// 결 — 밀도 등고선은 획과 나란하므로, 밀도값 자체를 띠 좌표로 쓰면 띠가 늘 획을 따라간다.
+// 그 띠마다 밀도를 깎아 덩어리를 여러 가닥으로 가르고, 노이즈로 띠를 흔들어 나뭇결처럼 끊는다.
+float grainCut(float f, vec2 css) {
+    if (u_grain.x <= 0.0) return 0.0;
+    float b = f * u_grain.y + u_grain.z * (vnoise((css - u_origin) * u_grain.w) * 2.0 - 1.0);
+    float d = abs(fract(b + 0.5) - 0.5) * 2.0;     // 띠 한가운데 0 → 띠 사이 1
+    return u_grain.x * (1.0 - smoothstep(u_grainWidth * 0.5, u_grainWidth, d));
+}
+
 void main() {
-    float f = fieldAt(v_uv);
+    // 픽셀화 — 칸 중심의 밀도 하나로 칸 전체를 칠한다(노멀도 칸마다 하나 → 면이 납작한 블록)
+    vec2 css = vec2(v_uv.x, 1.0 - v_uv.y) * u_cssSize;
+    vec2 uv = v_uv;
+    if (u_pixel > 0.0) {
+        css = (floor((css - u_origin) / u_pixel) + 0.5) * u_pixel + u_origin;
+        uv = vec2(css.x / u_cssSize.x, 1.0 - css.y / u_cssSize.y);
+    }
+    float f0 = fieldAt(uv);
+    if (u_pixel > 0.0) {
+        // 칸 중심 하나만 읽으면 칸보다 가는 선이 칸 사이로 빠져 점선이 된다 — 칸 안 3×3 의 최댓값
+        vec2 s = vec2(u_pixel / 3.0) / u_cssSize * vec2(1.0, -1.0);
+        for (int j = -1; j <= 1; j++)
+            for (int i = -1; i <= 1; i++)
+                if (i != 0 || j != 0) f0 = max(f0, fieldAt(uv + vec2(float(i), float(j)) * s));
+    }
+    float f = f0 - grainCut(f0, css);
 
     // ── 밀도장 디버그: th 를 어디에 둬야 하는지 눈으로 보기 위한 모드.
     // 실제 렌더와 같은 극성(종이 위에 어두운 잉크)으로 보여야 감이 맞는다.
@@ -86,8 +118,8 @@ void main() {
             // (임계된 값이 아니라 밀도장 자체의 미분이라 매끄럽다)
             vec2 t = u_texel * GRAD;
             vec2 g = vec2(
-                fieldAt(v_uv + vec2(t.x, 0.0)) - fieldAt(v_uv - vec2(t.x, 0.0)),
-                fieldAt(v_uv + vec2(0.0, t.y)) - fieldAt(v_uv - vec2(0.0, t.y))
+                fieldAt(uv + vec2(t.x, 0.0)) - fieldAt(uv - vec2(t.x, 0.0)),
+                fieldAt(uv + vec2(0.0, t.y)) - fieldAt(uv - vec2(0.0, t.y))
             ) / (2.0 * GRAD * u_pxPerTexel);
 
             vec3 n = normalize(vec3(-g * u_normalZ, 1.0));

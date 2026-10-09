@@ -10,7 +10,9 @@
     },
     "scripts": {
         "dev": "vite",
+        "dev:lan": "vite --host",
         "bridge": "node src/dev/bridge-server.mjs",
+        "bridge:lan": "node src/dev/bridge-server.mjs --lan",
         "build": "vite build",
         "preview": "vite preview",
         "commit": "git add . && git commit -m 'update' && git push",

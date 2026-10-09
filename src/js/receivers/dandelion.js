@@ -20,7 +20,7 @@
 // 타이핑 중인 단어는 hold 상태로 자라고, 공백/제출에서 구워진다.
 
 import { createTrail } from './trail/trailgl.js';
-import { jamoToTrail, jamoToTrailTurtle, jamoWordTrail } from './trail/jamoTrail.js';
+import { jamoToTrail, jamoToTrailTurtle, jamoWordTrail, jongEntry } from './trail/jamoTrail.js';
 
 // 자모 → 궤적 생성기 선택. A/B 비교용 — 콘솔에서 rm.current.setGenerator('anchor') 로도 바꾼다.
 //   'turtle' (B) 자모가 운동(방향·곡률·속도)을 지시. 경로가 스스로 접혀 호길이가 2~3배
@@ -43,6 +43,21 @@ const SCROLL_EASE = 0.12;
 // 스케치 기본값은 "화면을 가로지르는 긴 마우스 획"(1000px+) 기준이다.
 // 음절 하나 = 획 하나면 경로가 200~260px 밖에 안 되므로 길이 계열 파라미터를 줄여야
 // 동반 곡선 생성기(루프/방황)가 작동한다. **h2ee 가 튜닝할 자리.**
+// orb = 종성 후크 (2026-10-09). 예전 무작위 배치(gap/prob/spread)는 안 쓴다 — 구간마다 orbs 를 지정해서.
+//   반지름  중성 F1(250~900Hz) → radius
+//   색      초성 x(조음위치 양순→후두) → hue / y(파열→유음) → 채도 / z(울림→거센) → 명도 — 전부 노란 계열 안에서
+const ORB_JAMO = {
+    at: 0.93, // 음절 구간의 어디에 (후크는 0.85~1)
+    // 실선에서 법선 방향으로 (반지름 + off) px 밀어 윤곽 가장자리에 앉힌다 — 실선 위에 두면 이미 윤곽 깊숙한 안이라
+    // bulge 가 안 보인다. 쪽은 엔진이 고른다(auto — 실선이 덜 붐비는 쪽, path.js settleSide)
+    off: 22,
+    f1: [250, 900],
+    radius: [7, 22],
+    hue: [44, 60], // 진한 노랑 ~ 연두빛 노랑
+    sat: [78, 100],
+    light: [68, 56],
+};
+
 const CFG_OVERRIDE = {
     spacing: 4,
     spineSmooth: -8,
@@ -62,7 +77,10 @@ const CFG_OVERRIDE = {
     decorGap: [5, 70],
     decorSpread: 12,
     decorRadius: [2, 5], // 사각형 반변 길이(px) — 2배로
-    decorLineWidth: 0.75, // 윤곽선 굵기
+    decorLineWidth: 0.75, // 윤곽선 굵기 (decorStyle null 이면 안 씀)
+    decorStyle: null, // 테두리 없이
+    decorFill: 'rgb(255, 255, 255)', // 흰 채움 (2026-10-09)
+    arrowSize: 0, // 점선 끝 화살촉 없음 (2026-10-09)
 
     growPx: 14,
 
@@ -78,12 +96,21 @@ const CFG_OVERRIDE = {
         fieldScale: 1.5,
         // 점선 자기 겹침 goo 억제 — 0 = 끔(예전), ~1.0 = 점선끼리는 임계를 못 넘고 실선과의 교차만 남는다
         compCap: 0,
+        // 픽셀화(CSS px, halo 격자와 같은 원점 — cell 10 의 절반이라 칸이 맞물린다). 0 = 매끈한 metaball
+        pixel: 5,
+        // 결 — 덩어리를 획과 나란한 가닥으로 가른다. amount 0 = 끔
+        grain: { amount: 0.9, freq: 1.2, warp: 0.6, scale: 0.035, width: 0.35 },
     },
     grow: { on: false },
     part: { on: false },
 
-    // 윤곽선 — 획 시작점 근처에서 출발해 한 바퀴 돌아 닫힌다 (speed px/s)
-    outline: { anim: { on: true, speed: 850 } },
+    // 윤곽선 — live: 자라는 동안 interval(ms)마다 다시 뽑아 실선과 같이 왼→오로 자란다(2026-10-09).
+    // live 를 끄면 예전처럼 구울 때 획 시작점 근처에서 출발해 한 바퀴 돌아 닫힌다 (anim.speed px/s)
+    outline: { anim: { on: true, speed: 850 }, live: { on: true, interval: 60 } },
+
+    // 윤곽선 뒤 회색 픽셀 블록 — 같은 밀도장을 cell px 격자로 잰다. reach/th 가 null 이면 outline 값.
+    // 격자 원점은 update() 가 스크롤만큼 따라 옮긴다(다시 구워도 블록이 글자에 붙어 있게)
+    halo: { on: true, cell: 9, reach: null, th: null, fill: 'rgb(211, 221, 209)', opacity: 1, interval: 60 },
 
     // 실선 효과 (일러스트레이터 Roughen / Pucker & Bloat). target 'ink' = 2D 실선만 / 'all' = goo·윤곽선까지
     spineFx: {
@@ -114,11 +141,13 @@ const CFG_OVERRIDE = {
     // 노란 원 + 내부 hatch 형 flow field (goo 아래에 깔린다)
     orb: {
         on: true,
+        // gap/prob/radius/spread/fill 은 무작위 배치용 — 지금은 ORB_JAMO 가 음절마다 지정해서 안 쓴다(기록)
         gap: [90, 200],
         prob: 0.7,
         radius: [6, 22],
         spread: 26,
         fill: '#ffe83d',
+        bulge: 3, // 윤곽선·블록이 orb 를 감싸며 부풀어 나온다 (outline.th 0.55 보다 커야 효과, 클수록 여유가 넓다)
         flow: {
             cell: 8.6, // 대시 격자 간격(px)
             dash: 8.2, // 대시 길이(px)
@@ -183,7 +212,8 @@ export class DandelionReceiver {
         // 엔진은 오버레이(얇은 잉크·bead)를 body 끝에 붙인다 — 그러면 글자 창(#glyph-window)의 위쪽 페이드
         // mask·말풍선 clip이 안 걸린다. goo 캔버스 바로 뒤로 옮긴다(trail/은 sketch 사본이라 여기서)
         const { gl, overlay } = this._trail?.canvases ?? {};
-        if (gl?.parentNode && overlay && overlay.parentNode !== gl.parentNode) gl.parentNode.insertBefore(overlay, gl.nextSibling);
+        if (gl?.parentNode && overlay && overlay.parentNode !== gl.parentNode)
+            gl.parentNode.insertBefore(overlay, gl.nextSibling);
     }
 
     // ── glyphmode scroll — mycelium과 같은 인터페이스(scrollTo/scrollBase/shownScrollBase/setScrollAxis) ──
@@ -246,6 +276,14 @@ export class DandelionReceiver {
         const W = window.innerWidth;
         const H = window.innerHeight;
 
+        // 블록 격자를 글자에 붙인다 — positions 는 scrollBase 만큼 민 화면 좌표라, 원점도 같이 밀어야
+        // 스크롤로 다시 구울 때 칸이 글자에 대해 어긋나지 않는다
+        const halo = this._trail.CFG.halo;
+        if (halo) {
+            halo.ox = this._scrollAxis === 'x' ? -this._scrollBase : 0;
+            halo.oy = this._scrollAxis === 'y' ? -this._scrollBase : 0;
+        }
+
         // ── 음절을 "단어 = 획" 단위로 묶는다.
         // 줄바꿈으로 단어가 두 줄에 걸치면(앵커 y가 달라지면) 거기서 끊어 별도 획으로.
         const groups = [];
@@ -274,7 +312,13 @@ export class DandelionReceiver {
         const buildWord = (g, syls = g.syls) => {
             const meta = {};
             const pts = buildPts(g, syls, meta);
-            return { pts, plan: meta.starts.map(st => ({ px0: st.px0, seed: sylSeed(st.syl) })) };
+            let total = 0;
+            for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+            const plan = meta.starts.map((st, j) => {
+                const segLen = (meta.starts[j + 1]?.px0 ?? total) - st.px0;
+                return { px0: st.px0, seed: sylSeed(st.syl), orbs: this._sylOrbs(st.syl, segLen) };
+            });
+            return { pts, plan };
         };
         // 획 시드는 동반 곡선 개수·bead 배열만 정한다. 단어 내용만 쓴다(wordId 를 섞으면 같은 단어도 자리마다 달라진다)
         const seedOf = g => this._trail.hashSeed('word', ...g.keys);
@@ -349,8 +393,7 @@ export class DandelionReceiver {
                 anim.on = false;
                 this._trail.addStroke(pts, seedOf(g), { plan });
                 anim.on = on;
-            }
-            else this._trail.queueStroke(pts, seedOf(g), { hold: isLast, plan });
+            } else this._trail.queueStroke(pts, seedOf(g), { hold: isLast, plan });
             if (isLast) this._holdingIdx = gi;
             this._groups.push({
                 sig: anchorKey(g) + '|' + g.keys.join(''),
@@ -403,6 +446,31 @@ export class DandelionReceiver {
         this._trail?.clear();
         this._groups = [];
         this._holdingIdx = -1;
+    }
+
+    // 음절 하나의 orb — 종성 후크 자리에 하나(받침 없으면 없음). 반지름 = 중성 F1(입 벌림),
+    // 색 = 노란 계열 안에서 초성 xyz(조음위치 → 색상 / 조음방법 → 채도 / 긴장도 → 명도). segLen = 음절 구간 길이(px)
+    _sylOrbs(syl, segLen) {
+        const J = this._JAMO;
+        const jE = jongEntry(J, syl.jong); // jamoTrail 이 후크를 만드는 조건과 같게(겹받침은 대표음)
+        if (!jE) return [];
+        const [x, y, z] = J[syl.cho]?.cho?.pos ?? [0.5, 0.5, 0.33];
+        const f1 = J[syl.jung]?.pos?.[0] ?? 500;
+        const O = ORB_JAMO;
+        const t = Math.min(1, Math.max(0, (f1 - O.f1[0]) / (O.f1[1] - O.f1[0])));
+        const h = O.hue[0] + (O.hue[1] - O.hue[0]) * x;
+        const sat = O.sat[0] + (O.sat[1] - O.sat[0]) * y;
+        const l = O.light[0] + (O.light[1] - O.light[0]) * z;
+        const r = O.radius[0] + (O.radius[1] - O.radius[0]) * t;
+        return [
+            {
+                at: segLen * O.at, // 후크 = 음절 경로의 마지막 15% (jamoTrail)
+                r,
+                fill: `hsl(${h.toFixed(1)}, ${sat.toFixed(1)}%, ${l.toFixed(1)}%)`,
+                off: r + O.off,
+                auto: true,
+            },
+        ];
     }
 
     // 콘솔 튜닝용 — rm.current.cfg().goo.th = 1.4

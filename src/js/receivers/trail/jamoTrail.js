@@ -27,7 +27,7 @@ const F2_LO = 580,
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 // 종성 엔트리 — 겹받침은 cluster_front 로 대표음을 참조 (jamo_loader 규칙)
-function jongEntry(JAMO, jong) {
+export function jongEntry(JAMO, jong) {
     if (!jong) return null;
     const e = JAMO[jong + '_jong'];
     if (!e) return null;

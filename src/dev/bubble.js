@@ -32,6 +32,8 @@ const TAIL = {
     ],
 };
 
+import { createGlass } from './glass.js';
+
 const f = n => n.toFixed(2);
 
 function corner(x, y, ax, ay, bx, by, c) {
@@ -218,14 +220,32 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
         img.setAttribute('filter', 'url(#bubble-glass)');
         return img;
     };
-    const glassImg = glass ? makeGlass(glass) : null;
-    const glassAltImg = glass && glassAlt ? makeGlass(glassAlt) : null;
+    // 2026-10-08: Figma Glass 효과를 따라 WebGL 한 장(glass.js)으로 — 굴절·분산·빛·frost.
+    // foreignObject로 같은 자리(그림자 위, 면 아래)에 넣어 등장 애니메이션을 같이 탄다.
+    // WebGL2가 없으면 예전 SVG 난류 변위(아래 이미지 두 장)로 물러난다
+    let glassGL = null;
+    let glassFO = null;
+    if (glass) {
+        try {
+            glassGL = createGlass([glass, glassAlt]);
+        } catch (e) {
+            console.warn('[bubble] glass WebGL 실패 — SVG 유리로', e);
+        }
+        if (glassGL) {
+            glassFO = document.createElementNS(NS, 'foreignObject');
+            glassFO.setAttribute('x', 0);
+            glassFO.setAttribute('y', 0);
+            glassFO.appendChild(glassGL.canvas);
+        }
+    }
+    const glassImg = glass && !glassGL ? makeGlass(glass) : null;
+    const glassAltImg = glassImg && glassAlt ? makeGlass(glassAlt) : null;
     glassAltImg?.setAttribute('class', 'glass-alt'); // 투명도·전환은 output.html CSS
     const path = document.createElementNS(NS, 'path');
     // 유리 테 — 가장자리 빛 (output.html #bubble path.rim)
     const rim = document.createElementNS(NS, 'path');
     rim.setAttribute('class', 'rim');
-    svg.replaceChildren(...[defs, shadow, glassImg, glassAltImg, path, rim].filter(Boolean));
+    svg.replaceChildren(...[defs, shadow, glassFO, glassImg, glassAltImg, path, rim].filter(Boolean));
     const fBlur = defs.querySelector('feGaussianBlur');
     const fOff = defs.querySelector('feOffset');
     const fFlood = defs.querySelector('feFlood');
@@ -258,6 +278,19 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
         rim.setAttribute('d', d);
         clipPath.setAttribute('d', d);
         const vh = H / 100;
+        if (glassGL) {
+            glassFO.setAttribute('width', W);
+            glassFO.setAttribute('height', H);
+            glassGL.setShape(d, W, H, {
+                refraction: num('--glass-refraction', 100),
+                depth: num('--glass-depth', 100),
+                dispersion: num('--glass-dispersion', 50),
+                frost: num('--glass-frost', 54),
+                angle: num('--glass-light-angle', -45),
+                light: num('--glass-light', 80),
+                lift: num('--glass-lift', 0.06),
+            });
+        }
         if (glassImg) {
             for (const img of [glassImg, glassAltImg].filter(Boolean)) {
                 img.setAttribute('width', W);
@@ -399,8 +432,11 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
             draw();
         },
         setHeight,
-        setGlassAlt(on) {
+        // 배경 B(BG_n)로 — body 배경 크로스페이드와 같은 시간(--bg-fade)
+        setGlassAlt(on, { instant = false } = {}) {
             glassAltImg?.classList.toggle('on', !!on);
+            const fade = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bg-fade'));
+            glassGL?.setMix(on, { instant, ms: (Number.isFinite(fade) ? fade : 1.2) * 1000 });
         },
     };
 }

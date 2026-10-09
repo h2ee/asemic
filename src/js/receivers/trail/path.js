@@ -172,6 +172,10 @@ export function sample(s, poly) {
 //                  루프가 앞으로 밀려 있었다. 이제 toBase 로 옮긴다 (음절 경계가 앞 음절과 무관해지려면 필수)
 // 구간 경계에서는 앞 구간 값과 segBlend(px) 만큼 크로스페이드해 연속을 지킨다.
 //
+// 구간은 orb 를 직접 지정할 수 있다 — plan[j].orbs = [{ at, r, fill?, off?, auto? }] (at = 구간 안 국소 px).
+// 주면 그 구간은 난수 배치(gap/prob/spread) 대신 그 자리에만 orb 를 둔다. 빈 배열 = 그 구간엔 orb 없음.
+// auto: true 면 법선 양쪽 중 실선이 덜 붐비는 쪽으로 off 를 둔다(settleSide) — 윤곽 바깥으로 나가게.
+//
 // 모든 것이 (plan, 머리 위치)의 순수 함수라 매 프레임 다시 계산한다 — 구 버전처럼
 // 이벤트를 누적해 두면, 조합 중 음절이 바뀔 때(ㅇ→아→안) 옛 시드로 만든 이벤트가 남는다.
 
@@ -338,8 +342,17 @@ function planOrbs(stroke, headPx, CFG) {
     const { plan } = stroke;
     const out = [];
     for (let j = 0; j < plan.length; j++) {
-        const rng = makeRng(hashSeed(plan[j].seed, 'orb'));
         const limit = segLimit(plan, j, headPx);
+        if (Array.isArray(plan[j].orbs)) {
+            // 지정 배치 — 머리가 그 자리를 지나야 나타난다
+            plan[j].orbs.forEach((o, k) => {
+                const px = plan[j].px0 + o.at;
+                if (px > limit) return;
+                out.push({ px, off: o.off ?? 0, r: o.r, fill: o.fill, auto: !!o.auto, seed: hashSeed(plan[j].seed, 'orb', k), x: 0, y: 0 });
+            });
+            continue;
+        }
+        const rng = makeRng(hashSeed(plan[j].seed, 'orb'));
         let cursor = plan[j].px0;
         let gap = rnd(rng, O.gap[0], O.gap[1]);
         let k = 0;
@@ -369,6 +382,36 @@ function resolveOnSpine(items, spine, CFG) {
         if (!p) continue;
         d.x = p.x + p.nx * d.off + (d.jx ?? 0);
         d.y = p.y + p.ny * d.off + (d.jy ?? 0);
+    }
+}
+
+// auto orb — 법선 ±off 두 후보 중 반경 (|off|+r) 안에 실선 점이 적은 쪽. 같으면 준 부호.
+// orb 자리 + SETTLE_AHEAD px 까지의 실선만 센다 — 그 뒤로 자라는 경로가 나중에 쪽을 뒤집지 않게(그 순간 이미 다 있다)
+const SETTLE_AHEAD = 40;
+function settleSide(items, spine, CFG) {
+    for (const d of items) {
+        if (!d.auto || !d.off) continue;
+        const p = sample(Math.min(d.px, (spine.length - 1) * CFG.spacing) / CFG.spacing, spine);
+        if (!p) continue;
+        const R = Math.abs(d.off) + d.r;
+        const R2 = R * R;
+        const n = Math.min(spine.length, Math.floor((d.px + SETTLE_AHEAD) / CFG.spacing) + 1);
+        const crowd = sgn => {
+            const cx = p.x + p.nx * d.off * sgn,
+                cy = p.y + p.ny * d.off * sgn;
+            let c = 0;
+            for (let i = 0; i < n; i++) {
+                const dx = spine[i].x - cx,
+                    dy = spine[i].y - cy;
+                if (dx * dx + dy * dy < R2) c++;
+            }
+            return c;
+        };
+        if (crowd(-1) < crowd(1)) {
+            d.off = -d.off;
+            d.x = p.x + p.nx * d.off + (d.jx ?? 0);
+            d.y = p.y + p.ny * d.off + (d.jy ?? 0);
+        }
     }
 }
 
@@ -518,6 +561,7 @@ export function growStroke(stroke, CFG) {
     resolveOnSpine(stroke.decor, spine, CFG);
     stroke.orbs = planOrbs(stroke, headPx, CFG);
     resolveOnSpine(stroke.orbs, spine, CFG);
+    settleSide(stroke.orbs, spine, CFG);
 
     stroke.spine = spine;
     stroke.spineInk = applySpineFx(stroke, spine, CFG);
