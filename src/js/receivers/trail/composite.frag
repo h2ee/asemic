@@ -45,6 +45,8 @@ uniform float u_growOpacity;
 
 uniform vec2 u_cssSize;     // 화면 크기 (CSS px)
 uniform float u_pixel;      // 픽셀화 칸(CSS px). 0 = 끔
+uniform float u_pixelHi;    // > u_pixel 이면 칸 크기가 블록마다 u_pixel~u_pixelHi 정수 중 하나
+uniform vec2 u_pixelVar;    // 그 블록 크기(CSS px), 노이즈 주파수(1/px — 0 이면 블록마다 독립 난수)
 uniform vec2 u_origin;      // 칸·결 노이즈의 원점 (CSS px) — halo 격자와 같다
 uniform vec4 u_grain;       // 결: amount, freq(밀도 1 당 띠), warp(띠 단위), scale(노이즈 1/px). amount 0 = 끔
 uniform float u_grainWidth; // 띠에서 깎이는 폭 0~1
@@ -80,14 +82,23 @@ void main() {
     // 픽셀화 — 칸 중심의 밀도 하나로 칸 전체를 칠한다(노멀도 칸마다 하나 → 면이 납작한 블록)
     vec2 css = vec2(v_uv.x, 1.0 - v_uv.y) * u_cssSize;
     vec2 uv = v_uv;
-    if (u_pixel > 0.0) {
-        css = (floor((css - u_origin) / u_pixel) + 0.5) * u_pixel + u_origin;
+    float px = u_pixel;
+    vec2 org = u_origin;
+    if (u_pixel > 0.0 && u_pixelHi > u_pixel) {
+        // 칸 크기를 블록마다 — 블록 원점에 칸을 다시 맞춘다
+        vec2 blk = floor((css - u_origin) / u_pixelVar.x);
+        float n = u_pixelVar.y > 0.0 ? vnoise((blk + 0.5) * u_pixelVar.x * u_pixelVar.y) : hash21(blk);
+        px = min(u_pixelHi, u_pixel + floor(clamp(n, 0.0, 0.999) * (u_pixelHi - u_pixel + 1.0)));
+        org = u_origin + blk * u_pixelVar.x;
+    }
+    if (px > 0.0) {
+        css = (floor((css - org) / px) + 0.5) * px + org;
         uv = vec2(css.x / u_cssSize.x, 1.0 - css.y / u_cssSize.y);
     }
     float f0 = fieldAt(uv);
-    if (u_pixel > 0.0) {
+    if (px > 0.0) {
         // 칸 중심 하나만 읽으면 칸보다 가는 선이 칸 사이로 빠져 점선이 된다 — 칸 안 3×3 의 최댓값
-        vec2 s = vec2(u_pixel / 3.0) / u_cssSize * vec2(1.0, -1.0);
+        vec2 s = vec2(px / 3.0) / u_cssSize * vec2(1.0, -1.0);
         for (int j = -1; j <= 1; j++)
             for (int i = -1; i <= 1; i++)
                 if (i != 0 || j != 0) f0 = max(f0, fieldAt(uv + vec2(float(i), float(j)) * s));

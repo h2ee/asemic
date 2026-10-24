@@ -12,8 +12,8 @@
 | --- | --- | --- |
 | mycelium | ✅ | |
 | dandelion | ✅ | |
-| signal | ❌ | **최우선 작업** |
-| sora | ❌ | |
+| signal | ✅ | 2026-09-25 |
+| sora | ✅ | 2026-09-26 |
 
 ---
 
@@ -76,8 +76,8 @@
 ### 시간 · 크기
 
 - **신호등 랜덤 셀**: 음절당 개수는 `SIGNAL_DENSITY_MIN`/`MAX`(현재 2~3개). 색 인덱스와 state가 `appendSyllable()` 시점에 함께 확정된다(`SIGNAL_STATE_FOR_COLOR` — 빨강→JONG / 초록→CHO / 노랑→JUNG).
-- **플래싱 사이클** (음절 단위 자율 순환, `CYCLE_*`/`MONO_*` 상수): 음절 생성 순간부터 무한 반복 `NORMAL`(원본 CA 렌더링) → `BLINK`(모노 흑백 도형 ↔ 원본 교차 노출, `CYCLE_BLINK_RATE_MS` 반주기) → `FREEZE`(CA 전이·밝기 완전 정지) → 다시 NORMAL. 사이클 시작 시각 = `performance.now() + sylIndex * CYCLE_PHASE_STEP_MS`(음절마다 지연 → 신호가 순차 전파). `getCyclePhase()`(JS)와 셰이더가 `u_time`/`u_sylPhaseStart[]`로 **같은 공식을 재현**한다(단일 소스는 JS 상수, `#define`으로 주입). BLINK 모노 도형은 셀의 CA state에 따라 `.`=BLANK / `/`=CHO / `\`=JUNG / `X`=JONG.
-- **유휴 정지**: 입력 없이 30초(`IDLE_PAUSE_MS`) 지나면 rAF 루프를 멈춘다. 마지막 화면은 남고 입력이 오면 즉시 재개하며, 멈춰 있던 만큼 `cyclePhaseStart`를 밀어 신호등 위상이 안 건너뛴다. (TD 임베드 시절엔 `web_glyph.par.alwayscook = Off`여야 TOP 쿡도 같이 멈췄다.)
+- **플래싱 사이클** (음절 단위 자율 순환, `CYCLE_*`/`MONO_*` 상수): 음절 생성 순간부터 무한 반복 `NORMAL`(원본 CA 렌더링) → `BLINK`(시작부터 `CYCLE_BLINK_MONO_MS` 동안 모노 흑백 도형 → 남은 시간 원본) → `FREEZE`(CA 전이·밝기 완전 정지) → 다시 NORMAL. 사이클 시작 시각 = `performance.now() + sylIndex * CYCLE_PHASE_STEP_MS`(음절마다 지연 → 신호가 순차 전파). `getCyclePhase()`(JS)와 셰이더가 `u_time`/`u_sylPhaseStart[]`로 **같은 공식을 재현**한다(단일 소스는 JS 상수, `#define`으로 주입). BLINK 모노는 `MONO_STYLE`로 갈린다 — **`'ascii'`(기본, 2026-10-17)**: 단어 로컬 좌표를 `ASCII_PITCH`×`u_cellSize` 고정 격자로 나누고 칸 중심 아래 site의 state가 글자 줄을, 그 셀의 크기(squircle 축소 Cx·Cy ×1.4의 기하평균 — 같은 state 안에선 이것만 크기를 가른다)가 줄 안의 글자를 큰 순으로 고른다(`ASCII_GLYPHS` — CHO `$%#&+÷-` / JUNG `8965023471` / JONG `WBRNSCXLI` / BLANK `?!:·` — 잉크 많은 순(Zalando Sans Expanded 400 알파 합, 숫자는 값과 무관), 실루엣 가장자리로 갈수록 오른쪽 글자). 글자 고르는 기준은 `ASCII_PICK` — `'distance'`(기본): site의 음절 중심 거리(반폭/반높이 정규화, `ASCII_DIST_RANGE`·`ASCII_DIST_CURVE`)로 매끄럽게 / `'size'`: 셀 크기를 `ASCII_SPLIT` [경계, 몫]으로 비대칭 — 경계~1에 앞쪽 몫만큼의 글자(가운데 고원 = 크기 정확히 1인 셀은 늘 0번). 셀 크기는 글자 크기도 정한다(`ASCII_GLYPH_SCALE` [바깥, 안쪽], 칸 가운데 기준 축소 — 칸 하나에서 읽으므로 1이 최대). 굵기 레벨(`ASCII_FONT_WEIGHTS` — 가변 폰트 wght, 예전 Inconsolata 땐 stroke 덧칠)은 `ASCII_WEIGHT_BY` — `'pick'`(기본): 글자 고르기와 같은 값으로 안쪽 굵게 → 바깥 가늘게 / `'brightness'`: CA 밝기(row2.y, 1~2.5 → 0~1, 주변 BLANK와 비교한 값이라 구멍 가장자리만 굵어진다). 글자는 시작 때 Canvas 2D로 구운 아틀라스(폰트 = Zalando Sans Expanded, `public/fonts/` 파일을 signal이 FontFace로 직접 싣는다. 폭 넓은 비례 폰트라 가장 넓은 글자가 칸 폭 `ASCII_FONT_FIT` 안에 들도록 전체 크기를 줄여 굽는다)(`buildAsciiAtlas`, TEXTURE1), 칸 중심에서 가장 가까운 site가 `ASCII_FILL`×MIN_DIST 안이고 셀 크기가 `ASCII_MIN_SIZE` 이상이면(맨 바깥 고리 = 컬러에서 실처럼 가는 셀은 뺌, 글자 고르기는 [MIN, 1]을 나눔) 흰 글자만 그리고(처음엔 squircle 박스로 판정했는데 박스가 |g|≈0.35부터 셀 간격 절반보다 좁아져 격자와 엇박인 줄·열이 통째로 빠졌다) 바탕은 배경 그대로(모노 동안은 음절 센터 halo도 끈다 — 흰 글자가 glow에 묻혀서. 투명 모드면 글자 말고는 완전 투명. 처음안의 흰 칸 + 검은 글자는 주석으로 남김). 모노 차례도 칸 중심의 음절로 판정(글자가 반쪽만 안 바뀌게). **그런지 displacement(실험)** `ASCII_DISPLACE` — 포토샵 Displace처럼 맵 R/G(0.5 = 그대로)만큼 ASCII를 읽는 좌표(`aP` — 칸·site·글자 전부)를 ±px 민다. 맵은 화면 좌표에 고정·거울 반복(TEXTURE2) — `img` = `public/imgs/grunge.jpg`(회색조 사진, `imgScale`로 비율 그대로), 없으면 `buildGrungeCanvas()`의 절차적 임시 그런지. 기준값 = 맵 평균(밝은 사진이 글자를 한쪽으로 통째로 밀지 않게), 회색조라 R = G라서 세로(G)는 `gOffset`만큼 비켜 읽어 대각선으로만 휘지 않게. 컬러 모드(와 shape 모노)도 같은 맵 — `colorPx`(0 = 끔), main() 첫머리에서 민 좌표 `cL`을 컬러 경로 전체(음절 판정·site·halo·가장자리)가 v_local 대신 쓴다. ASCII는 자기 `aP`를 v_local에서 따로 민다(두 번 밀리지 않게). mip 선택은 밀리기 전 좌표(`cellD`)의 미분으로. **선명도**: `ASCII_INK_LOD`(미분 배율 — 덜 흐린 mip) + `ASCII_INK_SHARP`(잉크를 0.5 근처 smoothstep으로 자름) — 아틀라스를 크게 줄여 읽어 획 가장자리가 흐렸다. 아틀라스는 `textureGrad`로 읽는다 — `fract` 경계에서 mip이 튀어 이음선이 생기므로. `'shape'`: 예전 SDF 도형(셀마다 `. / \ X` 선 + 셀 테두리, `MONO_*` 비율).
+- **유휴 감속** (2026-10-17, 예전엔 유휴 정지): 입력 없이 30초(`IDLE_PAUSE_MS`) 지나면 프레임을 `IDLE_FPS`(7)로 낮춘다. 신호등 사이클은 wall-clock이라 속도 그대로, CA 스텝도 그대로(60Hz에서 7fps = 150ms 간격 = 평소 스텝 간격), 셀 크기 보간(매 프레임)만 느려진다. 입력·리사이즈·스크롤이 `_wake()`로 `_lastActivity`를 갱신해 24fps로 돌아온다. 예전 정지 코드와 `_wake()`의 `_paused` 복귀 분기(멈춰 있던 만큼 `cyclePhaseStart`를 미는 것)는 기록으로 남김. (TD 임베드 시절엔 `web_glyph.par.alwayscook = Off`여야 TOP 쿡도 같이 멈췄다.)
 - **가변 음절 크기**: `calcSignalLatticeSize()`가 `w = clamp((F1-250)/600, 0, 1)`, `scaleX = 1 + (yang ? +1 : -1) * K * w`로 계산(`K`는 파일에서 확인 — 0.2~0.5 사이로 자주 바뀜). 비이중모음은 등방(width = height = `base*scaleX`), 이중모음은 가로축만(`width = base*scaleX`, `height = base`). `update(...,widths,heights)` → `_syncRows`가 음절 item에 `w/h` 부착 → `appendSyllable(...,sylW,sylH)`가 `sylMeta.w/h`에 저장. `offsetX`는 `wordWidth()`(이전 음절 폭 누적합) 기반이고 `recomputeAdjacency`의 `cols`·`_draw`/`_drawWord`도 누적합 기반. 셰이더는 `u_sylOffsetX/Width/Height[MAX_SYL_UNIFORM]` 배열로 픽셀→음절 매핑을 나눗셈 대신 오프셋 구간 탐색으로 한다. squircle은 `radialWarp` 정규화 원을 `sylW×sylH` 박스로 되돌려 비등방 실루엣을 만든다.
 - 글자 크기 기준(base)은 `DEFAULT_SYL_SIZE`(현재 180) 하나 — 실제 음절 크기는 `calcShelfLayout`이 음절마다 계산해 넘긴다.
 
@@ -211,20 +211,41 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
    `outline.anim.on` 이면 획 시작점(`spine[0]`)에 가장 가까운 꼭짓점에서 출발해 `speed` px/s 로 한 바퀴 돌아 닫힌다
    (진행 중엔 오버레이, 다 돌면 ink2d 로 확정. `flushQueue`/`replay` 는 즉시 완성)
    - **`outline.live` (2026-10-09)** — 자라는 중에도 `interval`(ms)마다 윤곽선을 다시 뽑아 실선과 같이 자란다(한 단어 ~6ms). 켜면 위 `anim`은 안 쓴다. 구울 때 최종 기하로 한 번 더 계산(`dropLiveCache`)
-   - **`halo` (2026-10-09)** — 윤곽선 뒤 회색 픽셀 블록. 같은 밀도장(`reach`/`th` null = outline 값)을 화면 고정 격자 `cell` px의 칸 중심에서 재서(`wordCells`) 넘는 칸을 칠한다. underlay(orb 아래)에 깔리고 자라는 획도 `interval`마다 다시 잰다. 격자 원점 `ox`/`oy`는 dandelion.js `update()`가 스크롤만큼 민다. `fill`은 불투명으로(겹친 칸이 두 번 칠해지지 않게 — 옅게는 `opacity`)
+   - **`outline.glow` (2026-10-16)** — 검정 선 대신 바깥으로 옅어지는 띠. `steps` 겹의 넓이·알파를 맞춰 윤곽 `edge` → `width` px 바깥 0으로 선형, 그린 뒤 모든 획의 윤곽 안을 지워 바깥만 남긴다. 스티플에 밀려 지금은 안 쓴다(켜 둬도 stipple 이 우선)
+   - **`outline.stipple` (2026-10-16, 현행 — 노란 점 띠)** — 같은 그라데이션을 점 밀도로(켜면 glow 대신). `gap` = 블록 윤곽에서 띄우는 거리. 화면 고정 지터 격자 칸마다 윤곽 거리로 생존 확률, 점은 원 두 개 겹친 콩 모양. 획마다 bbox 캔버스에 구워 두고 붙이기만 — **Path2D/ellipse로 바꾸지 말 것**(수천 개면 수십~백 ms). 부채로 윤곽이 계속 바뀌는 획은 한 그리기 1획·`interval` ms 제한. 윤곽 안 칸엔 점을 안 둔다(스캔라인) — 지우개로 지우면 경계 점이 반쪽이 된다. `px` > 0 = 저해상도 + 알파 이진화 + nearest
+   - **`bead.main.stipple` (2026-10-16)** — main bead 의 radial glow 를 점 밀도로. 스프라이트 `frames`장을 미리 찍고 `fps`로 바꿔 끓게. 점 설정은 outline.stipple 을 따르되 size/cell 은 따로
+   - **`halo` (2026-10-09)** — 윤곽선 뒤 픽셀 블록(처음엔 회색, 지금은 초록 그라데이션). 같은 밀도장(`reach`/`th` null = outline 값)을 화면 고정 격자 `cell` px의 칸 중심에서 재서(`wordCells`) 넘는 칸을 칠한다. underlay(orb 아래)에 깔리고 자라는 획도 `interval`마다 다시 잰다. 격자 원점 `ox`/`oy`는 dandelion.js `update()`가 스크롤만큼 민다. `fill`은 불투명으로(겹친 칸이 두 번 칠해지지 않게 — 옅게는 `opacity`)
+     - `halo.gradient` (2026-10-16) — 켜면 fill 대신 linear gradient. `whole: true` = 단어 블록 범위(`cellsBox`)에 하나 / false = 칸마다 같은 타일 패턴 반복(`haloFill`, 각도·톤별 패턴 캐시)
+     - `gradient.perSyl` (2026-10-16~17, whole false 일 때) — 칸을 가장 가까운 실선 점의 음절(구간)별로 묶어 `plan[j].haloAngle`(0/90/180/270)과 `plan[j].haloTone`({h,s,l} HSL 이동)으로 칠한다. dandelion: 각도 = 중성이 뻗는 쪽(`HALO_VOWEL_DIR` — ㅏ계 0 / ㅜ계 90 / ㅓ계 180 / ㅗ계 270, 겹모음은 앞 글자, ㅡ ㅣ ㅢ 는 초성 조음위치 `HALO_CHO_DIR`), 톤 = 초성 x→색상 / y→채도 / z→명도(`HALO_TONE`)
+     - `halo.edge` (2026-10-17) — 블록 덩어리(구운 것 + 자라는 것 + 부채 칸) 바깥 테두리. 덩어리를 edge 색으로 물들인 `edge2d`를 8방향 `width` px 밀어 깔고 그 위에 블록. invert 모드에서만 켠다
 6. **장식 레이어 (2026-10-01)** — 전부 `CFG_OVERRIDE` 에서 `on` 으로 켜고 끈다
    - `spineFx` — 실선에 Roughen(`size`/`gap`/`mode` smooth·corner) · Pucker&Bloat(`amount` +bloat/−pucker, `gap`).
      `target:'ink'` 는 2D 실선만, `'all'` 은 goo·윤곽선까지
-   - `bead` — 실선을 타고 `speed` px/s 로 흐르는 원. 굽지 않고 매 프레임 오버레이에 그린다
+   - **`spineCasing` (2026-10-16)** — 메인 실선 = 흰 몸통 + 검정 테두리. 테두리를 전부 긋고 몸통을 전부 칠해 자기 교차·가시(`orb.spike`)가 한 몸으로 이어진다(`drawStrokeInk`). 끄면 `baseStyle`·`lineWidth` 한 줄
+   - `bead` — 실선을 타고 `speed` px/s 로 흐르는 구슬 여럿. 굽지 않고 매 프레임 오버레이에 그린다. `shape`: 'circle' / 'star'(`*`) / 'glyph'(✦✢✤ 중 하나, 위치와 별도 난수열), `cluster`로 무리 짓기. **dandelion 은 지금 끔**(`bead.on: false`)
+   - **`bead.walker` (2026-10-16) — 도장 찍는 bead** — 단어마다 하나가 왕복하며 ✦(끝 뾰족·가운데 뚱뚱) ↔ ✤(끝 둥긂·가는 목)로 morph(`MORPH_A`/`MORPH_B` cubic 제어점 보간), `every`초마다 `prob`로 발동해 `gap`px 간격 `count`개 발자국, 단어당 `max`개(넘으면 오래된 것부터 즉시 사라짐). 상태 없이 (시드, 시각)의 순수 함수 + 단어 키(시드·순번·길이)별 처음 본 시각(`stampEpochs`)이라 전면 재구성에도 유지, `resetStamps()`(clearAccum)로 잊는다. 크기는 지나는 음절의 `plan[j].walkerSize`(dandelion `ORB_JAMO.walkerSize` ← 초성 z). 자라는 획은 다 자란 뒤부터. dandelion 은 h2ee가 꺼 둔 상태(2026-10-17)
    - `bead.main` — 획마다 하나, 실선을 **왕복**(ping-pong — 끝에서 처음으로 순간이동하지 않음)하는 큰 원.
+     `fps` > 0 이면 위치를 초당 fps 번만 갱신해 끊기며 움직인다(2026-10-16 — 이걸 따르는 부채 펼침도 같이 끊김).
+     `waitLive`(2026-10-17)면 입력 중인 획에선 실선 끝(머리)에 붙어 있다가 완결되면 그 끝에서 출발해 왕복 — 완결 시각은 `mainEpochs`에 단어 키로 기억(재구성에도 유지, `resetStamps()`가 같이 비움).
      orb 의 flow field 가 이 진행 방향을 따른다. `glow.on` 이면 배경 투명 radial gradient(가운데 `radius×core` 까지 fill 색,
      밖은 알파 `(1-s)^falloff`) — fill 이 어떤 CSS 색이든 2D 컨텍스트로 rgb 를 뽑아 알파만 바꾼다
-   - **orb = 종성 후크 (2026-10-09)** — 무작위 배치 대신 dandelion.js `ORB_JAMO`가 구간(음절)마다 `plan[j].orbs = [{at, r, fill, off, auto}]`로 지정한다. 받침 있는 음절만, 후크 자리(구간 길이 × 0.93), 반지름 = 중성 F1, 색 = 초성 x/y/z → 노란 계열 hue/채도/명도. `auto`면 법선 양쪽 중 실선이 덜 붐비는 쪽으로 (r+22)px(`settleSide` — orb 자리 + 40px까지만 세서 뒤에 자라는 경로가 쪽을 안 뒤집는다). `orb.bulge`가 orb를 윤곽선·halo 밀도장에 원으로 더해 윤곽이 orb를 감싸며 부푼다
-   - **`goo.pixel` / `goo.grain` (2026-10-09)** — 캡슐 이어진 metaball 상쇄. pixel = 칸(CSS px, halo와 같은 원점) 안 3×3 최댓값으로 칸 단위 칠하기(노멀도 칸마다 하나). grain = 밀도값을 띠 좌표로(등고선이 획과 나란하므로 띠도 획을 따라간다) 띠마다 밀도를 `amount`만큼 깎고 노이즈(`warp`/`scale`)로 흔든다. 둘 다 composite.frag
-   - `orb` — 경로 주변 노란 원 + 내부 **hatch 형 flow field**(짧은 대시를 격자에 놓고 벡터장 방향으로 돌림).
+   - **orb = 종성 후크 (2026-10-09)** — 무작위 배치 대신 dandelion.js `ORB_JAMO`가 구간(음절)마다 `plan[j].orbs = [{at, r, fill, off, auto, rays, width, spikes}]`로 지정한다. 받침 있는 음절만, 후크 자리(구간 길이 × 0.93), 반지름 = 중성 F1, 색 = 초성 x/y/z → 노란 계열 hue/채도/명도. `auto`면 법선 양쪽 중 실선이 덜 붐비는 쪽으로 (r+22)px(`settleSide` — orb 자리 + 40px까지만 세서 뒤에 자라는 경로가 쪽을 안 뒤집는다). `orb.bulge`가 orb를 윤곽선·halo 밀도장에 원으로 더해 윤곽이 orb를 감싸며 부푼다
+   - **부채 `orb.style: 'fan'` (2026-10-16)** — 원 대신 접부채. 밑변이 실선 방향(뒤쪽), 바깥쪽으로 반원까지 펼쳐진다. 펼침 = main bead 거리(`fan.near`~`far`). 살 개수 = 초성 y, 굵기 = 초성 z(dandelion.js `ORB_JAMO.rays/width`). 'disc'로 되돌리면 예전 원 + hatch. 윤곽선·halo는 살 실루엣을 매 프레임 따라간다(캐시한 단어 밀도 격자 + 살 캡슐, `fan.reach` 짧을수록 바싹 — 길면 둥근 덩어리). 이때 윤곽선은 ink2d에 굽지 않고 오버레이에 매 프레임
+   - **부채 `fan.heart` (2026-10-16)** — 살마다 중심에서 radial gradient: 중심 = fill에 `tint`(붉은색)를 `amount`만큼 섞은 색 → `extent`(길이 비율)에서 fill(`fanStroke`)
+   - **성게 가시 `orb.spike` (2026-10-16)** — orb 항목에 `spikes: {n, len}`이 있으면 부채 반대편 법선 쪽 반구(±`spread`)로 실선 옆구리에서 불규칙한 가시(`jitter`, 골짜기 `depth`)를 orb 시드의 순수 함수로(`spikePaths`). 색은 spineCasing 을 따라 실선과 한 몸. dandelion: 받침이 울림소리(ㄴㄹㅁㅇ, z 0)가 아닐 때만 — 종성 x → 개수(`ORB_JAMO.spikeN`), z → 길이(`spikeLen`). 다 그린 단어는 ink2d에 구워서 튀어나오는 애니메이션은 없다
+   - **바탕 `base` (2026-10-16~17)** — underlay 맨 아래. `shape: 'outline'` = 윤곽 폴리곤을 하나씩 채우고 2·`pad` 굵기로 그어 불린 실루엣(pad null = 스티플 gap + width) / `'halo'` = halo 칸 모양 그대로. `offset` [dx, dy]로 그림자처럼 어긋나게, `gradient`(halo.gradient 꼴)를 주면 칸마다 그 그라데이션. dandelion: 흰 halo 모양, [7, 7]. 부채 칸은 매 프레임 계산이라 base 에 안 들어간다
+   - **underlay 쌓는 순서** (아래 → 위): base → halo(edge 포함) → orb/부채. 그 위에 goo(GL) → 오버레이(윤곽선·실선·bead)
+   - **`goo.pixel` / `goo.grain` (2026-10-09)** — 캡슐 이어진 metaball 상쇄. pixel = 칸(CSS px, halo와 같은 원점) 안 3×3 최댓값으로 칸 단위 칠하기(노멀도 칸마다 하나). `[lo, hi]`로 주면(2026-10-16) `pixelVar.block` px 블록마다 lo~hi 정수 중 하나(`pixelVar.scale` 노이즈, 0 = 블록마다 독립), 칸은 블록 원점에 다시 맞춘다. grain = 밀도값을 띠 좌표로(등고선이 획과 나란하므로 띠도 획을 따라간다) 띠마다 밀도를 `amount`만큼 깎고 노이즈(`warp`/`scale`)로 흔든다. 둘 다 composite.frag
+   - `orb`(`style: 'disc'` — 부채 이전, dandelion 은 지금 'fan') — 경로 주변 노란 원 + 내부 **hatch 형 flow field**(짧은 대시를 격자에 놓고 벡터장 방향으로 돌림).
      벡터장 = 노이즈 기본장을 그 획 main bead 진행 방향 쪽으로 `follow` 만큼 돌린 것(거리 `falloff` 로 약해짐),
      bead 가 간 만큼 노이즈 표본을 `drift` 배로 밀어 무늬가 흐른다. 대시는 방향 없는 선이라 각도 차를 π 로 접는다
      (bead 가 되돌아와도 결이 안 튄다). **goo 아래**의 underlay 캔버스에 매 프레임 다시 그린다(굽지 않음)
+
+### 색 · 모드 (2026-10-16~17)
+
+- **goo 색 = 최상위 `ink`**(hex만 — `hex2rgb`). 엔진 기본 `shade: 2`(toon)는 ink × (amb 0.55 + 명암 계단)이라 흰색도 회색이 된다 — 색 그대로 내려면 `shade: 0`. dandelion 은 지금 흰 goo(`ink '#ffffff'`, `shade 0`) + 흰 점선(`companionStyle`)
+- **invert 모드 `?dandelion=invert`** — `cfgForMode()`가 CFG_OVERRIDE 위에 덮는다(원래 룩은 그대로): halo 흰 채움 + 초록 `edge`, goo `INVERT_INK` 초록, base = 원래 halo 초록 그라데이션. halo stops 를 바꾸면 invert 의 base·edge 색도 따라간다. 흰 실선이 흰 블록 위라 잘 안 보인다
+- **index.html(스탠드얼론)만 회색 종이** — transparentOutput 이 없을 때만 `paper: STANDALONE_PAPER`(#cfcfcc)를 넘겨 흰 base 가 보이게. output.html(전시)은 투명 합성이라 receiver 배경(BG_d 하늘) 그대로. output 쪽 회색 배경 옵션은 만들었다가 걷어냈다(2026-10-17)
 
 ### 점진 렌더 · 한글 조합
 
@@ -241,6 +262,8 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
 - `dispose()` 가 리스너·캔버스 3장(underlay/goo/overlay)·body 배경을 전부 되돌린다. 투명 합성이면 `bodyBg:false` + `paperBg:false`. **`keys` 옵션은 끈 채로 둘 것** — 켜면 `c`/`z`/`s` 가 한글 입력창을 가로챈다.
 - `sylSize = 110`, `wrapStep = 130`, `lineHeightRatio = 1.8`
 - **세로 scroll (2026-10-08)** — 밀도장·윤곽선·잉크가 따로 구워져 픽셀로 못 민다. 줄이 늘면 페이지가 민 positions로 앵커가 바뀌어 **전부 다시 굽고**(결정론이라 같은 모양), 캔버스 세 장을 민 거리만큼 CSS `translateY`로 내려 뒀다가 `SCROLL_EASE`로 0까지 끌어올린다. 다시 굽는 앞 단어들은 윤곽선이 한 바퀴 도는 애니메이션 없이 바로 그린다(`addStroke` 동안만 `CFG.outline.anim.on = false`). 엔진이 body 끝에 붙이는 오버레이 캔버스는 `init()`이 goo 캔버스 뒤(`#glyph-window` 안)로 옮긴다 — 안 그러면 위쪽 페이드 mask·말풍선 clip이 안 걸린다
-- 자주 바뀌는 값: `CFG_OVERRIDE`(dandelion.js 상단, goo/grow/part/outline 포함), `jamoTrail.js` 의 `MEANDER_*` / `DC_TURNS` / `AC_TURN` / `JOIN_STEER` / `LINE_PULL`
+- **음절 네모 높이 = 실선 맨 아래 + 간격 (2026-10-17)** — `buildWord`가 `meta.starts`(음절마다 경로 몇 px에서 시작하는지)로 메인 경로 점을 음절 구간에 나눠, 구간마다 가장 아래 점이 줄 기준선(anchor y)보다 몇 px 아래인지 `_sylDrop[음절 번호]`에 적는다. 페이지(`sylTags`)는 `sylDrop(i)` + `TAG_DROP_GAP`(output-main.js)에 네모 윗변을 둔다. 동반 곡선·장식·goo 두께는 안 셈 — 간격으로 맞춘다
+- 자주 바뀌는 값: `CFG_OVERRIDE`(dandelion.js 상단, goo/grow/part/outline/halo/base/bead/orb 포함), 자모 → 시각 매핑 표(`ORB_JAMO` — orb·부채·가시·walker 크기 / `HALO_VOWEL_DIR`·`HALO_CHO_DIR`·`HALO_TONE`), `jamoTrail.js` 의 `MEANDER_*` / `DC_TURNS` / `AC_TURN` / `JOIN_STEER` / `LINE_PULL`
 - 성장장·파티클 레이어는 구현돼 있으나 **기본 off** (`grow.on` / `part.on`)
-- 콘솔: `rm.current.cfg()` / `rm.current.engine()` / `rm.current.setGenerator('anchor')`(구 앵커 보간 방식과 A/B)
+- 콘솔: `rm.current.cfg()` / `rm.current.engine()` / `rm.current.setGenerator('anchor')`(구 앵커 보간 방식과 A/B). 구운 것까지 바꾸려면 `rm.current.engine().replay()`
+- **엔진 새 옵션은 기본 off** — 엔진(`trail/`, sketch 사본) 기본값은 예전 룩 그대로 두고 dandelion 이 `CFG_OVERRIDE`로 켠다. 엔진을 고치면 `trailgl.js`·`path.js`·`field.js`·`marchingSquares.js`·`composite.frag`를 sketch 쪽에 복사해 `cmp`로 맞출 것

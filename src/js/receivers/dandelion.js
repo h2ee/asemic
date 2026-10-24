@@ -56,9 +56,75 @@ const ORB_JAMO = {
     hue: [44, 60], // 진한 노랑 ~ 연두빛 노랑
     sat: [78, 100],
     light: [68, 56],
+    // 부채(orb.style 'fan', 2026-10-16) — 초성 조음방법 y(파열 0 → 유음 1) → 살 개수, 긴장도 z(울림 → 거센) → 살 굵기
+    rays: [5, 15],
+    // 도장 bead(bead.walker) 크기 — 지나는 음절의 초성 긴장도 z(울림 0 → 거센 1) → size px (2026-10-16)
+    walkerSize: [3, 7],
+    // 성게 가시(orb.spike, 2026-10-16) — 받침이 울림소리(ㄴ ㄹ ㅁ ㅇ, z 0)가 아닐 때 부채 반대편 옆구리에서.
+    // 종성 조음위치 x(양순 → 후두) → 가시 개수 / 긴장도 z(예사 → 거센) → 길이 px
+    spikeN: [12, 20],
+    spikeLen: [18, 38],
+    width: [2, 7], // 2026-10-16 두껍게 (예전 1.2~4)
 };
 
+// halo 칸 그라데이션 방향 = 음절 중성이 뻗는 쪽 (2026-10-16, halo.gradient.perSyl). 0 왼→오 / 90 위→아래 / 180 / 270
+// 겹모음은 앞 글자(ㅘ = ㅗ). 뻗는 쪽이 없는 ㅡ ㅣ ㅢ 는 초성 조음위치 x 를 넷으로(양순 0 · 치조 90 · 경구개 180 · 연구개 270 · 후두 0)
+const HALO_VOWEL_DIR = {
+    ㅏ: 0,
+    ㅑ: 0,
+    ㅐ: 0,
+    ㅒ: 0,
+    ㅓ: 180,
+    ㅕ: 180,
+    ㅔ: 180,
+    ㅖ: 180,
+    ㅗ: 270,
+    ㅛ: 270,
+    ㅘ: 270,
+    ㅙ: 270,
+    ㅚ: 270,
+    ㅜ: 90,
+    ㅠ: 90,
+    ㅝ: 90,
+    ㅞ: 90,
+    ㅟ: 90,
+};
+const HALO_CHO_DIR = [0, 90, 180, 270];
+// halo 칸 톤 = 초성 (2026-10-17) — 그라데이션 stops 를 HSL 로 살짝 민다. 조음위치 x(양순 → 후두) → 색상(도),
+// 조음방법 y(파열 → 유음) → 채도(%p), 긴장도 z(울림 → 거센) → 명도(%p, 거셀수록 어둡게)
+const HALO_TONE = { hue: [-24, 24], sat: [-6, 6], light: [4, -5] };
+
+// ── invert 모드 (2026-10-17) — `?dandelion=invert`. 지금 룩(CFG_OVERRIDE)은 그대로 두고 그 위에 덮는다:
+//   초록 그라데이션 halo → 흰 채움 + 초록 외곽선(halo.edge) / 픽셀 goo(보조곡선) 흰색 → 초록 /
+//   맨 뒤 흰 어긋난 halo(base) → 원래 halo 의 초록 그라데이션
+const INVERT = typeof location !== 'undefined' && new URLSearchParams(location.search).get('dandelion') === 'invert';
+const INVERT_INK = '#4c9f4c'; // goo 초록 — halo stops 의 진한 쪽 rgb(76, 159, 76). hex 만 받는다
+function cfgForMode() {
+    if (!INVERT) return CFG_OVERRIDE;
+    const C = CFG_OVERRIDE;
+    const G = C.halo.gradient;
+    return {
+        ...C,
+        ink: INVERT_INK,
+        halo: {
+            ...C.halo,
+            fill: 'rgb(255, 255, 255)',
+            gradient: { ...G, on: false },
+            edge: { on: true, color: G.stops.at(-1)[1], width: 0.3 },
+        },
+        base: { ...C.base, gradient: { ...G, on: true, whole: false } },
+    };
+}
+
+// index.html(스탠드얼론) 배경 종이색 — base(흰 채움)와 구분되게 회색
+const STANDALONE_PAPER = '#cfcfcc';
+
 const CFG_OVERRIDE = {
+    // ink: '#0b5306',
+    // goo 를 순백으로 (2026-10-16) — 엔진 기본 shade 2(toon)는 ink 에 명암 계단(amb 0.55~)을 곱해서 흰색도 회색이 된다.
+    // shade 0 = 명암 없이 ink 그대로
+    ink: '#ffffff',
+    shade: 0,
     spacing: 4,
     spineSmooth: -8,
 
@@ -79,8 +145,11 @@ const CFG_OVERRIDE = {
     decorRadius: [2, 5], // 사각형 반변 길이(px) — 2배로
     decorLineWidth: 0.75, // 윤곽선 굵기 (decorStyle null 이면 안 씀)
     decorStyle: null, // 테두리 없이
-    decorFill: 'rgb(255, 255, 255)', // 흰 채움 (2026-10-09)
+    decorFill: 'rgb(255, 253, 222)', // 흰 채움 (2026-10-09)
     arrowSize: 0, // 점선 끝 화살촉 없음 (2026-10-09)
+    companionStyle: 'rgb(255, 255, 255)', // 점선(동반 곡선)도 흰색 (2026-10-16, 엔진 기본 검정)
+    // 메인 실선 = 흰 몸통 + 검정 테두리 (2026-10-16). width 몸통 굵기, borderWidth 테두리 한쪽 굵기(px)
+    spineCasing: { on: true, width: 8.0, borderWidth: 0.3, fill: 'rgb(255, 255, 255)', border: 'rgb(0, 0, 0)' },
 
     growPx: 14,
 
@@ -97,20 +166,72 @@ const CFG_OVERRIDE = {
         // 점선 자기 겹침 goo 억제 — 0 = 끔(예전), ~1.0 = 점선끼리는 임계를 못 넘고 실선과의 교차만 남는다
         compCap: 0,
         // 픽셀화(CSS px, halo 격자와 같은 원점 — cell 10 의 절반이라 칸이 맞물린다). 0 = 매끈한 metaball
-        pixel: 5,
+        // pixel: 3,
+        // [1, 3] = 12px 블록마다 1·2·3 중 하나 (2026-10-16). pixelVar.scale 노이즈라 이웃 블록끼리 비슷 — 0 이면 블록마다 따로
+        pixel: [1, 3],
+        pixelVar: { block: 12, scale: 0.02 },
         // 결 — 덩어리를 획과 나란한 가닥으로 가른다. amount 0 = 끔
-        grain: { amount: 0.9, freq: 1.2, warp: 0.6, scale: 0.035, width: 0.35 },
+        //amount: 10.9, freq: 1.2, warp: 0.6, scale: 0.035, width: 0.35
+        grain: { amount: 8.9, freq: 1.2, warp: 0.6, scale: 0.035, width: 0.55 },
     },
     grow: { on: false },
     part: { on: false },
 
     // 윤곽선 — live: 자라는 동안 interval(ms)마다 다시 뽑아 실선과 같이 왼→오로 자란다(2026-10-09).
     // live 를 끄면 예전처럼 구울 때 획 시작점 근처에서 출발해 한 바퀴 돌아 닫힌다 (anim.speed px/s)
-    outline: { anim: { on: true, speed: 850 }, live: { on: true, interval: 60 } },
+    outline: {
+        anim: { on: true, speed: 850 },
+        live: { on: true, interval: 60 },
+        // 검정 선 대신 바깥으로 옅어지는 청록 띠(2026-10-16) — 윤곽에서 edge 불투명도, width px 바깥에서 투명.
+        // 색은 halo 블록(rgb 211,221,209)보다 한 단계 진한 청록. on:false 면 예전 검정 선
+        glow: { on: true, color: 'rgb(196, 140, 140)', width: 14, edge: 0.9, steps: 8 },
+        // 스티플(2026-10-16) — 같은 그라데이션을 점 밀도로. 켜면 glow 대신. width = 점이 퍼지는 거리, gamma 클수록 빨리 성겨진다,
+        // cell = 점 후보 격자(작을수록 촘촘), size = 점 반지름 범위, stretch = 타원 장단비 범위
+        // px = 점 픽셀 크기(CSS px) — 알파 이진화 + nearest 로 또렷한 픽셀 점. 0 = 매끈하게
+        stipple: {
+            on: true,
+            color: 'rgb(76, 159, 76)',
+            width: 22,
+            gap: 10,
+            edge: 1,
+            gamma: 2.6, // 8.6
+            cell: 2.6,
+            size: [0.3, 1.2],
+            stretch: [1, 1.9],
+            px: 0.5,
+        }, // gap = 블록 윤곽에서 띄우는 거리
+    },
+
+    // 맨 아래 바탕 채움 (2026-10-16) — 가장 넓은 윤곽(스티플 gap + width 까지)을 꽉 채운다. 원래 흰색인데
+    // 배경 위에서 모양을 보기 쉽게 지금은 옅은 회색 (mycelium 배경처럼). 흰색은 'rgb(255, 255, 255)'
+    // base: { on: true, fill: 'rgb(232, 232, 230)', pad: null },
+    // base: { on: true, fill: 'rgb(255, 255, 255)', pad: 0 }, // 흰색 — index.html 은 회색 종이(STANDALONE_PAPER) 위에서 보인다
+    // halo 칸 모양 그대로, 오른쪽 아래로 살짝 어긋나게 (2026-10-17). shape 'outline' 이면 위 윤곽 채움
+    base: { on: true, fill: 'rgb(255, 255, 255)', pad: 0, shape: 'halo', offset: [7, 7] },
 
     // 윤곽선 뒤 회색 픽셀 블록 — 같은 밀도장을 cell px 격자로 잰다. reach/th 가 null 이면 outline 값.
     // 격자 원점은 update() 가 스크롤만큼 따라 옮긴다(다시 구워도 블록이 글자에 붙어 있게)
-    halo: { on: true, cell: 9, reach: null, th: null, fill: 'rgb(211, 221, 209)', opacity: 1, interval: 60 },
+    halo: {
+        on: true,
+        cell: 9,
+        reach: null,
+        th: null,
+        fill: 'rgb(211, 221, 209)',
+        opacity: 1,
+        interval: 60,
+        // 칸마다 linear gradient(2026-10-16) — angle 도(0 왼→오, 90 위→아래), stops [위치, 색]. on:false 면 fill 단색
+        gradient: {
+            on: true,
+            whole: false, // true = 단어마다 블록 전체에 그라데이션 하나 / false = 칸마다 반복
+            perSyl: true, // whole false 일 때 칸 방향 = 가까운 음절의 중성 방향(HALO_VOWEL_DIR). false = angle 하나
+            angle: 180,
+            // 201, 255, 201 = 연한 녹색. 247, 252, 247 = 거의 흰색
+            stops: [
+                [0, 'rgb(121, 211, 121)'],
+                [1, 'rgb(76, 159, 76)'],
+            ],
+        },
+    },
 
     // 실선 효과 (일러스트레이터 Roughen / Pucker & Bloat). target 'ink' = 2D 실선만 / 'all' = goo·윤곽선까지
     spineFx: {
@@ -121,33 +242,69 @@ const CFG_OVERRIDE = {
 
     // 실선을 타고 흐르는 원. main = 획마다 하나, 실선을 왕복하며 orb 의 flow field 방향을 끌고 다닌다
     bead: {
-        on: true,
-        gap: [40, 90],
+        on: false, // 흐르는 구슬 여럿(✦✢✤ 무리) 대신 walker 하나 (2026-10-16). main·walker 는 따로 켜고 끈다
+        // gap: [60, 90],
+        gap: [140, 260], // 뭉침(cluster) 켜고 무리 사이 간격으로 — 전체 개수는 예전과 비슷
         radius: [1.5, 3.5],
         speed: 30,
         fill: 'rgb(0, 0, 0)',
         stroke: null,
+        // 검정 구슬 → * (2026-10-16). 'circle' 이면 예전 원. 살 arms 개, 길이 = radius × scale
+        // shape: 'star',
+        star: { arms: 4, scale: 1.8, width: 2.5, turn: 0 },
+        // ✦✢✤ 중 하나씩 (2026-10-16) — 구슬마다 획 시드로 고른다. 크기 = radius × scale
+        shape: 'glyph',
+        glyph: { kinds: ['sparkle', 'teardrop', 'balloon'], scale: 2.4, turn: 0 },
+        // 뭉침 — size 개씩 무리, 무리 안 간격 cluster.gap, 무리 사이 간격 = gap(위)
+        cluster: { on: true, size: [2, 5], gap: [6, 14] },
+        // 도장 찍는 bead (2026-10-16) — 하나가 ✦ ↔ ✤ 로 morph 하며 다니다 이따금 발자국 2~5개, 단어당 max 개
+        // size = 예비값 — 실제로는 음절마다 ORB_JAMO.walkerSize(초성)
+        walker: { on: false, speed: 35, size: 9, morph: 2.4, every: 2, prob: 0.5, count: [2, 5], gap: 20, max: 12 },
         // glow 가 켜지면 radius = 번짐이 끝나는 바깥 반경 (꽉 찬 가운데 = radius × core)
         main: {
             on: true,
-            radius: 18,
-            speed: 40,
-            fill: 'rgb(130, 255, 130)',
+            radius: 32,
+            speed: 30,
+            fill: 'hsl(59, 100%, 81%)',
             stroke: null,
-            glow: { on: true, core: 0.45, falloff: 1.4 },
+            glow: { on: true, core: 0.15, falloff: 6.4 },
+            // 스티플(2026-10-16) — glow 의 알파를 점 밀도로. 점 모양·크기·px 는 outline.stipple 을 따르고 여기서 덮어쓴다.
+            // frames 장을 fps 로 돌려 무늬가 끓는다(1 = 고정)
+            // size/cell 은 따로 — outline 점을 작게 해도 bead 가 성겨지지 않게
+            // 끊기며 움직이기 (2026-10-16) — 위치를 초당 fps 번만. 0 = 매끈
+            fps: 2,
+            // 입력 중엔 실선 끝(머리)에, 띄어쓰기로 단어가 완결되면 그 끝에서 출발해 왕복 (2026-10-17)
+            waitLive: true,
+            stipple: { on: true, frames: 4, fps: 6, size: [0.3, 1.0], cell: 1.2 },
         },
     },
 
     // 노란 원 + 내부 hatch 형 flow field (goo 아래에 깔린다)
     orb: {
         on: true,
+        // 성게 가시 — 개수·길이는 ORB_JAMO.spikeN/spikeLen(받침). 색은 spineCasing 을 따라 실선과 한 몸
+        spike: { on: true, spread: 1.55, depth: 0.4, jitter: 0.7 },
         // gap/prob/radius/spread/fill 은 무작위 배치용 — 지금은 ORB_JAMO 가 음절마다 지정해서 안 쓴다(기록)
         gap: [90, 200],
         prob: 0.7,
-        radius: [6, 22],
+        radius: [10, 22],
         spread: 26,
-        fill: '#ffe83d',
+        fill: '#fff07e',
         bulge: 3, // 윤곽선·블록이 orb 를 감싸며 부풀어 나온다 (outline.th 0.55 보다 커야 효과, 클수록 여유가 넓다)
+        // 부채 — 원 대신. 살 개수·굵기는 ORB_JAMO(초성)가 음절마다. 펼침 = main bead 거리 near~far(px), 최소 min.
+        // 'disc' 로 되돌리면 예전 노란 원 + hatch
+        style: 'fan',
+        // reach = 윤곽선이 살에서 떨어지는 거리 감(짧을수록 살 모양에 바싹), 세기는 bulge
+        fan: {
+            len: 2,
+            near: 40,
+            far: 320,
+            min: 0.06,
+            cap: 'butt',
+            reach: 8,
+            // 중심에 가까울수록 붉게 살짝 진하게 (2026-10-16) — 중심 = fill 에 tint 를 amount 만큼, extent(살 길이 비율)에서 fill
+            heart: { on: true, tint: 'rgb(228, 102, 80)', amount: 0.5, extent: 0.3 },
+        },
         flow: {
             cell: 8.6, // 대시 격자 간격(px)
             dash: 8.2, // 대시 길이(px)
@@ -183,6 +340,8 @@ export class DandelionReceiver {
         // glyphmode scroll(세로, 2026-10-08). 밀도장은 픽셀로 밀 수가 없어서(goo·윤곽선·잉크가 따로 구워진다)
         // 줄이 늘면 페이지가 민 positions로 **새 자리에 전부 다시 굽고**(결정론이라 같은 모양), 캔버스 세 장을
         // 밀린 거리만큼 CSS로 내려 두었다가 0으로 끌어올린다 — 화면에선 위로 미끄러지는 것으로 보인다
+        this._sylDrop = []; // 음절 번호 → 실선 맨 아래가 줄 기준선보다 몇 px 아래인지 (sylDrop, 음절 네모용)
+
         this._scrollAxis = 'y';
         this._scrollBase = 0;
         this._slide = 0;
@@ -203,7 +362,8 @@ export class DandelionReceiver {
             mouse: false, // 자모 입력이 대체
             keys: false, // 한글 입력창과 충돌하므로 절대 등록하지 않는다
             global: false,
-            cfg: CFG_OVERRIDE,
+            // 스탠드얼론(index.html)만 종이색을 회색으로(2026-10-17) — 흰 글자 바탕(base)이 보이게. 전시(output.html)는 투명이라 무관
+            cfg: this._opts.transparentOutput ? cfgForMode() : { ...cfgForMode(), paper: STANDALONE_PAPER },
             // 투명 합성(TD / output.html)에선 엔진이 종이색을 깔면 안 된다 — 캔버스가 뷰포트 전체라
             // TD 에선 흰 판이 크롬을 덮는다. 종이색은 body 배경 + 맨 아래 캔버스(underlay) CSS 배경 두 곳
             bodyBg: !this._opts.transparentOutput,
@@ -245,6 +405,12 @@ export class DandelionReceiver {
     }
     get scrollBase() {
         return this._scrollBase;
+    }
+    // 음절 네모 높이(2026-10-17) — i번째 음절 실선(메인 경로)의 가장 아래 점이 그 음절 positions y보다 몇 px 아래인지.
+    // 아직 안 그린 음절은 null(페이지가 예전 TAG_Y로)
+    sylDrop(i) {
+        const d = this._sylDrop[i];
+        return Number.isFinite(d) ? d : null;
     }
     // 화면에 실제로 보이는 스크롤 양 — 음절 네모가 이걸 따라간다
     get shownScrollBase() {
@@ -297,6 +463,7 @@ export class DandelionReceiver {
             } else {
                 groups.push({
                     wordId: s.wordId,
+                    i0: i, // 이 단어 첫 음절의 sylItems 번호 — 음절 네모 높이(_sylDrop)를 음절 번호로 적는다
                     anchor: [p[0], p[1]],
                     syls: [s],
                     keys: [`${s.cho}${s.jung}${s.jong ?? ''}`],
@@ -314,15 +481,36 @@ export class DandelionReceiver {
             const pts = buildPts(g, syls, meta);
             let total = 0;
             for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+            // 음절 네모 높이 — 음절 구간마다 실선(메인 경로) 가장 아래 점이 줄 기준선(anchor y)보다 몇 px 아래인지
+            if (g.i0 != null) {
+                let s = 0;
+                let j = 0;
+                const y0 = g.anchor[1] * H;
+                for (let k = 0; k < meta.starts.length; k++) this._sylDrop[g.i0 + k] = -Infinity;
+                for (let i = 0; i < pts.length; i++) {
+                    if (i) s += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+                    while (j + 1 < meta.starts.length && s >= meta.starts[j + 1].px0) j++;
+                    const d = pts[i].y - y0;
+                    if (d > this._sylDrop[g.i0 + j]) this._sylDrop[g.i0 + j] = d;
+                }
+            }
             const plan = meta.starts.map((st, j) => {
                 const segLen = (meta.starts[j + 1]?.px0 ?? total) - st.px0;
-                return { px0: st.px0, seed: sylSeed(st.syl), orbs: this._sylOrbs(st.syl, segLen) };
+                return {
+                    px0: st.px0,
+                    seed: sylSeed(st.syl),
+                    orbs: this._sylOrbs(st.syl, segLen),
+                    haloAngle: this._sylHaloAngle(st.syl),
+                    haloTone: this._sylHaloTone(st.syl),
+                    walkerSize: this._sylWalkerSize(st.syl),
+                };
             });
             return { pts, plan };
         };
         // 획 시드는 동반 곡선 개수·bead 배열만 정한다. 단어 내용만 쓴다(wordId 를 섞으면 같은 단어도 자리마다 달라진다)
         const seedOf = g => this._trail.hashSeed('word', ...g.keys);
 
+        this._sylDrop.length = sylItems.length;
         const prev = this._groups;
         // 앞에서부터 완전히 같은 그룹은 그대로 둔다
         let match = 0;
@@ -427,7 +615,9 @@ export class DandelionReceiver {
     // submit 후 새 줄 시작 — 누적 궤적 비움 (히스토리 이미지는 core.js 흐름이 관리)
     clearAccum() {
         this._trail?.clear();
+        this._trail?.resetStamps();
         this._groups = [];
+        this._sylDrop = [];
         this._holdingIdx = -1;
         this._resetScroll();
     }
@@ -469,8 +659,45 @@ export class DandelionReceiver {
                 fill: `hsl(${h.toFixed(1)}, ${sat.toFixed(1)}%, ${l.toFixed(1)}%)`,
                 off: r + O.off,
                 auto: true,
+                rays: Math.round(O.rays[0] + (O.rays[1] - O.rays[0]) * y),
+                width: O.width[0] + (O.width[1] - O.width[0]) * z,
+                spikes: this._jongSpikes(jE),
             },
         ];
+    }
+
+    // 받침 가시 — 울림소리(z 0)면 없음
+    _jongSpikes(jE) {
+        const [jx, , jz] = jE.pos;
+        if (!(jz > 0)) return null;
+        const O = ORB_JAMO;
+        return {
+            n: O.spikeN[0] + (O.spikeN[1] - O.spikeN[0]) * jx,
+            len: O.spikeLen[0] + (O.spikeLen[1] - O.spikeLen[0]) * jz,
+        };
+    }
+
+    // 음절 하나의 도장 bead 크기 (ORB_JAMO.walkerSize ← 초성 z)
+    _sylWalkerSize(syl) {
+        const z = this._JAMO[syl.cho]?.cho?.pos?.[2] ?? 0.33;
+        const [lo, hi] = ORB_JAMO.walkerSize;
+        return lo + (hi - lo) * z;
+    }
+
+    // 음절 하나의 halo 톤 (HALO_TONE ← 초성 xyz)
+    _sylHaloTone(syl) {
+        const [x, y, z] = this._JAMO[syl.cho]?.cho?.pos ?? [0.5, 0.5, 0.33];
+        const T = HALO_TONE;
+        const lerp = ([a, b], t) => +(a + (b - a) * t).toFixed(1);
+        return { h: lerp(T.hue, x), s: lerp(T.sat, y), l: lerp(T.light, z) };
+    }
+
+    // 음절 하나의 halo 그라데이션 각도 (HALO_VOWEL_DIR)
+    _sylHaloAngle(syl) {
+        const d = HALO_VOWEL_DIR[syl.jung];
+        if (d != null) return d;
+        const x = this._JAMO[syl.cho]?.cho?.pos?.[0] ?? 0;
+        return HALO_CHO_DIR[Math.round(x * 4) % 4];
     }
 
     // 콘솔 튜닝용 — rm.current.cfg().goo.th = 1.4

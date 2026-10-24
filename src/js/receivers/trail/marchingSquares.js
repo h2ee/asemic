@@ -114,18 +114,79 @@ export function wordCells(segs, { reach = 28, th = 0.5, cell = 10, compCap = 0, 
 // segs: [{ax, ay, bx, by, c?, r?, w?}] — 밀도장에 스탬프된 것과 같은 세그먼트들. c = 동반 곡선, r/w = 원(makeDensity)
 // compCap: goo.compCap 과 같은 값을 넘기면 동반 곡선 밀도를 같은 식으로 눌러서 더한다
 export function wordOutline(segs, { reach = 28, th = 0.5, cell = 4, compCap = 0 } = {}) {
-    if (!segs || segs.length === 0) return [];
+    const grid = densityGrid(segs, { reach, cell, compCap });
+    return grid ? contourGrid(grid, th) : [];
+}
 
+// 밀도장 샘플러만 — (x, y) → 밀도. 매 프레임 몇 칸만 다시 잴 때(움직이는 부채 아래 halo 칸)
+export function densitySampler(segs, { reach = 28, compCap = 0 } = {}) {
+    if (!segs || segs.length === 0) return () => 0;
     const [x0, y0, x1, y1] = segBounds(segs, reach);
+    return makeDensity(segs, reach, compCap, x0, y0, x1, y1);
+}
 
+// 밀도 격자 — 비싼 샘플링을 한 번만 해 두고, 움직이는 것(부채)은 addCapsules 로 사본에 더해 contourGrid 로 다시 뽑는다.
+// extra: [x0, y0, x1, y1] — 세그먼트 밖이라도 격자가 덮어야 하는 영역(부채가 펼쳐질 자리)
+export function densityGrid(segs, { reach = 28, cell = 4, compCap = 0, extra = null } = {}) {
+    if (!segs || segs.length === 0) return null;
+    let [x0, y0, x1, y1] = segBounds(segs, reach);
+    if (extra) {
+        x0 = Math.min(x0, extra[0]);
+        y0 = Math.min(y0, extra[1]);
+        x1 = Math.max(x1, extra[2]);
+        y1 = Math.max(y1, extra[3]);
+    }
     const nx = Math.ceil((x1 - x0) / cell) + 1;
     const ny = Math.ceil((y1 - y0) / cell) + 1;
-    if (nx < 2 || ny < 2 || nx * ny > 4e6) return [];
+    if (nx < 2 || ny < 2 || nx * ny > 4e6) return null;
 
     const f = new Float32Array(nx * ny);
     const density = makeDensity(segs, reach, compCap, x0, y0, x1, y1);
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) f[j * nx + i] = density(x0 + i * cell, y0 + j * cell);
+    return { f, x0, y0, nx, ny, cell, reach };
+}
 
+// 캡슐 [{ax, ay, bx, by, r, w, reach?}] 의 밀도 — 캡슐 가장자리(중심선에서 r)부터 reach 에 걸쳐 q³·w 로 떨어진다.
+// 캡슐마다 reach 를 따로 주면 그걸 쓴다 — 짧게 주면 등고선이 캡슐 모양에 바싹 붙는다(이웃 캡슐 꼬리끼리 안 뭉친다)
+export function capsuleDensity(caps, reach, px, py) {
+    let sum = 0;
+    for (const c of caps) {
+        const R = c.reach ?? reach;
+        const d = Math.max(0, distToSeg(px, py, c.ax, c.ay, c.bx, c.by) - c.r);
+        if (d >= R) continue;
+        const q = 1 - d / R;
+        sum += q * q * q * c.w;
+    }
+    return sum;
+}
+
+// 격자 사본에 캡슐을 더한다 (캡슐 bbox 안 칸만)
+export function addCapsules(grid, caps) {
+    const { f, x0, y0, nx, ny, cell, reach } = grid;
+    const out = f.slice();
+    if (!caps.length) return { ...grid, f: out };
+    let bx0 = Infinity,
+        by0 = Infinity,
+        bx1 = -Infinity,
+        by1 = -Infinity;
+    for (const c of caps) {
+        const pad = (c.reach ?? reach) + c.r;
+        bx0 = Math.min(bx0, c.ax - pad, c.bx - pad);
+        by0 = Math.min(by0, c.ay - pad, c.by - pad);
+        bx1 = Math.max(bx1, c.ax + pad, c.bx + pad);
+        by1 = Math.max(by1, c.ay + pad, c.by + pad);
+    }
+    const i0 = Math.max(0, Math.floor((bx0 - x0) / cell)),
+        i1 = Math.min(nx - 1, Math.ceil((bx1 - x0) / cell)),
+        j0 = Math.max(0, Math.floor((by0 - y0) / cell)),
+        j1 = Math.min(ny - 1, Math.ceil((by1 - y0) / cell));
+    for (let j = j0; j <= j1; j++)
+        for (let i = i0; i <= i1; i++) out[j * nx + i] += capsuleDensity(caps, reach, x0 + i * cell, y0 + j * cell);
+    return { ...grid, f: out };
+}
+
+// 격자 → 등고선 폴리라인
+export function contourGrid({ f, x0, y0, nx, ny, cell }, th) {
     // ── marching squares. 셀마다 4 꼭짓점의 th 초과 여부로 16 케이스.
     // 모서리 교점은 선형보간(정확한 등고선 위치), 애매한 케이스(5/10)는 중앙값으로 푼다.
     const at = (i, j) => f[j * nx + i];

@@ -360,7 +360,7 @@ function reLayout(items) {
         layoutFor(rm, items, window.innerWidth, window.innerHeight, 0, rect, { line, stack });
     // 관람객 음절 네모가 붙을 자리 — 스크롤을 빼기 전 테이프 좌표를 들고 있다가 매 프레임
     // 그때의 scrollBase를 빼서 화면 위치로 바꾼다(테이프가 흐르는 동안 네모도 같이 흐르게)
-    _tagLayout = { positions, sylSize, axis: line ? 'x' : stack ? 'y' : null, items: sylItems };
+    _tagLayout = { positions, sylSize, heights, axis: line ? 'x' : stack ? 'y' : null, items: sylItems };
     if (line) {
         // 테이프 좌표 → 누적 버퍼 좌표. receiver는 목표(scrollX)를 향해 버퍼를 조금씩 밀고,
         // 새 음절은 "지금까지 실제로 민 양(scrollBase)"만큼 뺀 자리에 굽는다
@@ -565,10 +565,15 @@ function refreshCaption() {
 // 반지름 = glyphExtent × sylSize (mycelium), 없는 receiver는 sylSize/2.
 // sora는 positions를 안 쓰고 자기 맘대로 흩뿌리므로 네모가 글자와 안 맞는다.
 const TAG_Y = 0.6;
+// dandelion — 그 음절 실선(메인 경로)의 가장 아래 점에서 이만큼(px) 더 아래에 네모 윗변 (2026-10-17, receiver.sylDrop)
+const TAG_DROP_GAP = 24;
+// signal — 음절마다 크기가 다르다(calcShelfLayout heights). 기본 크기(sylSize)까지는 예전 그대로(TAG_Y)이고,
+// 그보다 큰 음절은 넘친 높이 × SIGNAL_TAG_GROW 만큼 네모를 더 내린다 (0.5 = 글자 아래끝과 같이 내려감)
+const SIGNAL_TAG_GROW = 0.8;
 const SORA_TAG_Y = 1.05; // sora 단어 네모 — 원 중심에서 반경의 이 배만큼 아래(원 바깥 테두리 바로 밑)
 function sylTags() {
     if (!rm.current?.rebaking) _shownTags = _tagLayout;
-    const { positions, sylSize, axis, items } = _shownTags;
+    const { positions, sylSize, heights, axis, items } = _shownTags;
     const W = window.innerWidth;
     const H = window.innerHeight;
     // 화면에 실제로 그려진 스크롤 양 — scrollBase는 표시 패스(24fps)보다 먼저 바뀔 수 있다(mycelium)
@@ -589,11 +594,22 @@ function sylTags() {
             };
         });
     }
-    return items.map((it, i) => ({
-        ...(receiver ? { type: getPatternType(it.jung, it.jong) } : { ch: composeChar(it) }),
-        x: (positions[i]?.[0] ?? 0) * W - (axis === 'x' ? shift : 0),
-        y: (positions[i]?.[1] ?? 0) * H + half * TAG_Y - (axis === 'y' ? shift : 0),
-    }));
+    const sylDrop = rm.current?.sylDrop?.bind(rm.current);
+    const signal = rm.name === 'signal';
+    return items.map((it, i) => {
+        const drop = sylDrop?.(i);
+        const below =
+            drop != null
+                ? drop + TAG_DROP_GAP
+                : signal
+                  ? half * TAG_Y + Math.max(0, (heights?.[i] ?? 0) - sylSize) * SIGNAL_TAG_GROW
+                  : half * TAG_Y;
+        return {
+            ...(receiver ? { type: getPatternType(it.jung, it.jong) } : { ch: composeChar(it) }),
+            x: (positions[i]?.[0] ?? 0) * W - (axis === 'x' ? shift : 0),
+            y: (positions[i]?.[1] ?? 0) * H + below - (axis === 'y' ? shift : 0),
+        };
+    });
 }
 (function followTape() {
     caption.tags(sylTags());

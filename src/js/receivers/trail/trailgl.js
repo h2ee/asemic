@@ -38,7 +38,7 @@ import { createField, FLOATS_PER_SEG } from './field.js';
 import { createGrowth } from './growth.js';
 import { createParticles } from './particles.js';
 import { makeQuadBuffer } from './glutil.js';
-import { wordOutline, wordCells } from './marchingSquares.js';
+import { wordOutline, wordCells, densityGrid, densitySampler, addCapsules, capsuleDensity, contourGrid } from './marchingSquares.js';
 
 const BIRTH_SCALE = 60; // birth 를 "분" 단위로 저장 (16F 누적 레인지 보호)
 const DPR_CAP = 2;
@@ -111,6 +111,30 @@ export function createTrail(opts = {}) {
             fill: 'rgb(0, 0, 0)',
             stroke: null, // 테두리 색 (null = 없음)
             lineWidth: 0.75,
+            // 'circle' = 원(예전) / 'star' = * — 살 arms 개, 길이 = 반지름 × scale, 굵기 width, 진행 방향 + turn(rad)으로 돈다
+            // 'glyph' = 채운 기호 — 구슬마다 kinds 중 하나(획 시드): 'sparkle' ✦ / 'teardrop' ✢ / 'balloon' ✤. 크기 = 반지름 × scale
+            shape: 'circle',
+            star: { arms: 6, scale: 1.6, width: 1, turn: 0 },
+            glyph: { kinds: ['sparkle', 'teardrop', 'balloon'], scale: 2.4, turn: 0 },
+            // 뭉침 — on 이면 size 개씩 무리 짓는다: 무리 안 간격 cluster.gap, 무리 사이 간격 = gap
+            cluster: { on: false, size: [2, 5], gap: [6, 14] },
+            // 도장 찍는 bead — 획마다 하나가 실선을 왕복하며 ✦(m 0: 끝 뾰족·가운데 뚱뚱) ↔ ✤(m 1: 끝 둥긂·가는 목)로
+            // morph 초 주기로 모양이 바뀐다. every 초 칸마다 prob 확률로 발동해 gap(px) 간격으로 count 개 발자국(그 순간 모양)을
+            // 남긴다. 단어마다 max 개 — 넘으면 오래된 것부터 바로 사라진다. 전부 (시드, 시각)의 순수 함수라
+            // 전면 재구성(스크롤)에도 그대로다. 발자국은 단어가 처음 보인 때부터 — resetStamps() 로 잊는다
+            walker: {
+                on: false,
+                speed: 35, // px/s
+                size: 7, // 중심 → 끝(px). 그 자리 구간에 plan[j].walkerSize 가 있으면 그걸로
+                fill: 'rgb(0, 0, 0)',
+                morph: 2.4, // 한 번 왕복하는 데 걸리는 초
+                every: 2, // 발동 판정 간격(초)
+                prob: 0.6,
+                count: [2, 5],
+                gap: 14, // 발자국 간격(px, 경로를 따라)
+                max: 12, // 단어당 도장 상한
+                turn: 0,
+            },
             // main bead — 획마다 하나, 실선을 왕복한다. orb 의 flow field 가 이 진행 방향을 따른다.
             // bead.on 과 따로 켜고 끈다
             main: {
@@ -123,6 +147,11 @@ export function createTrail(opts = {}) {
                 // radial gradient — 가운데 core 비율까지 fill 색 그대로, 바깥으로 투명하게 번진다.
                 // falloff > 1 이면 core 바로 밖에서 빨리 옅어지고, < 1 이면 오래 남는다
                 glow: { on: false, core: 0.45, falloff: 1.4 },
+                // 끊기는 움직임 — 위치를 초당 fps 번만 갱신한다(프레임이 적은 것처럼). 0 = 매끈
+                fps: 0,
+                // 자라는(입력 중인) 획에선 실선 끝(머리)에 붙어 있다가, 획이 완결되면 그 끝에서 출발해 왕복한다.
+                // 완결 시각은 단어(시드·순번·길이)별로 기억해 전면 재구성에도 이어진다 — resetStamps() 로 잊는다
+                waitLive: false,
             },
         },
 
@@ -138,6 +167,20 @@ export function createTrail(opts = {}) {
             ringWidth: 0.6,
             // 윤곽선·halo 밀도장에 orb 를 원으로 더하는 세기 (0 = 끔). outline.th 보다 크면 윤곽이 orb 를 감싸며 부풀어 나온다
             bulge: 0,
+            // 'disc' = 원 + hatch flow field (예전) / 'fan' = 부채 — 실선 방향 밑변에서 바깥쪽으로 살이 펼쳐진다.
+            // 사북(살이 모이는 점)은 orb 중심에서 실선 쪽으로 r. 살 길이 = r × len. 살은 차례로 펼쳐지고
+            // 아직 안 펼친 살은 맨 앞 살 아래 겹쳐 있다. 펼침 = main bead 와의 거리 near(다 펼침)~far(접힘), 최소 min
+            style: 'disc',
+            // 윤곽선·halo 는 살 실루엣을 따라간다(살 = 캡슐: 막대 반폭 + 자기 reach, 세기 bulge) — 매 프레임 펼침이 바뀌므로
+            // 단어 밀도 격자를 캐시해 두고 살만 더해 등고선을 다시 뽑는다. reach 가 짧을수록 윤곽이 살에 바싹 붙는다
+            // (outline.reach 처럼 길면 살 꼬리끼리 더해져 부채 전체가 둥근 덩어리로 감싸인다). budget = 한 프레임에 다시 뽑는 단어 수
+            fan: { rays: 13, width: 2, len: 2, near: 40, far: 320, min: 0.06, cap: 'butt', reach: 8, budget: 2,
+                // 중심 쪽 진하게 — 살마다 중심에서 radial gradient: 0 = fill 에 tint 를 amount 만큼 섞은 색 → extent(살 길이 비율) = fill
+                heart: { on: false, tint: 'rgb(200, 40, 10)', amount: 0.5, extent: 0.8 } },
+            // 가시 — plan[j].orbs[k].spikes = { n, len } 가 있는 orb 의 반대편, 실선 옆구리에서 성게 가시가 터져 나온다.
+            // spread = 퍼지는 반각(rad), depth = 가시 사이 골짜기 깊이(len 비율), jitter = 각도·길이 불규칙(0~1).
+            // 색은 spineCasing 이 켜져 있으면 그걸 따라 실선과 한 몸으로, 아니면 fill/border
+            spike: { on: false, spread: 1.35, depth: 0.16, jitter: 0.7, fill: 'rgb(255, 255, 255)', border: 'rgb(0, 0, 0)', borderWidth: 1 },
             flow: {
                 cell: 2.6, // 대시 격자 간격(px) — 작을수록 촘촘
                 dash: 2.2, // 대시 길이(px)
@@ -159,6 +202,9 @@ export function createTrail(opts = {}) {
         // 잉크 (Canvas2D 레이어)
         lineWidth: 0.5,
         baseStyle: 'rgb(0, 0, 0)',
+        // 실선을 테두리 있는 띠로 — 테두리 색(border)으로 width + 2·borderWidth 를 먼저 긋고 그 위에 fill 로 width.
+        // on 이면 baseStyle·lineWidth 대신. 자기 교차는 한 띠로 이어진다(검정을 다 긋고 흰색을 다 긋는다)
+        spineCasing: { on: false, width: 2.5, borderWidth: 1, fill: 'rgb(255, 255, 255)', border: 'rgb(0, 0, 0)' },
         companionStyle: 'rgb(0, 0, 0)',
         companionDash: [3, 4],
         arrowSize: 7, // 0 = 화살촉 없음
@@ -185,7 +231,23 @@ export function createTrail(opts = {}) {
             anim: { on: false, speed: 450 }, // px/s
             // 자라는 중에도 interval(ms)마다 윤곽선을 다시 뽑아 실선과 **같이** 자라게 한다. 켜면 anim 은 안 쓴다
             live: { on: false, interval: 60 },
+            // 선 대신 바깥으로 옅어지는 띠 — 윤곽에서 edge 불투명도로 시작해 width px 바깥에서 0.
+            // 넓은 선부터 좁은 선까지 steps 겹을 쌓고 안쪽(윤곽 안)은 지운다. 켜면 style/width/dash 는 안 쓴다
+            glow: { on: false, color: 'rgb(120, 190, 180)', width: 14, edge: 0.9, steps: 8 },
+            // 스티플 — 그라데이션을 점 밀도로. 화면 고정 지터 격자(cell px, 원점 halo.ox/oy)의 후보마다 윤곽까지 거리 d 를 재서
+            // 확률 edge·(1 − d/width)^gamma 로 남긴다. 점 = 타원(반지름 size, 장단비 stretch, 회전 무작위). glow 보다 우선.
+            // 격자가 화면에 고정이라 윤곽이 안 바뀐 곳의 점은 그대로다(부채가 움직이는 자리만 바뀐다)
+            // 윤곽이 계속 바뀌면(부채) 점은 한 그리기에 한 획, 같은 획은 interval ms 에 한 번만 다시 만든다
+            // px > 0 = 점을 그 CSS px 크기 픽셀로(알파 이진화 + nearest). 0 = 화면 해상도 그대로 매끈하게.
+            // gap = 띠를 윤곽에서 바깥으로 이만큼(px) 띄운다 — 띠 두께(width)는 그대로, 시작점만 밀린다
+            stipple: { on: false, color: 'rgb(120, 190, 180)', width: 18, gap: 0, edge: 1, gamma: 1.6, cell: 2.6, size: [0.5, 1.5], stretch: [1, 1.9], interval: 100, px: 0 },
         },
+
+        // 바탕 채움 — 맨 아래(underlay, halo 보다 아래). 윤곽선을 pad px 만큼 바깥으로 불린 모양을 fill 로 꽉 채운다
+        // (안쪽 구멍까지). pad null = 가장 넓은 윤곽 — 스티플이면 gap + width, glow 면 width, 아니면 0
+        // shape 'halo' = 윤곽 대신 halo 칸 모양 그대로(pad 무시). offset = [dx, dy] px 만큼 어긋나게 — 그림자처럼 뒤로 비친다
+        // gradient = halo.gradient 와 같은 꼴 — 주면 fill 대신 칸마다 그 그라데이션(shape 'halo' 일 때)
+        base: { on: false, fill: 'rgb(255, 255, 255)', pad: null, shape: 'outline', offset: [0, 0], gradient: null },
 
         // 픽셀 블록 — 윤곽선과 같은 밀도장을 화면 고정 격자(cell px, 원점 ox/oy)로 재서 넘는 칸을 칠한다.
         // goo 아래(underlay, orb 보다 아래)에 깔린다. reach/th 가 null 이면 outline 의 값.
@@ -197,9 +259,15 @@ export function createTrail(opts = {}) {
             th: null,
             fill: 'rgb(214, 212, 208)',
             opacity: 1,
+            // 외곽선 — 블록 덩어리(구운 것 + 자라는 것 + 부채 칸) 바깥에 width px 테두리
+            edge: { on: false, color: 'rgb(76, 159, 76)', width: 1.5 },
             ox: 0,
             oy: 0,
             interval: 60,
+            // linear gradient — on 이면 fill 대신. angle = 도(0 = 왼→오, 90 = 위→아래), stops = [[위치 0~1, 색], …]
+            // whole false = 칸마다 같은 그라데이션(칸 크기 타일 패턴, 원점 ox/oy) / true = 단어(획)마다 블록 전체 범위에 하나
+            // perSyl: whole 이 아닐 때 plan[j].haloAngle(도) 이 있으면 칸마다 가장 가까운 실선 점의 구간 각도로
+            gradient: { on: false, whole: false, perSyl: false, angle: 90, stops: [[0, 'rgb(214, 212, 208)'], [1, 'rgb(180, 178, 172)']] },
         },
 
         // goo — 밀도장. 세 값이 서로 독립적이다.
@@ -224,6 +292,9 @@ export function createTrail(opts = {}) {
             // 픽셀화 — 밀도장을 이 칸(CSS px)마다 한 번만 읽어 칸 단위로 칠한다. 0 = 끔(매끈한 metaball).
             // 격자 원점은 halo.ox/oy 와 같다 (블록과 칸이 맞물린다)
             pixel: 0,
+            // [lo, hi] 로 주면 칸 크기가 block(px) 블록마다 lo~hi 정수 중 하나 — scale(1/px) 노이즈로 이웃 블록끼리 비슷하게,
+            // scale 0 이면 블록마다 따로. block 은 lo~hi 의 공배수로 두면 칸이 블록 경계에 딱 맞는다(1~3 → 6·12·18)
+            pixelVar: { block: 12, scale: 0.02 },
             // 결 — 밀도 등고선(= 획과 나란한 띠)마다 밀도를 깎아 덩어리를 가닥으로 가른다. amount 0 = 끔.
             //   freq  밀도 1 당 띠 개수 / warp 노이즈로 띠를 흔드는 양(띠 단위) / scale 노이즈 주파수(1/px)
             //   width 띠에서 깎이는 폭 0~1 (클수록 가닥이 가늘다)
@@ -342,10 +413,14 @@ export function createTrail(opts = {}) {
 
     const ink2d = document.createElement('canvas'); // 누적 잉크 (안 지움)
     const ictx = ink2d.getContext('2d');
+    const glow2d = document.createElement('canvas'); // 윤곽 띠 한 장 (그린 뒤 윤곽 안을 지우고 옮긴다)
+    const gctx = glow2d.getContext('2d');
     const halo2d = document.createElement('canvas'); // 구운 획의 픽셀 블록 누적 (안 지움)
     const hctx = halo2d.getContext('2d');
     const haloTmp = document.createElement('canvas'); // 구운 것 + 자라는 것을 한 장으로 (opacity 를 한 번만 먹이려고)
     const tctx = haloTmp.getContext('2d');
+    const edge2d = document.createElement('canvas'); // halo 외곽선용 — 블록 모양을 edge 색으로 물들인 한 장
+    const ectx = edge2d.getContext('2d');
     const octx = overlay.getContext('2d');
     const uctx = underlay.getContext('2d'); // orb 는 굽지 않는다 — 매 프레임 다시 그린다
 
@@ -359,7 +434,7 @@ export function createTrail(opts = {}) {
         // 되고, drawImage 가 매 프레임 InvalidStateError 를 던져 프레임 루프가 영구히 죽는다.
         W = Math.max(1, window.innerWidth);
         H = Math.max(1, window.innerHeight);
-        for (const cv of [glCanvas, overlay, ink2d, underlay, halo2d, haloTmp]) {
+        for (const cv of [glCanvas, overlay, ink2d, underlay, halo2d, haloTmp, glow2d, edge2d]) {
             cv.width = Math.round(W * dpr);
             cv.height = Math.round(H * dpr);
         }
@@ -367,7 +442,7 @@ export function createTrail(opts = {}) {
             cv.style.width = W + 'px';
             cv.style.height = H + 'px';
         }
-        for (const c of [ictx, octx, uctx, hctx, tctx]) c.setTransform(dpr, 0, 0, dpr, 0, 0);
+        for (const c of [ictx, octx, uctx, hctx, tctx, gctx, ectx]) c.setTransform(dpr, 0, 0, dpr, 0, 0);
         field.resize(W, H, Math.round(W * dpr * CFG.goo.fieldScale), Math.round(H * dpr * CFG.goo.fieldScale));
         growth.resize(W, H, Math.round(W * dpr * CFG.grow.scale), Math.round(H * dpr * CFG.grow.scale));
         particles.resize(W, H);
@@ -425,13 +500,335 @@ export function createTrail(opts = {}) {
         c.fill();
     }
 
+    // 윤곽선 Path2D — stroke.outline 이 바뀔 때만 다시 만든다 (부채 모드에선 매 프레임 여러 번 긋는다)
+    function outlinePath(stroke) {
+        if (!stroke?.outline?.length) return null;
+        if (stroke._olSrc === stroke.outline) return stroke._olPath;
+        const p = new Path2D();
+        for (const poly of stroke.outline) {
+            if (poly.length < 2) continue;
+            p.moveTo(poly[0].x, poly[0].y);
+            for (let i = 1; i < poly.length; i++) p.lineTo(poly[i].x, poly[i].y);
+        }
+        stroke._olSrc = stroke.outline;
+        stroke._olPath = p;
+        return p;
+    }
+
+    // 바탕 채움 (CFG.base) — 윤곽 폴리곤을 하나씩 채우고(구멍도 메운다) 2·pad 굵기로 그어 바깥으로 불린다
+    function basePad() {
+        const B = CFG.base;
+        if (B.pad != null) return B.pad;
+        const O = CFG.outline;
+        if (O.stipple?.on) return (O.stipple.gap ?? 0) + O.stipple.width;
+        if (O.glow?.on) return O.glow.width;
+        return 0;
+    }
+    function drawBase(c, stroke) {
+        const [dx, dy] = CFG.base.offset ?? [0, 0];
+        if (CFG.base.shape === 'halo') {
+            const cells = stroke?.halo;
+            if (!cells?.length) return;
+            const { cell, ox, oy } = CFG.halo;
+            const BG = CFG.base.gradient;
+            c.save();
+            c.translate(dx, dy); // 패턴도 칸과 같이 밀린다
+            c.fillStyle = BG?.on ? haloFill(c, null, BG.angle ?? 90, null, BG) : CFG.base.fill;
+            c.beginPath();
+            for (let i = 0; i < cells.length; i += 2) c.rect(ox + cells[i] * cell, oy + cells[i + 1] * cell, cell, cell);
+            c.fill();
+            c.restore();
+            return;
+        }
+        if (!stroke?.outline?.length) return;
+        if (stroke._baseSrc !== stroke.outline) {
+            stroke._baseSrc = stroke.outline;
+            stroke._basePaths = stroke.outline
+                .filter(poly => poly.length > 2)
+                .map(poly => {
+                    const p = new Path2D();
+                    p.moveTo(poly[0].x, poly[0].y);
+                    for (let i = 1; i < poly.length; i++) p.lineTo(poly[i].x, poly[i].y);
+                    p.closePath();
+                    return p;
+                });
+        }
+        const pad = basePad();
+        c.save();
+        c.translate(dx, dy);
+        c.fillStyle = c.strokeStyle = CFG.base.fill;
+        c.lineJoin = 'round';
+        c.lineWidth = 2 * pad;
+        for (const p of stroke._basePaths) {
+            c.fill(p);
+            if (pad > 0) c.stroke(p);
+        }
+        c.restore();
+    }
+
+    // 스티플 점 — 윤곽 세그먼트마다 주변 격자 칸까지 최단거리를 재고, 칸마다 해시로 지터·생존·크기·회전을 정한다
+    // (같은 칸 = 늘 같은 점)
+    const hashCell = (ix, iy, k) => {
+        let h = Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iy, 0x165667b1) ^ Math.imul(k + 1, 0x9e3779b9);
+        h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+        h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+        return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+    };
+    // 획마다 점을 자기 bbox 크기 캔버스에 한 번 찍어 두고(stroke._st) 매 프레임엔 붙이기만 한다.
+    // Path2D·ellipse 는 수천 개면 수십 ms 라 못 쓴다 — 점 = 원 두 개를 회전 방향으로 엇갈려 겹친 콩 모양(arc 는 빠르다)
+    // 점 하나 — 칸 (ix, iy) 안 지터 위치에 원 두 개를 회전 방향으로 엇갈려 겹친 콩 모양. salt 로 같은 칸의 다른 변형
+    function stippleDot(x, ox, oy, ix, iy, S, salt) {
+        const c = S.cell;
+        const cx = ox + (ix + hashCell(ix, iy, 1 + salt)) * c,
+            cy = oy + (iy + hashCell(ix, iy, 2 + salt)) * c;
+        const r = S.size[0] + (S.size[1] - S.size[0]) * hashCell(ix, iy, 3 + salt);
+        const e = S.stretch[0] + (S.stretch[1] - S.stretch[0]) * hashCell(ix, iy, 4 + salt);
+        const rot = hashCell(ix, iy, 5 + salt) * Math.PI;
+        const ex = Math.cos(rot) * (e - 1) * r * 0.5,
+            ey = Math.sin(rot) * (e - 1) * r * 0.5;
+        x.moveTo(cx + ex + r, cy + ey);
+        x.arc(cx + ex, cy + ey, r, 0, Math.PI * 2);
+        if (e > 1.05) {
+            x.moveTo(cx - ex + r, cy - ey);
+            x.arc(cx - ex, cy - ey, r, 0, Math.PI * 2);
+        }
+    }
+    // 알파 이진화 — 가장자리 반투명 픽셀을 nearest 로 키우면 흐린 블록이 된다
+    function binarizeAlpha(x, cv) {
+        const img = x.getImageData(0, 0, cv.width, cv.height);
+        const a = img.data;
+        for (let k = 3; k < a.length; k += 4) a[k] = a[k] >= 110 ? 255 : 0;
+        x.putImageData(img, 0, 0);
+    }
+
+    function buildStipple(stroke) {
+        const S = CFG.outline.stipple;
+        const gap = S.gap ?? 0;
+        const c = S.cell,
+            w = S.width + gap, // 거리 격자가 덮는 범위 = 띄움 + 띠 두께
+            ox = CFG.halo.ox ?? 0,
+            oy = CFG.halo.oy ?? 0;
+        let x0 = Infinity,
+            y0 = Infinity,
+            x1 = -Infinity,
+            y1 = -Infinity;
+        for (const poly of stroke.outline)
+            for (const q of poly) {
+                if (q.x < x0) x0 = q.x;
+                if (q.x > x1) x1 = q.x;
+                if (q.y < y0) y0 = q.y;
+                if (q.y > y1) y1 = q.y;
+            }
+        const gx0 = Math.floor((x0 - w - ox) / c),
+            gy0 = Math.floor((y0 - w - oy) / c);
+        const nx = Math.floor((x1 + w - ox) / c) - gx0 + 1,
+            ny = Math.floor((y1 + w - oy) / c) - gy0 + 1;
+        if (nx * ny > 4e6) return;
+        // 칸마다 윤곽까지 최단거리
+        const dist = new Float32Array(nx * ny).fill(w);
+        for (const poly of stroke.outline)
+            for (let i = 1; i < poly.length; i++) {
+                const a = poly[i - 1],
+                    b = poly[i];
+                const i0 = Math.max(0, Math.floor((Math.min(a.x, b.x) - w - ox) / c) - gx0),
+                    i1 = Math.min(nx - 1, Math.floor((Math.max(a.x, b.x) + w - ox) / c) - gx0),
+                    j0 = Math.max(0, Math.floor((Math.min(a.y, b.y) - w - oy) / c) - gy0),
+                    j1 = Math.min(ny - 1, Math.floor((Math.max(a.y, b.y) + w - oy) / c) - gy0);
+                const bx = b.x - a.x,
+                    by = b.y - a.y,
+                    bb = bx * bx + by * by || 1e-9;
+                for (let j = j0; j <= j1; j++) {
+                    const py = oy + (gy0 + j + 0.5) * c - a.y;
+                    for (let i = i0; i <= i1; i++) {
+                        const px = ox + (gx0 + i + 0.5) * c - a.x;
+                        const h = Math.max(0, Math.min(1, (px * bx + py * by) / bb));
+                        const dx = px - bx * h,
+                            dy = py - by * h;
+                        const d2 = dx * dx + dy * dy;
+                        const k = j * nx + i;
+                        if (d2 < dist[k] * dist[k]) dist[k] = Math.sqrt(d2);
+                    }
+                }
+            }
+        // 칸 중심이 윤곽 안인지 — 행마다 윤곽선과의 교점을 모아 evenodd 로 칠한다(스캔라인). 안쪽 칸엔 점을 안 둔다
+        // (점을 지우개로 자르지 않고 통째로 빼야 반쪽 점이 안 생긴다)
+        const inside = new Uint8Array(nx * ny);
+        const cross = Array.from({ length: ny }, () => []);
+        for (const poly of stroke.outline)
+            for (let i = 1; i < poly.length; i++) {
+                const a = poly[i - 1],
+                    b = poly[i];
+                if (a.y === b.y) continue;
+                const lo = Math.min(a.y, b.y),
+                    hi = Math.max(a.y, b.y);
+                const j0 = Math.max(0, Math.ceil((lo - oy) / c - 0.5) - gy0),
+                    j1 = Math.min(ny - 1, Math.ceil((hi - oy) / c - 0.5) - gy0 - 1);
+                for (let j = j0; j <= j1; j++) {
+                    const y = oy + (gy0 + j + 0.5) * c;
+                    if (y < lo || y >= hi) continue;
+                    cross[j].push(a.x + ((y - a.y) / (b.y - a.y)) * (b.x - a.x));
+                }
+            }
+        for (let j = 0; j < ny; j++) {
+            const xs = cross[j].sort((p, q) => p - q);
+            for (let k = 0; k + 1 < xs.length; k += 2) {
+                const i0 = Math.max(0, Math.ceil((xs[k] - ox) / c - 0.5) - gx0),
+                    i1 = Math.min(nx - 1, Math.floor((xs[k + 1] - ox) / c - 0.5) - gx0);
+                for (let i = i0; i <= i1; i++) inside[j * nx + i] = 1;
+            }
+        }
+        // 캔버스 = 격자 범위 (+ 점 반지름 여유). px > 0 이면 CSS px 당 1/px 해상도로 찍고 알파를 이진화해
+        // nearest 로 키운다 — 점이 또렷한 픽셀 덩어리가 된다. 원점은 px 배수로 맞춰 화면 픽셀 격자와 어긋나지 않게
+        const pad = S.size[1] * S.stretch[1] + 1;
+        const px = S.px > 0 ? S.px : 0;
+        const snap = v => (px ? Math.floor(v / px) * px : v);
+        const X = snap(ox + gx0 * c - pad),
+            Y = snap(oy + gy0 * c - pad);
+        const cw = Math.ceil((nx * c + pad * 2) / (px || 1)) * (px || 1),
+            ch = Math.ceil((ny * c + pad * 2) / (px || 1)) * (px || 1);
+        const res = px ? 1 / px : dpr;
+        const st = stroke._st ?? { cv: document.createElement('canvas') };
+        st.cv.width = Math.max(1, Math.round(cw * res));
+        st.cv.height = Math.max(1, Math.round(ch * res));
+        const x = st.cv.getContext('2d', { willReadFrequently: !!px });
+        x.setTransform(res, 0, 0, res, -X * res, -Y * res);
+        x.fillStyle = S.color;
+        x.beginPath();
+        for (let j = 0; j < ny; j++)
+            for (let i = 0; i < nx; i++) {
+                const d = dist[j * nx + i];
+                if (d >= w || d < gap || inside[j * nx + i]) continue;
+                const ix = gx0 + i,
+                    iy = gy0 + j;
+                if (hashCell(ix, iy, 0) >= S.edge * Math.pow(1 - (d - gap) / S.width, S.gamma)) continue;
+                stippleDot(x, ox, oy, ix, iy, S, 0);
+            }
+        x.fill();
+        if (px) binarizeAlpha(x, st.cv);
+        Object.assign(st, { x: X, y: Y, w: cw, h: ch, src: stroke.outline, t: performance.now() });
+        stroke._st = st;
+    }
+
+    // 획들의 윤곽선을 한 번에. stipple 이면 점을, glow 면 띠를 glow2d 에 쌓고 → 모든 획의 윤곽 안을 지운 뒤 → c 로 옮긴다
+    // (한 장에서 지우므로 이웃 단어 안으로도 번지지 않는다)
+    function drawOutlines(c, list) {
+        const G = CFG.outline.glow;
+        const S = CFG.outline.stipple;
+        if (S?.on) {
+            if (!list.some(st => st?.outline?.length)) return;
+            gctx.clearRect(0, 0, W, H);
+            gctx.save();
+            gctx.imageSmoothingEnabled = !(S.px > 0);
+            // 윤곽이 바뀐 획도 한 번 그리기에 하나만, 같은 획은 interval ms 에 한 번만 점을 다시 찍는다
+            let budget = 1;
+            const now = performance.now();
+            for (const st of list) {
+                if (!st.outline?.length) continue;
+                const stale = st._st?.src !== st.outline;
+                if (!st._st || (stale && budget > 0 && now - st._st.t >= (S.interval ?? 100))) {
+                    if (st._st) budget--;
+                    buildStipple(st);
+                }
+                if (st._st) gctx.drawImage(st._st.cv, st._st.x, st._st.y, st._st.w, st._st.h);
+            }
+            // 윤곽 안은 지우지 않는다 — 안쪽 칸엔 애초에 점이 없다(buildStipple). 지우면 경계에 걸친 점이 반쪽이 된다
+            gctx.restore();
+            c.drawImage(glow2d, 0, 0, W, H);
+            return;
+        }
+        const paths = list.map(outlinePath).filter(Boolean);
+        if (!paths.length) return;
+        if (!G?.on) {
+            c.strokeStyle = CFG.outline.style;
+            c.lineWidth = CFG.outline.width;
+            c.lineJoin = 'round';
+            c.setLineDash(CFG.outline.dash || []);
+            for (const p of paths) c.stroke(p);
+            c.setLineDash([]);
+            return;
+        }
+        const n = Math.max(1, Math.round(G.steps));
+        // 겹 i(1..n) 는 윤곽에서 width·i/n 까지 덮는다. 거리 띠 k 의 목표 불투명도 O_k = edge·(1 − (k−1)/n) 가
+        // 되도록 바깥 겹부터: a_n = O_n, a_k = 1 − (1 − O_k)/(1 − O_{k+1})
+        const O = k => (k > n ? 0 : G.edge * (1 - (k - 1) / n));
+        gctx.clearRect(0, 0, W, H);
+        gctx.save();
+        gctx.strokeStyle = G.color;
+        gctx.lineJoin = 'round';
+        gctx.lineCap = 'round';
+        for (let k = n; k >= 1; k--) {
+            gctx.globalAlpha = 1 - (1 - O(k)) / (1 - O(k + 1));
+            gctx.lineWidth = (2 * G.width * k) / n;
+            for (const p of paths) gctx.stroke(p);
+        }
+        gctx.globalAlpha = 1;
+        gctx.globalCompositeOperation = 'destination-out';
+        for (const p of paths) gctx.fill(p, 'evenodd');
+        gctx.restore();
+        c.drawImage(glow2d, 0, 0, W, H);
+    }
+
+    // 성게 가시 (orb.spike) — orb 반대쪽 법선 방향 반구로 가시 n 개. 모양은 orb 시드의 순수 함수
+    function spikePaths(stroke, line) {
+        const S = CFG.orb.spike;
+        if (!S?.on || !CFG.orb.on) return [];
+        const out = [];
+        const sp = CFG.spacing;
+        for (const o of stroke.orbs) {
+            if (!o.spikes) continue;
+            const p = sample(Math.min(o.px, (line.length - 1) * sp) / sp, line);
+            if (!p) continue;
+            const side = o.off >= 0 ? -1 : 1; // orb 의 반대편
+            const a0 = Math.atan2(p.ny * side, p.nx * side);
+            const rng = makeRng(hashSeed(o.seed, 'spike'));
+            const n = Math.max(3, Math.round(o.spikes.n));
+            const L = o.spikes.len;
+            const step = (2 * S.spread) / n;
+            const path = new Path2D();
+            path.moveTo(p.x, p.y);
+            for (let i = 0; i < n; i++) {
+                const a = a0 - S.spread + step * (i + 0.5) + (rng() - 0.5) * step * S.jitter;
+                const r = L * (1 - S.jitter * 0.6 * rng()) * (rng() < 0.2 ? 1.35 : 1); // 이따금 유난히 긴 가시
+                const va = a0 - S.spread + step * i;
+                const vr = L * S.depth * (0.6 + 0.8 * rng());
+                path.lineTo(p.x + Math.cos(va) * vr, p.y + Math.sin(va) * vr);
+                path.lineTo(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r);
+            }
+            const va = a0 + S.spread;
+            path.lineTo(p.x + Math.cos(va) * L * S.depth, p.y + Math.sin(va) * L * S.depth);
+            path.closePath();
+            out.push(path);
+        }
+        return out;
+    }
+
     // withOutline: 윤곽선 애니메이션 중이면 false — 윤곽선은 advanceOutlineAnims 가 따로 긋는다
     function drawStrokeInk(c, stroke, withOutline = true) {
-        if (withOutline && stroke.outline)
-            for (const poly of stroke.outline)
-                strokePolyline(c, poly, CFG.outline.style, CFG.outline.width, CFG.outline.dash);
+        if (withOutline) drawOutlines(c, [stroke]);
         const line = stroke.spineInk ?? stroke.spine;
-        if (line) strokePolyline(c, line, CFG.baseStyle, CFG.lineWidth);
+        if (line) {
+            const K = CFG.spineCasing;
+            const spikes = spikePaths(stroke, line);
+            // 테두리를 전부 긋고 몸통을 전부 칠한다 — 가시와 실선이 이음매 없이 한 몸
+            const border = K?.on ? K.border : CFG.orb.spike.border;
+            const bw = K?.on ? K.borderWidth : CFG.orb.spike.borderWidth;
+            const fill = K?.on ? K.fill : CFG.orb.spike.fill;
+            if (spikes.length) {
+                c.lineJoin = 'miter';
+                c.miterLimit = 30;
+                c.fillStyle = c.strokeStyle = border;
+                c.lineWidth = 2 * bw;
+                for (const p of spikes) (c.fill(p), c.stroke(p));
+            }
+            if (K?.on) {
+                strokePolyline(c, line, K.border, K.width + 2 * K.borderWidth);
+                strokePolyline(c, line, K.fill, K.width);
+            } else strokePolyline(c, line, CFG.baseStyle, CFG.lineWidth);
+            if (spikes.length) {
+                c.fillStyle = fill;
+                for (const p of spikes) c.fill(p);
+            }
+        }
         for (const d of stroke.decor) {
             if (CFG.decorFill) {
                 c.fillStyle = CFG.decorFill;
@@ -454,6 +851,7 @@ export function createTrail(opts = {}) {
     // 진행 방향이 뒤집혀도 orb 의 대시는 방향 없는 선이라(π 대칭) 모양이 튀지 않는다.
     // 같은 프레임 안에서 orb 와 bead 그리기가 같이 쓰므로 프레임마다 한 번만 계산해 둔다.
     let frameNo = 0;
+    const mainEpochs = new Map(); // bead.main.waitLive — 단어 키 → 완결된 시각(초)
     function mainBead(stroke, time) {
         if (stroke._mainFrame === frameNo) return stroke._main;
         stroke._mainFrame = frameNo;
@@ -463,9 +861,32 @@ export function createTrail(opts = {}) {
         if (!M?.on || !line || line.length < 2) return null;
         const sp = CFG.spacing;
         const len = (line.length - 1) * sp;
+        if (M.waitLive) {
+            let pos = len;
+            if (stroke !== liveStroke) {
+                const idx = strokes.indexOf(stroke);
+                let occ = 0;
+                for (let i = 0; i < idx; i++) if (strokes[i].seed === stroke.seed) occ++;
+                const key = stroke.seed + '#' + occ + '#' + Math.round(len);
+                let t0 = mainEpochs.get(key);
+                if (t0 === undefined) {
+                    mainEpochs.set(key, (t0 = time));
+                    if (mainEpochs.size > 600) mainEpochs.delete(mainEpochs.keys().next().value);
+                }
+                const dt = M.fps > 0 ? Math.floor((time - t0) * M.fps) / M.fps : time - t0;
+                const u = (M.speed * dt + len) % (2 * len); // 끝(len)에서 출발해 되돌아온다
+                pos = u < len ? u : 2 * len - u;
+            }
+            const p = sample(pos / sp, line);
+            if (!p) return null;
+            stroke._main = { x: p.x, y: p.y, ang: p.angle };
+            return stroke._main;
+        }
         // 출발 위치를 획마다 다르게 — 여러 단어의 main bead 가 줄 맞춰 움직이지 않게
         const phase = makeRng(hashSeed(stroke.seed, 'main'))() * 2 * len;
-        const u = (M.speed * time + phase) % (2 * len);
+        // 획마다 박자를 어긋나게 — 여러 bead 가 같은 순간에 한꺼번에 뛰지 않게
+        const t = M.fps > 0 ? (Math.floor(time * M.fps + phase) - phase) / M.fps : time;
+        const u = (M.speed * t + phase) % (2 * len);
         const pos = u < len ? u : 2 * len - u;
         const p = sample(pos / sp, line);
         if (!p) return null;
@@ -491,10 +912,61 @@ export function createTrail(opts = {}) {
         return rgb;
     }
 
+    // main bead 스티플 — 같은 radial 알파(core 안 1, 밖 (1-s)^falloff)를 점 밀도로. bead 는 매 프레임 움직이므로
+    // 점 무늬를 frames 장 미리 찍어 두고(bead 국소 좌표) 붙이기만 한다. 장을 fps 로 바꿔 무늬가 끓게(frames 1 = 고정)
+    let mainSprites = null;
+    function mainStippleSprites() {
+        const M = CFG.bead.main;
+        const S = { ...CFG.outline.stipple, ...(M.stipple ?? {}) };
+        const key = JSON.stringify([M.radius, M.fill, M.glow, S, dpr]);
+        if (mainSprites?.key === key) return mainSprites;
+        const R = M.radius;
+        const core = Math.min(Math.max(M.glow?.core ?? 0.45, 0), 0.99);
+        const px = S.px > 0 ? S.px : 0;
+        const pad = S.size[1] * S.stretch[1] + 1;
+        const half = Math.ceil((R + pad) / (px || 1)) * (px || 1); // 스프라이트 반폭 (px 배수)
+        const res = px ? 1 / px : dpr;
+        const n = Math.max(-Math.ceil(R / S.cell), -1e4);
+        const frames = [];
+        for (let f = 0; f < Math.max(1, S.frames ?? 1); f++) {
+            const cv = document.createElement('canvas');
+            cv.width = cv.height = Math.max(1, Math.round(half * 2 * res));
+            const x = cv.getContext('2d', { willReadFrequently: !!px });
+            x.setTransform(res, 0, 0, res, half * res, half * res);
+            x.fillStyle = M.fill;
+            x.beginPath();
+            const salt = f * 7;
+            for (let iy = n - 1; iy <= -n; iy++)
+                for (let ix = n - 1; ix <= -n; ix++) {
+                    const d = Math.hypot((ix + 0.5) * S.cell, (iy + 0.5) * S.cell) / R;
+                    if (d >= 1) continue;
+                    const pr = d <= core ? 1 : Math.pow(1 - (d - core) / (1 - core), M.glow?.falloff ?? 1.4);
+                    if (hashCell(ix, iy, salt) >= (S.edge ?? 1) * pr) continue;
+                    stippleDot(x, 0, 0, ix, iy, S, salt);
+                }
+            x.fill();
+            if (px) binarizeAlpha(x, cv);
+            frames.push(cv);
+        }
+        mainSprites = { key, frames, half, px };
+        return mainSprites;
+    }
+
     function drawMainBead(c, stroke, time) {
         const m = mainBead(stroke, time);
         if (!m) return;
         const M = CFG.bead.main;
+        if (M.stipple?.on && M.fill) {
+            const sp = mainStippleSprites();
+            const fps = M.stipple.fps ?? 6;
+            const k = (Math.floor(time * fps) + (stroke.seed >>> 0)) % sp.frames.length;
+            const snap = v => (sp.px ? Math.round(v / sp.px) * sp.px : v);
+            const smooth = c.imageSmoothingEnabled;
+            c.imageSmoothingEnabled = !sp.px;
+            c.drawImage(sp.frames[k], snap(m.x) - sp.half, snap(m.y) - sp.half, sp.half * 2, sp.half * 2);
+            c.imageSmoothingEnabled = smooth;
+            return;
+        }
         if (M.glow?.on && M.fill) {
             // 배경 투명 radial gradient — core 까지 꽉 찬 색, 그 밖은 알파만 (1-s)^falloff 로 줄인다
             const [r, g, b] = rgbOf(M.fill);
@@ -557,8 +1029,170 @@ export function createTrail(opts = {}) {
     // 대시는 방향이 없다 → 각도 차이를 [-π/2, π/2] 로 접는다
     const halfTurn = a => a - Math.PI * Math.round(a / Math.PI);
 
+    // 부채 — 밑변(살 0) = 실선 뒤쪽, 살 i 는 바깥쪽으로 min(i·step, 펼침·π) 만큼 돈다.
+    // 프레임마다 한 번 계산해 두고 그리기·윤곽선·halo 가 같이 쓴다
+    const fanMode = () => CFG.orb.on && CFG.orb.style === 'fan';
+    function fanGeom(stroke, time) {
+        if (stroke._fanFrame === frameNo) return stroke._fan;
+        stroke._fanFrame = frameNo;
+        const O = CFG.orb;
+        const F = O.fan;
+        const m = mainBead(stroke, time);
+        const out = [];
+        for (const orb of stroke.orbs) {
+            if (orb.ang === undefined) continue;
+            const side = orb.off < 0 ? -1 : 1;
+            const nx = Math.cos(orb.ang + Math.PI / 2) * side,
+                ny = Math.sin(orb.ang + Math.PI / 2) * side;
+            const px = orb.x - nx * orb.r,
+                py = orb.y - ny * orb.r;
+            let open = F.min;
+            if (m) {
+                const d = Math.hypot(px - m.x, py - m.y);
+                const t = Math.min(1, Math.max(0, (F.far - d) / Math.max(F.far - F.near, 1e-6)));
+                open = F.min + (1 - F.min) * t * t * (3 - 2 * t);
+            }
+            const n = Math.max(2, Math.round(orb.rays ?? F.rays));
+            const step = Math.PI / (n - 1);
+            const L = orb.r * F.len;
+            const tips = [];
+            let last = -1;
+            for (let i = 0; i < n; i++) {
+                const th = Math.min(i * step, open * Math.PI);
+                if (th === last) continue; // 안 펼친 살은 맨 앞 살 아래 겹쳐 있다 — 한 번만
+                last = th;
+                const a = orb.ang + Math.PI - side * th;
+                tips.push({ x: px + Math.cos(a) * L, y: py + Math.sin(a) * L });
+            }
+            out.push({ px, py, L, open, tips, width: orb.width ?? F.width, fill: orb.fill ?? O.fill });
+        }
+        stroke._fan = out;
+        return out;
+    }
+
+    function drawFans(c, stroke, time) {
+        c.lineCap = CFG.orb.fan.cap;
+        for (const f of fanGeom(stroke, time)) {
+            c.beginPath();
+            for (const t of f.tips) {
+                c.moveTo(f.px, f.py);
+                c.lineTo(t.x, t.y);
+            }
+            c.strokeStyle = fanStroke(c, f);
+            c.lineWidth = f.width;
+            c.stroke();
+        }
+    }
+
+    // 살 색 — heart 가 켜져 있으면 중심에서 바깥으로 tint 섞인 색 → fill
+    function fanStroke(c, f) {
+        const K = CFG.orb.fan.heart;
+        if (!K?.on || !f.tips.length) return f.fill;
+        let R = 0;
+        for (const t of f.tips) R = Math.max(R, Math.hypot(t.x - f.px, t.y - f.py));
+        if (!(R > 0)) return f.fill;
+        const a = rgbOf(f.fill),
+            b = rgbOf(K.tint);
+        const m = a.map((v, i) => Math.round(v + (b[i] - v) * K.amount));
+        const g = c.createRadialGradient(f.px, f.py, 0, f.px, f.py, R);
+        g.addColorStop(0, `rgb(${m[0]}, ${m[1]}, ${m[2]})`);
+        g.addColorStop(Math.min(1, Math.max(0, K.extent)), f.fill);
+        return g;
+    }
+
+    // 살 → 밀도 캡슐 (윤곽선·halo 용)
+    function fanCaps(stroke, time) {
+        const caps = [];
+        for (const f of fanGeom(stroke, time))
+            for (const t of f.tips)
+                caps.push({ ax: f.px, ay: f.py, bx: t.x, by: t.y, r: f.width / 2, w: CFG.orb.bulge, reach: CFG.orb.fan.reach });
+        return caps;
+    }
+    // 다 펼쳤을 때 살이 닿는 범위 — 윤곽 격자가 덮어야 하는 곳
+    function fanExtent(stroke, reach) {
+        let b = null;
+        for (const orb of stroke.orbs) {
+            const L = orb.r * CFG.orb.fan.len + (orb.width ?? CFG.orb.fan.width) + reach + orb.r;
+            const e = [orb.x - L, orb.y - L, orb.x + L, orb.y + L];
+            b = b ? [Math.min(b[0], e[0]), Math.min(b[1], e[1]), Math.max(b[2], e[2]), Math.max(b[3], e[3])] : e;
+        }
+        return b;
+    }
+    const fanKey = stroke => (stroke._fan ?? []).map(f => Math.round(f.open * 240)).join(',');
+
+    // 부채가 있는 획의 윤곽선 — 격자는 캐시, 살만 더해 다시 뽑는다
+    function fanOutline(stroke, time) {
+        if (!stroke._grid) {
+            stroke._grid = densityGrid(outlineSegs(stroke), {
+                ...CFG.outline,
+                compCap: CFG.goo.compCap,
+                extra: fanExtent(stroke, CFG.outline.reach),
+            });
+        }
+        if (!stroke._grid) return;
+        fanGeom(stroke, time);
+        stroke._fanKey = fanKey(stroke);
+        stroke.outline = contourGrid(addCapsules(stroke._grid, fanCaps(stroke, time)), CFG.outline.th);
+    }
+
+    // 프레임마다: 펼침이 바뀐 획 중 오래 기다린 것부터 budget 개만 윤곽선을 다시 뽑는다
+    let fanCursor = 0;
+    function updateFanOutlines(time) {
+        if (!fanMode() || !CFG.outline.on) return;
+        const list = strokes.filter(s => s.orbs.length && s._grid);
+        if (liveStroke?.orbs.length && liveStroke._grid) list.push(liveStroke);
+        let done = 0;
+        for (let k = 0; k < list.length && done < CFG.orb.fan.budget; k++) {
+            const s = list[(fanCursor + k) % list.length];
+            fanGeom(s, time);
+            if (fanKey(s) === s._fanKey) continue;
+            fanOutline(s, time);
+            done++;
+        }
+        fanCursor = list.length ? (fanCursor + 1) % list.length : 0;
+    }
+
+    // halo — 부채가 덮는 칸만 매 프레임 덧칠한다 (기본 블록은 부채 없이 구워져 있다)
+    function drawFanHalo(c, stroke, time) {
+        if (!stroke.orbs.length) return;
+        const H = haloOpts();
+        if (!stroke._haloSample) stroke._haloSample = densitySampler(outlineSegs(stroke), H);
+        const caps = fanCaps(stroke, time);
+        if (!caps.length) return;
+        const { cell, ox, oy } = H;
+        let x0 = Infinity,
+            y0 = Infinity,
+            x1 = -Infinity,
+            y1 = -Infinity;
+        for (const k of caps) {
+            const pad = (k.reach ?? H.reach) + k.r;
+            x0 = Math.min(x0, k.ax - pad, k.bx - pad);
+            y0 = Math.min(y0, k.ay - pad, k.by - pad);
+            x1 = Math.max(x1, k.ax + pad, k.bx + pad);
+            y1 = Math.max(y1, k.ay + pad, k.by + pad);
+        }
+        const per = perSylHalo(stroke);
+        const xy = [];
+        if (!per) {
+            c.fillStyle = haloFill(c, cellsBox(stroke.halo)); // whole 이면 단어 블록 범위 그대로 — 부채 칸도 같은 그라데이션 위에
+            c.beginPath();
+        }
+        for (let gy = Math.floor((y0 - oy) / cell); gy <= Math.floor((y1 - oy) / cell); gy++)
+            for (let gx = Math.floor((x0 - ox) / cell); gx <= Math.floor((x1 - ox) / cell); gx++) {
+                const cx = ox + (gx + 0.5) * cell,
+                    cy = oy + (gy + 0.5) * cell;
+                if (stroke._haloSample(cx, cy) + capsuleDensity(caps, H.reach, cx, cy) > H.th) {
+                    if (per) xy.push(ox + gx * cell, oy + gy * cell);
+                    else c.rect(ox + gx * cell, oy + gy * cell, cell, cell);
+                }
+            }
+        if (per) fillGroups(c, stroke, groupCellsByAngle(stroke, xy));
+        else c.fill();
+    }
+
     function drawOrbs(c, stroke, time) {
         if (!CFG.orb.on || !stroke.orbs.length) return;
+        if (CFG.orb.style === 'fan') return drawFans(c, stroke, time);
         const O = CFG.orb;
         const F = O.flow;
         const m = mainBead(stroke, time);
@@ -624,8 +1258,11 @@ export function createTrail(opts = {}) {
         const sp = CFG.spacing;
         const len = (line.length - 1) * sp;
         const rng = makeRng(hashSeed(stroke.seed, 'bead'));
+        const kindRng = makeRng(hashSeed(stroke.seed, 'beadKind')); // glyph 종류 — 위치 난수열과 따로
         const shift = (B.speed * time) % Math.max(len, 1);
         let cursor = rnd2(rng, B.gap);
+        const C = B.cluster?.on ? B.cluster : null;
+        let left = C ? Math.round(rnd2(rng, C.size)) : 0; // 지금 무리에 남은 구슬 수
         c.fillStyle = B.fill;
         if (B.stroke) {
             c.strokeStyle = B.stroke;
@@ -638,13 +1275,149 @@ export function createTrail(opts = {}) {
             const fade = Math.min(1, pos / (r0 * 4), (len - pos) / (r0 * 4));
             const p = sample(pos / sp, line);
             if (p && fade > 0.05) {
-                c.beginPath();
-                c.arc(p.x, p.y, r0 * fade, 0, Math.PI * 2);
-                if (B.fill) c.fill();
-                if (B.stroke) c.stroke();
+                if (B.shape === 'star') {
+                    // * — 살 arms 개, 길이 r × scale, 진행 방향을 따라 돈다 (색 = fill)
+                    const S = B.star ?? {};
+                    const n = Math.max(2, Math.round(S.arms ?? 6));
+                    const R = r0 * fade * (S.scale ?? 1.6);
+                    c.beginPath();
+                    for (let k = 0; k < n; k++) {
+                        const a = p.angle + (S.turn ?? 0) + (k * Math.PI * 2) / n;
+                        c.moveTo(p.x, p.y);
+                        c.lineTo(p.x + Math.cos(a) * R, p.y + Math.sin(a) * R);
+                    }
+                    c.strokeStyle = B.fill;
+                    c.lineWidth = S.width ?? 1;
+                    c.lineCap = 'butt';
+                    c.stroke();
+                } else if (B.shape === 'glyph') {
+                    const G = B.glyph ?? {};
+                    const kinds = G.kinds?.length ? G.kinds : ['sparkle'];
+                    const kind = kinds[Math.floor(kindRng() * kinds.length) % kinds.length];
+                    drawBeadGlyph(c, kind, p.x, p.y, p.angle + (G.turn ?? 0), r0 * fade * (G.scale ?? 2.4));
+                    c.fillStyle = B.fill;
+                    c.fill();
+                } else {
+                    c.beginPath();
+                    c.arc(p.x, p.y, r0 * fade, 0, Math.PI * 2);
+                    if (B.fill) c.fill();
+                    if (B.stroke) c.stroke();
+                }
             }
-            cursor += rnd2(rng, B.gap);
+            if (C && --left > 0) cursor += rnd2(rng, C.gap);
+            else {
+                cursor += rnd2(rng, B.gap);
+                if (C) left = Math.round(rnd2(rng, C.size));
+            }
         }
+    }
+    // ───────────── 도장 찍는 bead (bead.walker) ─────────────
+    // 살 반쪽(골짜기 V → 끝 T)의 cubic 제어점 [V, C1, C2, T], 국소 (u = 살 방향, v = 옆). m 0 ✦ / m 1 ✤ 사이를 섞는다
+    const MORPH_A = [0.28, -0.28, 0.45, -0.12, 0.78, -0.03, 1, 0]; // ✦ 끝 뾰족, 가운데 뚱뚱 (오목한 변)
+    const MORPH_B = [0.05, -0.05, 0.3, -0.02, 1.0, -0.8, 1, 0]; // ✤ 가는 목 끝 둥근 풍선 (끝 접선이 수직)
+    function drawMorphGlyph(c, x, y, a, R, m) {
+        const q = MORPH_A.map((v, i) => v + (MORPH_B[i] - v) * m);
+        c.beginPath();
+        for (let k = 0; k < 4; k++) {
+            const t = a + (k * Math.PI) / 2;
+            const cs = Math.cos(t),
+                sn = Math.sin(t);
+            const P = (u, v) => [x + (cs * u - sn * v) * R, y + (sn * u + cs * v) * R];
+            if (k === 0) c.moveTo(...P(q[0], q[1]));
+            c.bezierCurveTo(...P(q[2], q[3]), ...P(q[4], q[5]), ...P(q[6], q[7]));
+            c.bezierCurveTo(...P(q[4], -q[5]), ...P(q[2], -q[3]), ...P(q[0], -q[1]));
+        }
+        c.closePath();
+    }
+    const stampEpochs = new Map(); // 단어 키 → 처음 보인 시각(초)
+    const walkerMorph = (W, seed, tau) => {
+        const ph = makeRng(hashSeed(seed, 'morph'))() * Math.PI * 2;
+        return 0.5 - 0.5 * Math.cos((tau / W.morph) * Math.PI * 2 + ph);
+    };
+    // key = 시드#같은 시드 순번#길이 — 글자가 바뀌면(시드·길이) 새 단어로 친다
+    function drawWalker(c, stroke, time, key) {
+        const W = CFG.bead.walker;
+        const line = stroke.spineInk ?? stroke.spine;
+        if (!line || line.length < 2) return;
+        const sp = CFG.spacing;
+        const len = (line.length - 1) * sp;
+        key += '#' + Math.round(len);
+        let epoch = stampEpochs.get(key);
+        if (epoch === undefined) {
+            stampEpochs.set(key, (epoch = time));
+            if (stampEpochs.size > 600) stampEpochs.delete(stampEpochs.keys().next().value);
+        }
+        const phase = makeRng(hashSeed(stroke.seed, 'walker'))() * 2 * len;
+        const { plan } = stroke;
+        const at = tau => {
+            const u = (W.speed * tau + phase) % (2 * len);
+            const pos = u < len ? u : 2 * len - u;
+            const p = sample(pos / sp, line);
+            if (!p) return null;
+            let j = 0;
+            while (j + 1 < plan.length && plan[j + 1].px0 <= pos) j++;
+            return { x: p.x, y: p.y, angle: p.angle, R: plan[j]?.walkerSize ?? W.size };
+        };
+        const turn = W.turn ?? 0;
+        c.fillStyle = W.fill;
+        // 발자국 — 지금 칸부터 거꾸로 max 개 모은다
+        const dt = W.gap / Math.max(W.speed, 1e-3);
+        const stamps = [];
+        for (let i = Math.floor(time / W.every), guard = 0; stamps.length < W.max && (i + 1) * W.every >= epoch && guard < 4000; i--, guard++) {
+            const rng = makeRng(hashSeed(stroke.seed, 'stamp', i));
+            if (rng() >= W.prob) continue;
+            const t0s = (i + rng() * 0.6) * W.every;
+            const n = Math.round(rnd2(rng, W.count));
+            for (let j = n - 1; j >= 0 && stamps.length < W.max; j--) {
+                const tau = t0s + j * dt;
+                if (tau <= time && tau >= epoch) stamps.push(tau);
+            }
+        }
+        for (const tau of stamps) {
+            const p = at(tau);
+            if (!p) continue;
+            drawMorphGlyph(c, p.x, p.y, p.angle + turn, p.R, walkerMorph(W, stroke.seed, tau));
+            c.fill();
+        }
+        const p = at(time);
+        if (p) {
+            drawMorphGlyph(c, p.x, p.y, p.angle + turn, p.R, walkerMorph(W, stroke.seed, time));
+            c.fill();
+        }
+    }
+
+    // 채운 기호 하나의 경로 (fill 은 호출하는 쪽). R = 중심에서 끝까지, a = 회전
+    function drawBeadGlyph(c, kind, x, y, a, R) {
+        c.beginPath();
+        for (let k = 0; k < 4; k++) {
+            const t = a + (k * Math.PI) / 2;
+            const cs = Math.cos(t),
+                sn = Math.sin(t);
+            // 국소 좌표 (u = 살 방향, v = 옆) → 화면
+            const P = (u, v) => [x + cs * u * R - sn * v * R, y + sn * u * R + cs * v * R];
+            if (kind === 'sparkle') {
+                // ✦ — 끝 4개를 안으로 오목한 곡선으로 잇는다
+                const t2 = t + Math.PI / 2;
+                const [ax, ay] = [x + cs * R, y + sn * R];
+                const [bx, by] = [x + Math.cos(t2) * R, y + Math.sin(t2) * R];
+                const mx = x + Math.cos(t + Math.PI / 4) * R * 0.12,
+                    my = y + Math.sin(t + Math.PI / 4) * R * 0.12;
+                if (k === 0) c.moveTo(ax, ay);
+                c.quadraticCurveTo(mx, my, bx, by);
+            } else if (kind === 'teardrop') {
+                // ✢ — 가운데가 뾰족하고 끝이 둥근 꽃잎
+                c.moveTo(x, y);
+                c.bezierCurveTo(...P(0.3, -0.36), ...P(1, -0.32), ...P(1, 0));
+                c.bezierCurveTo(...P(1, 0.32), ...P(0.3, 0.36), x, y);
+            } else {
+                // ✤ — 가는 목 끝에 둥근 풍선
+                c.moveTo(x, y);
+                c.bezierCurveTo(...P(0.25, -0.07), ...P(0.4, -0.34), ...P(0.7, -0.3));
+                c.bezierCurveTo(...P(1.02, -0.26), ...P(1.02, 0.26), ...P(0.7, 0.3));
+                c.bezierCurveTo(...P(0.4, 0.34), ...P(0.25, 0.07), x, y);
+            }
+        }
+        if (kind === 'sparkle') c.closePath();
     }
     const rnd2 = (rng, [a, b]) => a + rng() * (b - a);
 
@@ -667,16 +1440,19 @@ export function createTrail(opts = {}) {
         if (CFG.goo.companion) for (const poly of stroke.compPolys) push(poly, true);
         if (CFG.goo.spine && sp) push(sp, false);
         if (!out.length && sp) push(sp, false); // 둘 다 꺼둔 경우의 보험
-        if (CFG.orb.on && CFG.orb.bulge > 0)
+        if (CFG.orb.on && CFG.orb.bulge > 0 && CFG.orb.style !== 'fan')
             for (const o of stroke.orbs) out.push({ ax: o.x, ay: o.y, bx: o.x, by: o.y, r: o.r, w: CFG.orb.bulge });
         return out;
     }
 
     // 윤곽선은 구울 때 한 번만 계산한다 (단어당 수 ms). replay 도 이걸 거친다.
     function ensureOutline(stroke) {
-        if (CFG.outline.on && !stroke.outline)
-            stroke.outline = wordOutline(outlineSegs(stroke), { ...CFG.outline, compCap: CFG.goo.compCap });
+        if (!CFG.outline.on || stroke.outline) return;
+        if (fanMode() && stroke.orbs.length) return fanOutline(stroke, (performance.now() - t0) / 1000);
+        stroke.outline = wordOutline(outlineSegs(stroke), { ...CFG.outline, compCap: CFG.goo.compCap });
     }
+    // 부채 모드에선 윤곽선이 매 프레임 바뀔 수 있어 누적 잉크(ink2d)에 굽지 않고 오버레이에 매 프레임 긋는다
+    const outlineBaked = () => !(fanMode() && CFG.outline.on);
 
     // ───────────── 픽셀 블록 (halo) ─────────────
     const haloOpts = () => {
@@ -688,10 +1464,157 @@ export function createTrail(opts = {}) {
         if (CFG.halo.on && !stroke.halo) stroke.halo = wordCells(outlineSegs(stroke), haloOpts());
     }
 
-    function drawHalo(c, cells) {
+    // 칸 채우기 — 단색 또는 칸마다 반복되는 gradient 패턴 (설정이 바뀔 때만 타일을 다시 만든다)
+    const haloPats = new Map(); // 각도 → { key, tile, n }
+    // box = [x0, y0, x1, y1] (CSS px) — gradient.whole 이면 이 범위에 그라데이션 하나
+    // deg = 칸 패턴 각도 (없으면 gradient.angle)
+    // tone = { h, s, l } — stops 색을 HSL 로 이만큼 민다(도, %p, %p). 음절마다 미세한 톤 차이(plan[j].haloTone)
+    // G = 그라데이션 설정 (기본 halo.gradient — base.gradient 도 이걸 쓴다)
+    function haloFill(c, box, deg, tone = null, G = CFG.halo.gradient) {
+        const H = CFG.halo;
+        if (!G?.on) return H.fill;
+        if (deg == null) deg = G.angle ?? 90;
+        if (G.whole && box) {
+            const a = ((G.angle ?? 90) * Math.PI) / 180;
+            const cx = (box[0] + box[2]) / 2,
+                cy = (box[1] + box[3]) / 2;
+            const L = (Math.abs(Math.cos(a)) * (box[2] - box[0]) + Math.abs(Math.sin(a)) * (box[3] - box[1])) / 2;
+            const g = c.createLinearGradient(cx - Math.cos(a) * L, cy - Math.sin(a) * L, cx + Math.cos(a) * L, cy + Math.sin(a) * L);
+            for (const [p, col] of G.stops) g.addColorStop(p, col);
+            return g;
+        }
+        const key = JSON.stringify([H.cell, G, dpr]);
+        const pk = (G === H.gradient ? '' : 'g:' + JSON.stringify(G.stops) + '|') + (tone ? `${deg}|${tone.h ?? 0}|${tone.s ?? 0}|${tone.l ?? 0}` : deg);
+        let haloPat = haloPats.get(pk);
+        if (haloPat?.key !== key) {
+            const n = Math.max(1, Math.round(H.cell * dpr));
+            const tile = document.createElement('canvas');
+            tile.width = tile.height = n;
+            const t = tile.getContext('2d');
+            const a = (deg * Math.PI) / 180;
+            // 칸 중심을 지나는 방향 a 의 선분 — 양 끝이 칸 모서리에 닿도록 길이 = |cos|+|sin|
+            const L = ((Math.abs(Math.cos(a)) + Math.abs(Math.sin(a))) * n) / 2;
+            const g = t.createLinearGradient(n / 2 - Math.cos(a) * L, n / 2 - Math.sin(a) * L, n / 2 + Math.cos(a) * L, n / 2 + Math.sin(a) * L);
+            for (const [p, col] of G.stops) g.addColorStop(p, tone ? toneColor(col, tone) : col);
+            t.fillStyle = g;
+            t.fillRect(0, 0, n, n);
+            haloPat = { key, tile, n };
+            haloPats.set(pk, haloPat);
+        }
+        const pat = c.createPattern(haloPat.tile, 'repeat');
+        // 패턴은 컨텍스트 사용자 좌표(CSS px) 기준 — 타일(n 픽셀)을 칸 크기로 줄이고 격자 원점에 맞춘다
+        pat.setTransform(new DOMMatrix().translate(H.ox ?? 0, H.oy ?? 0).scale(H.cell / haloPat.n));
+        return pat;
+    }
+
+    // CSS 색 → HSL 로 tone 만큼 민 색
+    function toneColor(css, { h = 0, s = 0, l = 0 }) {
+        const [r, g, b] = rgbOf(css).map(v => v / 255);
+        const mx = Math.max(r, g, b),
+            mn = Math.min(r, g, b);
+        const L = (mx + mn) / 2;
+        const d = mx - mn;
+        let H = 0,
+            S = 0;
+        if (d > 0) {
+            S = d / (1 - Math.abs(2 * L - 1));
+            H = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+            H *= 60;
+        }
+        const cl = v => Math.min(100, Math.max(0, v));
+        return `hsl(${(((H + h) % 360) + 360) % 360}, ${cl(S * 100 + s)}%, ${cl(L * 100 + l)}%)`;
+    }
+
+    // 칸 목록의 범위 (CSS px)
+    function cellsBox(cells) {
+        if (!cells?.length) return null;
+        const { cell, ox, oy } = CFG.halo;
+        let x0 = Infinity,
+            y0 = Infinity,
+            x1 = -Infinity,
+            y1 = -Infinity;
+        for (let i = 0; i < cells.length; i += 2) {
+            if (cells[i] < x0) x0 = cells[i];
+            if (cells[i] > x1) x1 = cells[i];
+            if (cells[i + 1] < y0) y0 = cells[i + 1];
+            if (cells[i + 1] > y1) y1 = cells[i + 1];
+        }
+        return [ox + x0 * cell, oy + y0 * cell, ox + (x1 + 1) * cell, oy + (y1 + 1) * cell];
+    }
+
+    // 칸마다 방향 (gradient.perSyl) — 실선 점을 솎아 [x, y, 각도] 로 들고 있다가 칸 중심에서 가장 가까운 점의 구간 각도.
+    // 실선 index i ↔ 경로 px = i·spacing (orb 배치와 같은 대응)
+    const perSylHalo = stroke => {
+        const G = CFG.halo.gradient;
+        return G?.on && !G.whole && G.perSyl && stroke?.plan?.some(p => p.haloAngle != null || p.haloTone);
+    };
+    function sylAnglePts(stroke) {
+        const sp = stroke.spine;
+        if (!sp?.length) return null;
+        if (stroke._angPts?.n === sp.length && stroke._angPts.plan === stroke.plan) return stroke._angPts.pts;
+        const { plan } = stroke;
+        const pts = [];
+        let j = 0;
+        for (let i = 0; i < sp.length; i += 2) {
+            const px = i * CFG.spacing;
+            while (j + 1 < plan.length && plan[j + 1].px0 <= px) j++;
+            pts.push(sp[i].x, sp[i].y, j); // 구간(음절) 번호 — 각도·톤은 칠할 때 plan[j] 에서
+        }
+        stroke._angPts = { n: sp.length, plan: stroke.plan, pts };
+        return pts;
+    }
+    function sylAngleAt(pts, x, y) {
+        let best = Infinity,
+            a = pts[2];
+        for (let k = 0; k < pts.length; k += 3) {
+            const d = (pts[k] - x) ** 2 + (pts[k + 1] - y) ** 2;
+            if (d < best) {
+                best = d;
+                a = pts[k + 2];
+            }
+        }
+        return a;
+    }
+    // 칸 왼쪽 위 좌표들(xy, CSS px) → 음절별 묶음 Map(구간 번호 → [x, y, …])
+    function groupCellsByAngle(stroke, xy) {
+        const groups = new Map();
+        const pts = sylAnglePts(stroke);
+        const h = CFG.halo.cell / 2;
+        for (let i = 0; i < xy.length; i += 2) {
+            const a = pts ? sylAngleAt(pts, xy[i] + h, xy[i + 1] + h) : -1;
+            let g = groups.get(a);
+            if (!g) groups.set(a, (g = []));
+            g.push(xy[i], xy[i + 1]);
+        }
+        return groups;
+    }
+    function fillGroups(c, stroke, groups) {
+        const { cell } = CFG.halo;
+        for (const [j, g] of groups) {
+            const seg = stroke.plan[j];
+            c.fillStyle = haloFill(c, null, seg?.haloAngle ?? CFG.halo.gradient.angle ?? 90, seg?.haloTone ?? null);
+            c.beginPath();
+            for (let i = 0; i < g.length; i += 2) c.rect(g[i], g[i + 1], cell, cell);
+            c.fill();
+        }
+    }
+
+    function drawHalo(c, cells, stroke = null) {
         if (!cells?.length) return;
-        const { cell, ox, oy, fill } = CFG.halo;
-        c.fillStyle = fill;
+        const { cell, ox, oy } = CFG.halo;
+        if (perSylHalo(stroke)) {
+            // 묶음은 칸 목록이 바뀔 때만 (자라는 획은 interval 마다 새 목록)
+            if (stroke._haloGroups?.src !== cells || stroke._haloGroups.ox !== ox || stroke._haloGroups.oy !== oy) {
+                const xy = new Float32Array(cells.length);
+                for (let i = 0; i < cells.length; i += 2) {
+                    xy[i] = ox + cells[i] * cell;
+                    xy[i + 1] = oy + cells[i + 1] * cell;
+                }
+                stroke._haloGroups = { src: cells, ox, oy, groups: groupCellsByAngle(stroke, xy) };
+            }
+            return fillGroups(c, stroke, stroke._haloGroups.groups);
+        }
+        c.fillStyle = haloFill(c, cellsBox(cells));
         c.beginPath();
         for (let i = 0; i < cells.length; i += 2) c.rect(ox + cells[i] * cell, oy + cells[i + 1] * cell, cell, cell);
         c.fill();
@@ -704,7 +1627,11 @@ export function createTrail(opts = {}) {
         if (!wantOutline && !wantHalo) return;
         if (wantOutline && now - (stroke._outT ?? -Infinity) >= CFG.outline.live.interval) {
             stroke._outT = now;
-            stroke.outline = wordOutline(outlineSegs(stroke), { ...CFG.outline, compCap: CFG.goo.compCap });
+            if (fanMode() && stroke.orbs.length) {
+                stroke._grid = null; // 기하가 자랐다 — 격자부터 다시
+                stroke._haloSample = null;
+                fanOutline(stroke, (now - t0) / 1000);
+            } else stroke.outline = wordOutline(outlineSegs(stroke), { ...CFG.outline, compCap: CFG.goo.compCap });
         }
         if (wantHalo && now - (stroke._haloT ?? -Infinity) >= CFG.halo.interval) {
             stroke._haloT = now;
@@ -716,6 +1643,9 @@ export function createTrail(opts = {}) {
     function dropLiveCache(stroke) {
         stroke.outline = null;
         stroke.halo = null;
+        stroke._grid = null;
+        stroke._haloSample = null;
+        stroke._fanKey = null;
     }
 
     // ───────────── 윤곽선 애니메이션 — 획 시작점 근처에서 출발해 한 바퀴 돌아 닫힌다 ─────────────
@@ -746,7 +1676,7 @@ export function createTrail(opts = {}) {
 
     function startOutlineAnim(stroke) {
         const from = stroke.spine?.[0] ?? stroke.raw[0];
-        outlineAnims.push({ polys: stroke.outline.map(p => fromNearest(p, from)), drawn: 0 });
+        outlineAnims.push({ stroke, polys: stroke.outline.map(p => fromNearest(p, from)), drawn: 0 });
     }
 
     function strokePartial(c, P, L) {
@@ -763,7 +1693,7 @@ export function createTrail(opts = {}) {
     }
 
     function commitOutline(A) {
-        for (const P of A.polys) strokePolyline(ictx, P.pts, CFG.outline.style, CFG.outline.width, CFG.outline.dash);
+        drawOutlines(ictx, [A.stroke]);
     }
 
     // 프레임마다: 진행 → 부분 긋기(오버레이) → 다 돈 것은 ink2d 로 확정
@@ -786,10 +1716,10 @@ export function createTrail(opts = {}) {
     function bakeStroke(stroke) {
         ensureOutline(stroke);
         ensureHalo(stroke);
-        drawHalo(hctx, stroke.halo);
+        drawHalo(hctx, stroke.halo, stroke);
         // live 면 이미 실선과 같이 자라 왔다 — 한 바퀴 도는 애니메이션 없이 바로 확정
-        const animate = CFG.outline.anim?.on && !CFG.outline.live?.on && stroke.outline?.length > 0;
-        drawStrokeInk(ictx, stroke, !animate);
+        const animate = outlineBaked() && CFG.outline.anim?.on && !CFG.outline.live?.on && stroke.outline?.length > 0;
+        drawStrokeInk(ictx, stroke, !animate && outlineBaked());
         if (animate) startOutlineAnim(stroke);
         const segs = [];
         collectSegs(stroke, segs);
@@ -818,8 +1748,8 @@ export function createTrail(opts = {}) {
         for (const s of strokes) {
             ensureOutline(s);
             ensureHalo(s);
-            drawHalo(hctx, s.halo);
-            drawStrokeInk(ictx, s);
+            drawHalo(hctx, s.halo, s);
+            drawStrokeInk(ictx, s, outlineBaked());
             collectSegs(s, segs);
         }
         field.stamp('baked', new Float32Array(segs), segs.length / FLOATS_PER_SEG);
@@ -1171,6 +2101,7 @@ export function createTrail(opts = {}) {
                 growGain: CFG.grow.on ? CFG.grow.gain : 0,
                 growOpacity: CFG.grow.opacity,
                 pixel: CFG.goo.pixel ?? 0,
+                pixelVar: CFG.goo.pixelVar,
                 origin: [CFG.halo.ox ?? 0, CFG.halo.oy ?? 0],
                 grain: CFG.goo.grain,
             },
@@ -1201,36 +2132,72 @@ export function createTrail(opts = {}) {
         }
 
         frameNo++; // mainBead 캐시 무효화
+        updateFanOutlines(time);
 
         // ── 맨 아래 — orb. main bead 를 따라 움직이므로 매 프레임 전부 다시 칠한다
         // 그 아래 — 픽셀 블록 (구운 것 + 자라는 것)
-        if (CFG.orb.on || CFG.halo.on || underDirty) {
+        if (CFG.orb.on || CFG.halo.on || CFG.base?.on || underDirty) {
             uctx.clearRect(0, 0, W, H);
+            if (CFG.base?.on) {
+                for (const s of strokes) drawBase(uctx, s);
+                if (liveStroke) drawBase(uctx, liveStroke);
+            }
             if (CFG.halo.on) {
                 let src = halo2d;
-                if (liveStroke?.halo?.length) {
+                const fans = fanMode();
+                if (liveStroke?.halo?.length || fans) {
                     tctx.clearRect(0, 0, W, H);
                     tctx.drawImage(halo2d, 0, 0, W, H);
-                    drawHalo(tctx, liveStroke.halo);
+                    if (liveStroke) drawHalo(tctx, liveStroke.halo, liveStroke);
+                    if (fans) {
+                        for (const s of strokes) drawFanHalo(tctx, s, time);
+                        if (liveStroke) drawFanHalo(tctx, liveStroke, time);
+                    }
                     src = haloTmp;
                 }
                 uctx.globalAlpha = CFG.halo.opacity;
+                const E = CFG.halo.edge;
+                if (E?.on && E.width > 0) {
+                    // 외곽선 — 블록 모양을 edge 색으로 물들여 8 방향으로 width 만큼 밀어 깔고, 그 위에 블록
+                    ectx.clearRect(0, 0, W, H);
+                    ectx.drawImage(src, 0, 0, W, H);
+                    ectx.globalCompositeOperation = 'source-in';
+                    ectx.fillStyle = E.color;
+                    ectx.fillRect(0, 0, W, H);
+                    ectx.globalCompositeOperation = 'source-over';
+                    const w = E.width;
+                    for (const [dx, dy] of [[w, 0], [-w, 0], [0, w], [0, -w], [w, w], [w, -w], [-w, w], [-w, -w]])
+                        uctx.drawImage(edge2d, dx, dy, W, H);
+                }
                 uctx.drawImage(src, 0, 0, W, H);
                 uctx.globalAlpha = 1;
             }
             for (const s of strokes) drawOrbs(uctx, s, time);
             if (liveStroke) drawOrbs(uctx, liveStroke, time);
-            underDirty = CFG.orb.on || CFG.halo.on; // 끈 직후 한 번 더 지워 잔상을 없앤다
+            underDirty = CFG.orb.on || CFG.halo.on || !!CFG.base?.on; // 끈 직후 한 번 더 지워 잔상을 없앤다
         }
 
         // ── 위 레이어 — 얇은 크리스프 잉크
         octx.clearRect(0, 0, W, H);
+        // 부채 모드 — 윤곽선은 굽지 않고 매 프레임 (자라는 획까지 한 번에, 잉크 아래에)
+        if (!outlineBaked()) drawOutlines(octx, liveStroke ? [...strokes, liveStroke] : strokes);
         octx.drawImage(ink2d, 0, 0, W, H);
-        if (liveStroke) drawStrokeInk(octx, liveStroke);
+        if (liveStroke) drawStrokeInk(octx, liveStroke, outlineBaked());
         advanceOutlineAnims(dt);
         if (CFG.bead.on) {
             for (const s of strokes) drawBeads(octx, s, time);
             if (liveStroke) drawBeads(octx, liveStroke, time);
+        }
+        if (CFG.bead.walker?.on) {
+            const occ = new Map(); // 같은 단어가 여럿이면 순번으로 가른다
+            const keyOf = s => {
+                const n = occ.get(s.seed) ?? 0;
+                occ.set(s.seed, n + 1);
+                return s.seed + '#' + n;
+            };
+            for (const s of strokes) drawWalker(octx, s, time, keyOf(s));
+            // 자라는 획은 다 자란 뒤부터 (자라는 동안엔 길이가 계속 바뀐다)
+            if (liveStroke && (!growing || growing.i >= growing.pts.length - 1)) drawWalker(octx, liveStroke, time, keyOf(liveStroke));
         }
         if (CFG.bead.main?.on) {
             for (const s of strokes) drawMainBead(octx, s, time);
@@ -1275,6 +2242,7 @@ export function createTrail(opts = {}) {
         replay: replayAll,
         rebuild: resize,
         clear: () => (dropPending(), (strokes.length = 0), replayAll(), particles.reset()),
+        resetStamps: () => (stampEpochs.clear(), mainEpochs.clear()), // 도장 bead 발자국을 잊는다 (clear 는 전면 재구성에도 쓰여서 따로)
         save: savePNG,
         probe: (x, y) => field.probe(x, y),
         pstats: () => particles.stats(),

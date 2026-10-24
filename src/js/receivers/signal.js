@@ -229,13 +229,21 @@ const CYCLE_BLINK_MS = 1200; // 노랑(깜박임) 지속시간
 const CYCLE_FREEZE_MS = 3000; // 빨강(정지) 지속시간
 const CYCLE_TOTAL_MS = CYCLE_NORMAL_MS + CYCLE_BLINK_MS + CYCLE_FREEZE_MS;
 const CYCLE_PHASE_STEP_MS = 400; // 음절 인덱스당 사이클 시작 지연 — 신호가 순차적으로 번지는 느낌
-const CYCLE_BLINK_RATE_MS = 1200; // BLINK 구간 내 모노/원본 교차 반주기
+const CYCLE_BLINK_RATE_MS = 1200; // (예전) BLINK 구간 내 모노/원본 교차 반주기 — 셰이더는 이제 안 씀, 기록용
+// BLINK 시작부터 모노 도형을 보여 주는 시간 — 나머지(CYCLE_BLINK_MS − 이 값)는 원본으로 돌아왔다가 FREEZE.
+// 예전 `mod(cyclePhase, BLINK_RATE*2) < BLINK_RATE`가 NORMAL 5000·RATE 1200에서 우연히 내던
+// "모노 1.0초 → 원본 0.2초"를 그대로 옮긴 값. 기준점이 BLINK 시작이라 NORMAL 길이를 바꿔도 유지된다.
+const CYCLE_BLINK_MONO_MS = 1000;
 
-// 입력 없이 이만큼 지나면 렌더 루프를 아예 멈춘다(마지막 화면은 그대로 남는다).
-// TD Web Render TOP(CEF) 안에서는 이 루프가 도는 것만으로 브라우저 프로세스가 GPU를
-// 붙잡아 TouchDesigner 쪽 fps가 10~15까지 떨어졌다 — 멈추면 즉시 60으로 회복된다.
-// 입력(update)이 들어오면 _wake()가 되살린다.
+// 입력 없이 이만큼 지나면 프레임을 IDLE_FPS로 낮춘다(2026-10-17 — 예전엔 렌더 루프를 아예 멈췄다).
+// 멈추던 이유: TD Web Render TOP(CEF) 안에서는 이 루프가 도는 것만으로 브라우저 프로세스가 GPU를
+// 붙잡아 TouchDesigner 쪽 fps가 10~15까지 떨어졌다. 전시가 브라우저 단독이 된 뒤로는 멈출 필요가
+// 없어서, 사이클·CA가 계속 보이게 두고 GPU 부하만 줄인다. 입력이 들어오면 _wake()가 24fps로 되돌린다.
 const IDLE_PAUSE_MS = 30000;
+// 유휴 중 프레임 — 셰이더 비용이 프레임 수에 비례. 7인 이유: 60Hz에서 프레임이 150ms(9 vsync)마다
+// 떨어져 CA 스텝(STEP_INTERVAL 140ms)이 매 프레임 한 번 — 평소(24fps 스로틀 → 실제 50ms 간격,
+// 스텝도 150ms마다)와 CA 속도가 같다. 8로 하면 133ms라 스텝이 두 프레임에 한 번(267ms)으로 느려진다.
+const IDLE_FPS = 7;
 
 const PHASE_NORMAL = 0,
     PHASE_BLINK = 1,
@@ -245,6 +253,106 @@ const PHASE_NORMAL = 0,
 const MONO_LINE_THICKNESS_RATIO = 0.04; // 대각선/X 두께 / u_cellSize(MIN_DIST)
 const MONO_DOT_RADIUS_RATIO = 0.04; // BLANK 점 반경 / u_cellSize(MIN_DIST)
 const MONO_BORDER_THICKNESS_RATIO = 0.08; // 셀 테두리 두께 / u_cellSize(MIN_DIST)
+
+// BLINK 모노의 그림 방식 (2026-10-17) — 'ascii' = 고정 문자 격자(진짜 글리프), 'shape' = 예전 SDF 도형
+// (Voronoi 셀마다 . / \ X를 선으로 긋고 셀 테두리를 얹던 것. 위 MONO_* 비율은 그쪽 전용)
+const MONO_STYLE = 'ascii';
+// ascii: 단어 로컬 좌표를 [x, y] × u_cellSize(MIN_DIST) 칸으로 나눈다 — 셀 크기에 묶인 격자라 단어와 같이
+// 스크롤된다. 칸 중심 아래 site의 CA state가 글자 줄을, 그 셀의 크기가 줄 안의 글자를, CA 밝기
+// (brightness 1~2.5)가 굵기 레벨을 고른다.
+// 칸 중심이 site 가까이(ASCII_FILL)면 흰 글자, 바탕은 배경 그대로(투명 모드면 투명)
+const ASCII_PITCH = [1.0, 1.0]; // 칸 가로/세로 / u_cellSize — 모노스페이스 글자 비율(대략 1:1.7)
+// 칸 중심에서 가장 가까운 site까지 이 거리(× MIN_DIST) 안이면 글자를 찍는다. site 간격이 MIN_DIST라
+// 0.71(대각선 절반) 이상이면 안쪽은 빈틈이 없고, 키울수록 실루엣 바깥으로 한 칸씩 번진다
+const ASCII_FILL = 0.95;
+// 셀 크기(cellM, 0~1 — 아래 ASCII_GLYPHS 주석)가 이보다 작은 셀은 안 찍는다. 실루엣 맨 바깥 고리는 squircle
+// 박스가 거의 0이라 컬러 모드에선 실처럼 가는 점선인데, 거리 판정만 하면 온전한 글자로 나와 원판이 됐다.
+// 글자 고르기는 [ASCII_MIN_SIZE, 1] 구간을 글자 수로 나눠서 마지막 글자까지 다 쓴다
+const ASCII_MIN_SIZE = 0.2;
+// 글자 크기 [바깥, 안쪽] / 칸 — 셀 크기(cellM, ASCII_MIN_SIZE~1)를 따라 보간해서 칸 가운데 기준으로 줄인다.
+// 1이 칸을 꽉 채운 원래 크기 — 칸 하나 안에서 아틀라스를 읽는 구조라 1보다 크게는 못 키운다(옆 칸과 안 겹친다)
+const ASCII_GLYPH_SCALE = [0.45, 1.0];
+// 글자 고르기 비대칭 분할 [경계, 몫] — 셀 크기 경계~1 구간에 글자 줄의 앞쪽 '몫'만큼을 몰아 준다(나머지는
+// ASCII_MIN_SIZE~경계에). 균등 분할이면 큰 셀은 거의 다 0번 글자였다 — 크기 0.9 이상이 음절 셀의 약 10%뿐이고
+// 0.7~0.9는 2%도 안 돼서(squircle gain이 |g|≈0.3에서 계단처럼 꺾인다). [0.9, 0.5] = 0.9~1에 앞쪽 절반.
+// ⚠️ 정가운데는 박스 ×1.4가 1로 잘려 크기가 정확히 1인 고원이라, 아무리 쪼개도 그 셀들은 0번 글자다
+const ASCII_SPLIT = [0.9, 0.5];
+// 글자 고르는 기준 — 'distance' = 그 셀(site)이 음절 중심에서 얼마나 먼가(매끄럽게 변한다, 2026-10-17),
+// 'size' = 셀 크기 cellM + 위 ASCII_SPLIT(가운데 고원·|g|≈0.3 계단 때문에 덩어리지는 쪽).
+// 글자 크기(ASCII_GLYPH_SCALE)와 빼기(ASCII_MIN_SIZE)는 어느 쪽이든 셀 크기 그대로
+const ASCII_PICK = 'distance';
+// distance: 음절 박스 반폭/반높이로 정규화한 site 반경(radialWarp 뒤 — 보이는 셀은 대략 0~0.94, 중앙값 0.76)을
+// [시작, 끝]에서 0 → 1로 펴서 글자 줄을 고른다. 곡선 < 1이면 가운데 쪽 글자 변화가 촘촘해진다
+const ASCII_DIST_RANGE = [0.0, 0.95];
+const ASCII_DIST_CURVE = 1.0;
+// (처음안) state × 밝기 레벨 글자표 — 크기와 무관하게 상태마다 한 글자
+// const ASCII_GLYPHS = {
+//     [BLANK]: ['.', '.', '.'],
+//     [CHO]: ['/', '/', '/'],
+//     [JUNG]: ['\\', '\\', '\\'],
+//     [JONG]: ['X', 'X', 'X'],
+// };
+// state별 글자, 셀 크기 큰 순(왼쪽 = 가장 큰 셀). 크기 = squircle 축소 배율 Cx·Cy(가운데 1 → 가장자리 0)를
+// 셰이더 박스 클리핑과 같은 ×1.4 후 1로 자른 것의 기하평균 — 실루엣 가장자리로 갈수록 오른쪽 글자.
+// 같은 state 안에선 목표 셀 크기(STATE_SCALE)가 같아서 실제로 크기가 갈리는 건 이 squircle 축소뿐이다.
+// 개수는 state마다 달라도 된다(최대 ASCII_MAX_GLYPHS)
+// (밀도 정렬 전) 직접 정한 순서
+// const ASCII_GLYPHS = {
+//     [CHO]: [...'$&%#+÷-'],
+//     [JUNG]: [...'9876543210'],
+//     [JONG]: [...'WRBNSXCIL'], // WRB NSX CIL
+//     [BLANK]: [...'?!:·'],
+// };
+// 잉크 많은 순(2026-10-17) — Zalando Sans Expanded 400, 120px로 그린 글자의 알파 합으로 정렬(숫자는 값과 무관).
+// 폰트·글자를 바꾸면 순서도 다시 잴 것. 잰 값: $4096 %3669 #3448 &3399 +1407 ÷1166 -497 /
+// 8 3557 9 3553 6 3550 5 3221 0 3083 2 3003 3 2949 4 2729 7 2061 1 1407 /
+// W4115 B3811 R3335 N3312 S3307 C2908 X2709 L1744 I1102 / ?1904 !960 :466 ·238
+const ASCII_GLYPHS = {
+    [CHO]: [...'$%#&+÷-'],
+    [JUNG]: [...'8965023471'],
+    [JONG]: [...'WBRNSCXLI'],
+    [BLANK]: [...'?!:·'],
+};
+const ASCII_MAX_GLYPHS = Math.max(...Object.values(ASCII_GLYPHS).map(g => g.length));
+// const ASCII_WEIGHT = [0, 0.05, 0.1]; // (Inconsolata 시절) 밝기 레벨별 획 덧칠 두께 / 칸 높이 — 폰트가 한 굵기라 stroke로
+// 굵기 레벨별 폰트 굵기(wght, 가는 → 굵은). Zalando Sans Expanded가 가변 폰트라 획 덧칠 대신 진짜 굵기로.
+// 어느 레벨을 쓸지는 ASCII_WEIGHT_BY
+const ASCII_FONT_WEIGHTS = [300, 400, 500, 600, 700];
+// 굵기 레벨을 고르는 기준 — 'pick' = 글자 고르기와 같은 값(ASCII_PICK의 gu: 안쪽 굵게 → 바깥 가늘게, 2026-10-17)
+// 'brightness' = CA 밝기(BLANK 이웃이 있는 활성 셀만 오른다 — 규칙6. 주변과 비교한 값이라 빈 구멍 가장자리만 굵어졌다)
+const ASCII_WEIGHT_BY = 'pick';
+// const ASCII_FONT = "'Inconsolata', ui-monospace, Menlo, monospace"; // (처음안) output.html은 assets.js가 Inconsolata를 싣는다
+// ASCII 아트 전용 폰트(2026-10-17) — 다른 화면 글자(Inconsolata/MonoplexKR)와 따로. 페이지마다 @font-face가
+// 있는 게 아니라서(index.html엔 없음) signal이 FontFace로 직접 싣는다(loadAsciiFont)
+const ASCII_FONT_FAMILY = 'Zalando Sans Expanded';
+const ASCII_FONT_FILE = 'fonts/ZalandoSansExpanded-VariableFont_wght.ttf'; // public/ 기준
+const ASCII_FONT = `'${ASCII_FONT_FAMILY}', sans-serif`;
+// 가장 넓은 글자가 칸 폭의 이 비율 안에 들어가도록 아틀라스 글자 크기를 줄인다 — 폭 넓은(expanded) 비례
+// 폰트라 칸(ASCII_PITCH 가로 0.6)에 그대로 넣으면 옆이 잘린다. 모든 글자에 같은 배율이라 크기 차이는 유지
+const ASCII_FONT_FIT = 1.1; // 0.92
+const ASCII_FONT_RATIO = 1.4; // 글자 크기 / 칸 높이 : 0.95
+// 그런지 displacement (실험, 2026-10-17) — 포토샵 Distort > Displace처럼 맵의 R/G 값(0.5 = 그대로)만큼
+// ASCII 모노를 읽는 좌표를 민다. 화면 좌표에 고정(레이어 전체에 거는 포토샵과 같은 쪽 — 글자가 스크롤돼도 맵은 제자리)
+// img: public/ 기준 경로. 없거나(null) 못 읽으면 buildGrungeCanvas()의 절차적 그런지(임시)를 쓴다.
+// 회색조 이미지면 R = G라 대각선으로만 밀린다 — 포토샵도 가로 = R, 세로 = G로 같다
+const ASCII_DISPLACE = {
+    on: true,
+    px: 0.2, // 0.2 / 최대 이동(CSS px) — 값이 평균에서 ±0.5 벗어나면 ±px. 사진 결이 잘아서 2.5면 글자가 부서졌다
+    tile: 256, // 절차적 임시 맵 한 장이 덮는 화면 크기(CSS px), 반복
+    img: 'imgs/grunge.jpg', // 회색조 콘크리트 사진(2917×2000, 이음새 없는 타일 아님)
+    imgScale: 0.5, // 이미지 1px = 화면 몇 CSS px — 이미지 비율 그대로 깐다. 화면보다 작으면 거울 반복(이음새가 안 튀게)
+    // 기준값 = 맵 평균(이미지가 읽힐 때 잰다) — 0.5로 두면 밝은 사진은 글자가 통째로 한쪽으로 밀린다.
+    // 회색조라 R = G여서 가로/세로가 같이 움직여 대각선으로만 휘므로, 세로(G)는 맵을 이만큼(uv) 비켜서 읽는다
+    gOffset: [0.37, 0.61],
+    // 컬러 모드(NORMAL/FREEZE, 그리고 MONO_STYLE 'shape')에도 같은 맵으로 — 최대 이동 CSS px, 0이면 끔(실험)
+    colorPx: 0.3,
+};
+// 글자 선명도 (2026-10-17) — 아틀라스(칸 64px)를 화면 12~24px로 줄여 부드럽게 읽어서 획 가장자리가 1~2px 흐렸다.
+// SHARP: 읽은 잉크를 0.5 근처에서 smoothstep으로 자르는 세기(0 = 그대로, 1 = 완전 이진 — 계단이 보인다)
+// LOD: 축소 단계(mip) 고를 때 미분에 곱하는 값 — 1보다 작으면 덜 흐린(큰) 단계를 읽는다(너무 작으면 반짝임)
+const ASCII_INK_SHARP = 0.3;
+const ASCII_INK_LOD = 0.7;
+const ASCII_TILE_H = 64; // 아틀라스 칸 높이(px) — 화면ㅇ에선 u_cellSize·DPR 정도로 줄여 쓰므로 넉넉히
 
 // 한 draw call(=단어 하나)에 실릴 수 있는 최대 음절 수 — 신호등 사이클 타이밍(u_sylPhaseStart[])
 // 셰이더 uniform 배열 정적 상한. 이 값을 넘는 음절은 항상 마지막 슬롯을 재사용함(clamp).
@@ -610,7 +718,16 @@ function syncWord(cache, wordId, wordItems, JAMO, sylSize) {
             // 순수 append — 새로 늘어난 음절만 이어붙임
             if (newCount > matchLen) {
                 for (let i = matchLen; i < newCount; i++)
-                    appendSyllable(entry, wordItems[i].syl, i, JAMO, sylSize, wordItems[i].w, wordItems[i].h, wordItems[i].x);
+                    appendSyllable(
+                        entry,
+                        wordItems[i].syl,
+                        i,
+                        JAMO,
+                        sylSize,
+                        wordItems[i].w,
+                        wordItems[i].h,
+                        wordItems[i].x,
+                    );
                 recomputeAdjacency(entry, sylSize);
             }
             return entry;
@@ -839,7 +956,12 @@ void main() {
 const fragSrc = `#version 300 es
 precision highp float;
 in vec2 v_local;
-uniform sampler2D u_data; // width=count, height=3 (row0: x,y,weight,cellCx / row1: r,g,b,cellCy / row2: state,-,-,-)
+uniform sampler2D u_data; // width=count, height=3 (row0: x,y,weight,cellCx / row1: r,g,b,cellCy / row2: state,brightness01,-,-)
+uniform sampler2D u_ascii; // ascii 모노 글자 아틀라스 — buildAsciiAtlas()
+uniform sampler2D u_grunge; // ascii 모노 displacement 맵 — ASCII_DISPLACE
+uniform vec2 u_grungeTile; // 맵 한 장이 덮는 화면 크기(CSS px)
+uniform vec2 u_grungeMid;  // 이동 0인 값(맵 R/G 평균)
+uniform vec2 u_origin; // 단어 사각형 화면 좌상단(px) — vertex와 같은 값, 그런지를 화면에 고정하려고
 uniform vec2 u_size;    // 단어 사각형 크기(px) — 바깥 테두리를 가상의 변으로 취급할 때 씀
 uniform int u_count;
 uniform float u_gapPx;
@@ -872,9 +994,34 @@ out vec4 outColor;
 #define CYCLE_BLINK ${CYCLE_BLINK_MS.toFixed(1)}
 #define CYCLE_TOTAL ${CYCLE_TOTAL_MS.toFixed(1)}
 #define CYCLE_BLINK_RATE ${CYCLE_BLINK_RATE_MS.toFixed(1)}
+#define CYCLE_BLINK_MONO ${CYCLE_BLINK_MONO_MS.toFixed(1)}
 #define MONO_LINE_RATIO ${MONO_LINE_THICKNESS_RATIO.toFixed(3)}
 #define MONO_DOT_RATIO ${MONO_DOT_RADIUS_RATIO.toFixed(3)}
 #define MONO_BORDER_RATIO ${MONO_BORDER_THICKNESS_RATIO.toFixed(3)}
+#define MONO_ASCII ${MONO_STYLE === 'ascii' ? 1 : 0}
+#define ASCII_PITCH vec2(${ASCII_PITCH[0].toFixed(3)}, ${ASCII_PITCH[1].toFixed(3)})
+#define ASCII_LEVELS ${ASCII_FONT_WEIGHTS.length.toFixed(1)}
+#define ASCII_FILL ${ASCII_FILL.toFixed(3)}
+#define ASCII_MIN_SIZE ${ASCII_MIN_SIZE.toFixed(3)}
+#define ASCII_WEIGHT_PICK ${ASCII_WEIGHT_BY === 'pick' ? 1 : 0}
+#define ASCII_INK_SHARP ${ASCII_INK_SHARP.toFixed(3)}
+#define ASCII_INK_LOD ${ASCII_INK_LOD.toFixed(3)}
+#define ASCII_DISPLACE_ON ${ASCII_DISPLACE.on ? 1 : 0}
+#define ASCII_DISPLACE_PX ${ASCII_DISPLACE.px.toFixed(3)}
+#define COLOR_DISPLACE_ON ${ASCII_DISPLACE.colorPx > 0 ? 1 : 0}
+#define COLOR_DISPLACE_PX ${ASCII_DISPLACE.colorPx.toFixed(3)}
+#define ASCII_DISPLACE_GOFF vec2(${ASCII_DISPLACE.gOffset.map(v => v.toFixed(3)).join(', ')})
+#define ASCII_PICK_DIST ${ASCII_PICK === 'distance' ? 1 : 0}
+#define ASCII_DIST_LO ${ASCII_DIST_RANGE[0].toFixed(3)}
+#define ASCII_DIST_HI ${ASCII_DIST_RANGE[1].toFixed(3)}
+#define ASCII_DIST_CURVE ${ASCII_DIST_CURVE.toFixed(3)}
+#define ASCII_SPLIT_AT ${ASCII_SPLIT[0].toFixed(3)}
+#define ASCII_SPLIT_SHARE ${ASCII_SPLIT[1].toFixed(3)}
+#define ASCII_SCALE_OUT ${ASCII_GLYPH_SCALE[0].toFixed(3)}
+#define ASCII_SCALE_IN ${ASCII_GLYPH_SCALE[1].toFixed(3)}
+#define ASCII_MAX_GLYPHS ${ASCII_MAX_GLYPHS.toFixed(1)}
+// state(BLANK, CHO, JUNG, JONG)별 글자 개수
+#define ASCII_COUNTS vec4(${[BLANK, CHO, JUNG, JONG].map(st => ASCII_GLYPHS[st].length.toFixed(1)).join(', ')})
 // 음절 센터 radial gradient — JS 상단 BG_GRAY/SYL_GRADIENT_* 상수와 동일(단일 소스: JS)
 #define BG_GRAY ${BG_GRAY.toFixed(4)}
 #define SYL_GRAD_STRENGTH ${SYL_GRADIENT_STRENGTH.toFixed(4)}
@@ -913,13 +1060,39 @@ float gain(float x, float k) {
     return (x < p) ? a : 1.0 - a;
 }
 
+// 이 x가 속한 음절 — main() 첫머리와 같은 누적 오프셋 구간 탐색
+int sylIndexAt(float x) {
+    int sylI = 0;
+    for (int s = 0; s < MAX_SYL_UNIFORM; s++) {
+        if (s >= u_sylCount) break;
+        if (x >= u_sylOffsetX[s]) sylI = s;
+    }
+    return sylI;
+}
+
+// 그 음절이 지금 모노를 보일 차례인지 — 아래 showMono와 같은 식
+bool monoAt(int sylI) {
+    int i = clamp(sylI, 0, u_sylCount - 1);
+    float ph = mod(max(0.0, u_time - u_sylPhaseStart[i]), CYCLE_TOTAL);
+    return ph >= CYCLE_NORMAL && ph < CYCLE_NORMAL + CYCLE_BLINK && ph - CYCLE_NORMAL < CYCLE_BLINK_MONO;
+}
+
 void main() {
+    // 컬러(와 shape 모노) 그런지 displacement — 위 ASCII와 같은 맵을 컬러 렌더링 전체(음절·site·halo)를 읽는
+    // 좌표에 건다. 아래 컬러 경로는 전부 v_local 대신 cL. ASCII 모노는 자기 aP를 v_local에서 따로 민다
+#if COLOR_DISPLACE_ON
+    vec2 cGUV = (u_origin + v_local) / u_grungeTile;
+    vec2 cL = v_local + (vec2(texture(u_grunge, cGUV).r, texture(u_grunge, cGUV + ASCII_DISPLACE_GOFF).g) - u_grungeMid)
+        * 2.0 * COLOR_DISPLACE_PX;
+#else
+    vec2 cL = v_local;
+#endif
     // 이 픽셀이 속한 음절 — 음절 폭이 제각각이라 나눗셈 대신 누적 오프셋 구간 탐색.
     // (음절 수는 MAX_SYL_UNIFORM 이하로 적어서 선형 순회 비용 무시 가능.)
     int sylI = 0;
     for (int s = 0; s < MAX_SYL_UNIFORM; s++) {
         if (s >= u_sylCount) break;
-        if (v_local.x >= u_sylOffsetX[s]) sylI = s;
+        if (cL.x >= u_sylOffsetX[s]) sylI = s;
     }
     float sylIdx = float(sylI);
     float sylW_i = u_sylWidth[sylI] > 0.0 ? u_sylWidth[sylI] : u_sylSize;
@@ -930,7 +1103,7 @@ void main() {
     // 음절 센터 radial gradient — 셀 뒤에 깔리는 배경. 중심이 BG_GRAY보다 밝고
     // 바깥으로 페이드(격자를 그리기 전 단계). 셀 색은 아래에서 이 bg 위에 mix됨.
     float gradR = max(min(sylW_i, sylH_i) * SYL_GRAD_RADIUS_RATIO, 1.0);
-    float gradT = pow(clamp(1.0 - length(v_local - sylCenter) / gradR, 0.0, 1.0), SYL_GRAD_FALLOFF);
+    float gradT = pow(clamp(1.0 - length(cL - sylCenter) / gradR, 0.0, 1.0), SYL_GRAD_FALLOFF);
     vec3 bg = vec3(BG_GRAY + SYL_GRAD_STRENGTH * gradT);
     // 투명 출력에선 어두운 바탕(BG_GRAY)을 빼고 **halo만** 남긴다. 아래 alpha가 gradT라
     // "흰 glow가 뒤 배경 위에 얹히는" 합성이 되고, 멀리서는 알파가 0이라 배경이 그대로 비친다.
@@ -945,7 +1118,7 @@ void main() {
     for (int i = 0; i < MAX_PTS; i++) {
         if (i >= u_count) break;
         vec3 pw = texelFetch(u_data, ivec2(i, 0), 0).xyz; // x, y, weight
-        vec2 d = v_local - pw.xy;
+        vec2 d = cL - pw.xy;
         float dist = dot(d, d) - pw.z; // power distance
         if (dist < best) {
             best = dist;
@@ -971,15 +1144,15 @@ void main() {
         if (nlen < 1e-4) continue;
         vec2 nHat = n / nlen;
         vec2 mid = 0.5 * (bestPos + pw.xy);
-        float d = dot(mid - v_local, nHat) - (pw.z - bestW) / (2.0 * nlen);
+        float d = dot(mid - cL, nHat) - (pw.z - bestW) / (2.0 * nlen);
         edgeDist = smin(edgeDist, d, u_corner);
     }
 
     // 단어 사각형의 4변 — 이건 두 스타일 공통(교집합 조건, smin).
-    edgeDist = smin(edgeDist, v_local.x, u_corner);
-    edgeDist = smin(edgeDist, u_size.x - v_local.x, u_corner);
-    edgeDist = smin(edgeDist, v_local.y, u_corner);
-    edgeDist = smin(edgeDist, u_size.y - v_local.y, u_corner);
+    edgeDist = smin(edgeDist, cL.x, u_corner);
+    edgeDist = smin(edgeDist, u_size.x - cL.x, u_corner);
+    edgeDist = smin(edgeDist, cL.y, u_corner);
+    edgeDist = smin(edgeDist, u_size.y - cL.y, u_corner);
 
     vec4 bestRow0 = texelFetch(u_data, ivec2(bestIdx, 0), 0);
     vec4 bestRow1 = texelFetch(u_data, ivec2(bestIdx, 1), 0);
@@ -998,8 +1171,8 @@ void main() {
     float Cy = bestRow1.w * 1.4;
     float halfW = u_cellSize * 0.5 * Cx;
     float halfH = u_cellSize * 0.5 * Cy;
-    float boxClipX = halfW - abs(v_local.x - bestPos.x);
-    float boxClipY = halfH - abs(v_local.y - bestPos.y);
+    float boxClipX = halfW - abs(cL.x - bestPos.x);
+    float boxClipY = halfH - abs(cL.y - bestPos.y);
     edgeDist = smin(edgeDist, boxClipX, u_corner);
     edgeDist = smin(edgeDist, boxClipY, u_corner);
 
@@ -1012,7 +1185,7 @@ void main() {
     // sqrt(bestW)(≈currentScale×MIN_DIST)에 맞춤. mono(BLINK) 모드는 아래에서
     // finalColor를 통째로 덮으므로 영향 없음.
     float cellRef = max(sqrt(max(bestW, 1.0)) * CELL_GRAD_RADIUS_RATIO, 1.0);
-    float cellT = pow(clamp(length(v_local - bestPos) / cellRef, 0.0, 1.0), CELL_GRAD_FALLOFF);
+    float cellT = pow(clamp(length(cL - bestPos) / cellRef, 0.0, 1.0), CELL_GRAD_FALLOFF);
     // 채도: luma(무채색)에서 color를 밀어냄 — factor>1이면 채도↑. 명도: 곱 감쇠.
     float cellLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     vec3 cellShaded = mix(vec3(cellLuma), color, 1.0 + CELL_GRAD_SAT * cellT);
@@ -1030,8 +1203,104 @@ void main() {
     float elapsed = max(0.0, u_time - u_sylPhaseStart[sylIdxI]);
     float cyclePhase = mod(elapsed, CYCLE_TOTAL);
     bool isBlink = cyclePhase >= CYCLE_NORMAL && cyclePhase < CYCLE_NORMAL + CYCLE_BLINK;
-    bool showMono = isBlink && mod(cyclePhase, CYCLE_BLINK_RATE * 2.0) < CYCLE_BLINK_RATE;
+    // bool showMono = isBlink && mod(cyclePhase, CYCLE_BLINK_RATE * 2.0) < CYCLE_BLINK_RATE; // 예전 — 기준점이 사이클 0이라 NORMAL 길이에 따라 결과가 바뀌었다
+    bool showMono = isBlink && cyclePhase - CYCLE_NORMAL < CYCLE_BLINK_MONO;
+#if MONO_ASCII
+    // 칸 하나가 음절 경계에 걸쳐도 글자가 반쪽만 바뀌지 않게, 모노 차례는 칸 중심의 음절로 판정
+    vec2 asciiPitch = u_cellSize * ASCII_PITCH;
+    // 그런지 displacement — ASCII 이미지 전체를 이 밀린 좌표로 읽는다(칸·site·글자 모두). 미분(mip)은 v_local로
+#if ASCII_DISPLACE_ON
+    // vec2 aP = v_local + (texture(u_grunge, (u_origin + v_local) / ASCII_DISPLACE_TILE).rg - 0.5) * 2.0 * ASCII_DISPLACE_PX; // (임시 맵 시절)
+    vec2 gUV = (u_origin + v_local) / u_grungeTile;
+    vec2 gDisp = vec2(texture(u_grunge, gUV).r, texture(u_grunge, gUV + ASCII_DISPLACE_GOFF).g) - u_grungeMid;
+    vec2 aP = v_local + gDisp * 2.0 * ASCII_DISPLACE_PX;
+#else
+    vec2 aP = v_local;
+#endif
+    vec2 asciiC = (floor(aP / asciiPitch) + 0.5) * asciiPitch;
+    showMono = monoAt(sylIndexAt(asciiC.x));
+#endif
 
+#if MONO_ASCII
+    if (showMono) {
+        // ASCII 격자 — 칸 중심에서 power distance가 가장 작은 site를 다시 찾는다(위 1st pass와 같은 식,
+        // 픽셀이 아니라 칸 중심 기준이라 칸 전체가 한 글자). 모노 차례(약 1초)에만 도는 추가 루프
+        float aBest = 1e12;
+        int aIdx = 0;
+        float aNear = 1e12; // 가장 가까운 site까지 거리² (weight 없이) — 아래 inside 판정용
+        for (int i = 0; i < MAX_PTS; i++) {
+            if (i >= u_count) break;
+            vec3 pw = texelFetch(u_data, ivec2(i, 0), 0).xyz;
+            vec2 d = asciiC - pw.xy;
+            float d2 = dot(d, d);
+            float dist = d2 - pw.z;
+            if (dist < aBest) {
+                aBest = dist;
+                aIdx = i;
+            }
+            aNear = min(aNear, d2);
+        }
+        vec4 a0 = texelFetch(u_data, ivec2(aIdx, 0), 0);
+        vec4 a1 = texelFetch(u_data, ivec2(aIdx, 1), 0);
+        vec4 a2 = texelFetch(u_data, ivec2(aIdx, 2), 0);
+        // (처음안) 실루엣 = 위 squircle 박스 클리핑(Cx/Cy × 1.4)을 칸 중심에서만 판정. 박스가 |g|≈0.35부터
+        // 셀 간격(MIN_DIST)의 절반보다 좁아져서, 격자 줄이 site 줄과 엇박인 곳은 줄·열이 통째로 빠졌다
+        // bool inside = abs(asciiC.x - a0.x) < u_cellSize * 0.5 * a0.w * 1.4
+        //     && abs(asciiC.y - a0.y) < u_cellSize * 0.5 * a1.w * 1.4
+        //     && asciiC.x > 0.0 && asciiC.y > 0.0 && asciiC.x < u_size.x && asciiC.y < u_size.y;
+        // 지금: 가장 가까운 site가 ASCII_FILL × MIN_DIST 안이면 채움 — site가 있는 자리는 꽉 찬 글자 덩어리,
+        // 크기 축소는 글자 고르기(cellM)에만 남는다
+        bool inside = aNear < pow(ASCII_FILL * u_cellSize, 2.0)
+            && asciiC.x > 0.0 && asciiC.y > 0.0 && asciiC.x < u_size.x && asciiC.y < u_size.y;
+        float st = clamp(floor(a2.x + 0.5), 0.0, 3.0);
+        float lv = clamp(floor(a2.y * ASCII_LEVELS), 0.0, ASCII_LEVELS - 1.0);
+        // 셀 크기(squircle 축소, 위 inside 판정과 같은 ×1.4) → 글자 번호. 큰 셀 = 0번(왼쪽)
+        float cellM = sqrt(clamp(a0.w * 1.4, 0.0, 1.0) * clamp(a1.w * 1.4, 0.0, 1.0));
+        float nG = ASCII_COUNTS[int(st)];
+        // float gi = clamp(floor((1.0 - cellM) * nG), 0.0, nG - 1.0); // (ASCII_MIN_SIZE 전) 0~1 전체를 나눔
+        // float gi = clamp(floor((1.0 - cellM) / (1.0 - ASCII_MIN_SIZE) * nG), 0.0, nG - 1.0); // (균등 분할)
+        // 비대칭 분할 — gu: 0 = 가장 큰 셀 … 1 = ASCII_MIN_SIZE. 경계 위는 앞쪽 SHARE만큼, 아래는 나머지
+        float gu = cellM >= ASCII_SPLIT_AT
+            ? (1.0 - cellM) / (1.0 - ASCII_SPLIT_AT) * ASCII_SPLIT_SHARE
+            : ASCII_SPLIT_SHARE + (ASCII_SPLIT_AT - cellM) / (ASCII_SPLIT_AT - ASCII_MIN_SIZE) * (1.0 - ASCII_SPLIT_SHARE);
+#if ASCII_PICK_DIST
+        // 거리 기반 — site가 속한 음절의 중심(main 첫머리 sylCenter와 같은 식)에서 반폭/반높이로 정규화한 반경
+        int dI = sylIndexAt(a0.x);
+        float dW = u_sylWidth[dI] > 0.0 ? u_sylWidth[dI] : u_sylSize;
+        float dH = u_sylHeight[dI] > 0.0 ? u_sylHeight[dI] : u_sylSize;
+        float dR = length((a0.xy - vec2(u_sylOffsetX[dI] + dW * 0.5, dH * 0.5)) / (0.5 * vec2(dW, dH)));
+        gu = pow(clamp((dR - ASCII_DIST_LO) / (ASCII_DIST_HI - ASCII_DIST_LO), 0.0, 1.0), ASCII_DIST_CURVE);
+#endif
+        float gi = clamp(floor(gu * nG), 0.0, nG - 1.0);
+#if ASCII_WEIGHT_PICK
+        lv = clamp(floor((1.0 - gu) * ASCII_LEVELS), 0.0, ASCII_LEVELS - 1.0); // 안쪽(gu 0) = 가장 굵게
+#endif
+        inside = inside && cellM >= ASCII_MIN_SIZE; // 너무 작은 셀(바깥 고리)은 빈칸
+        vec2 atlasN = vec2(ASCII_LEVELS * ASCII_MAX_GLYPHS, 4.0);
+        vec2 cellUV = aP / asciiPitch;
+        vec2 cellD = v_local / asciiPitch; // mip 선택용 — 밀린 좌표는 그런지 때문에 미분이 튀어서
+        // fract가 칸 경계에서 튀므로 mip 선택은 연속인 cellUV의 미분으로(textureGrad) — 안 하면 칸마다 이음선
+        // float ink = textureGrad(u_ascii, (vec2(gi * ASCII_LEVELS + lv, st) + fract(cellUV)) / atlasN,
+        //                         dFdx(cellUV) / atlasN, dFdy(cellUV) / atlasN).a; // (크기 차이 전) 늘 칸 꽉 채움
+        // 글자 크기 — 셀이 클수록(안쪽) 크게. 칸 가운데 기준으로 칸 안 좌표를 1/gs배로 늘려 읽고,
+        // 0~1을 벗어난 자리는 잉크 0(옆 글자를 읽지 않게)
+        float gs = mix(ASCII_SCALE_OUT, ASCII_SCALE_IN, clamp((cellM - ASCII_MIN_SIZE) / (1.0 - ASCII_MIN_SIZE), 0.0, 1.0));
+        vec2 inUV = (fract(cellUV) - 0.5) / gs + 0.5;
+        float inTile = step(0.0, inUV.x) * step(inUV.x, 1.0) * step(0.0, inUV.y) * step(inUV.y, 1.0);
+        float ink = inTile * textureGrad(u_ascii, (vec2(gi * ASCII_LEVELS + lv, st) + clamp(inUV, 0.0, 1.0)) / atlasN,
+                                         ASCII_INK_LOD * dFdx(cellD) / (gs * atlasN), ASCII_INK_LOD * dFdy(cellD) / (gs * atlasN)).a;
+        // 선명도 — 0.5 기준으로 가장자리 폭을 (1 − SHARP)배로 좁힌다
+        ink = smoothstep(0.5 * ASCII_INK_SHARP, 1.0 - 0.5 * ASCII_INK_SHARP, ink);
+        // edge = inside ? 1.0 : 0.0; // (처음안) 흰 칸 + 검은 글자 — 칸 안은 불투명
+        // finalColor = mix(bgCol, vec3(1.0 - ink), edge);
+        // 칸 바탕 없이 흰 글자만 — 잉크만큼만 불투명, 나머지는 바깥과 같은 배경(투명 모드면 halo 알파만)
+        edge = inside ? ink : 0.0; // 아래 알파도 이걸 따른다
+        // 모노 동안은 음절 센터 halo를 끈다 — 흰 글자가 흰 glow에 묻혀 가운데가 안 보였다.
+        // 바탕 = halo 없는 bgCol(불투명이면 BG_GRAY, 투명이면 색 무관), gradT = 0이라 아래 알파도 halo 없이
+        gradT = 0.0;
+        finalColor = mix(mix(vec3(1.0), vec3(BG_GRAY), u_bgAlpha), vec3(1.0), edge);
+    }
+#else
     if (showMono) {
         // 모노 도형 — 셀(점) 하나하나가 색 대신 흑백 도형으로 바뀜. NORMAL 모드와 정확히
         // 같은 입자 단위(bestIdx가 가리키는 그 site) 유지 — 즉 지금 컬러풀한 모자이크가
@@ -1045,7 +1314,7 @@ void main() {
         // 얇게 잡아서 낱개 타일처럼 또렷하게 보이는 쪽을 노림.
         vec3 stateRow = texelFetch(u_data, ivec2(bestIdx, 2), 0).xyz;
         float st = stateRow.x;
-        vec2 local = v_local - bestPos;
+        vec2 local = cL - bestPos;
         float linePx = MONO_LINE_RATIO * u_cellSize;
         float shape;
         if (st < 0.5) {
@@ -1066,6 +1335,7 @@ void main() {
         vec3 cellMono = mix(cellBG, vec3(0.0), max(shapeMask, borderMask));
         finalColor = mix(bgCol, cellMono, edge); // NORMAL과 동일한 gap 블렌딩 재사용
     }
+#endif
 
     // 셀 안(edge=1)은 늘 불투명, 바깥은 배경 알파. 투명 모드에선 halo가 알파를 만든다.
     // 캔버스가 premultipliedAlpha:true 라 RGB를 알파로 미리 곱해서 내보낸다
@@ -1108,11 +1378,115 @@ function createProgram(gl) {
 // 매 프레임 하지 않음 — _needsUpload가 true인(움직이는 중이거나 방금 CA step이
 // 지나간) 단어에서만 호출됨. 신호등 플래싱 사이클 타이밍 배열(_sylPhaseStart)도 여기서
 // 같이 갱신(음절 수가 바뀔 수 있으므로).
+// ascii 모노용 글자 아틀라스 — 가로 = 글자(크기 순) × 밝기 레벨, 세로 = state(BLANK/CHO/JUNG/JONG 순). 흰 글자 + 알파,
+// 셰이더는 알파만 잉크로 읽는다. 칸 비율 = ASCII_PITCH라 늘어나지 않고, 글자는 bbox로 칸 정중앙에 둔다
+// ('.'도 가운데 — 예전 SDF 점과 같은 자리)
+// 임시 그런지 맵 — 타일되는 value noise(굵은 얼룩 + 잔 결) + 긁힘 점. R/G는 따로 굴린 노이즈라 방향이 섞인다.
+// 진짜 그런지 이미지가 오면 ASCII_DISPLACE.img로 바꾼다
+function buildGrungeCanvas(size = 256) {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const ctx = cv.getContext('2d');
+    const img = ctx.createImageData(size, size);
+    const hash = (x, y, s) => {
+        const h = Math.sin(x * 127.1 + y * 311.7 + s * 74.7) * 43758.5453;
+        return h - Math.floor(h);
+    };
+    // 주기 n 격자의 value noise — 가장자리가 이어져서 REPEAT로 깔아도 이음새가 없다
+    const vnoise = (u, v, n, s) => {
+        const x = u * n,
+            y = v * n;
+        const x0 = Math.floor(x),
+            y0 = Math.floor(y);
+        const fx = x - x0,
+            fy = y - y0;
+        const sx = fx * fx * (3 - 2 * fx),
+            sy = fy * fy * (3 - 2 * fy);
+        const g = (i, j) => hash(((i % n) + n) % n, ((j % n) + n) % n, s);
+        const a = g(x0, y0) + (g(x0 + 1, y0) - g(x0, y0)) * sx;
+        const b = g(x0, y0 + 1) + (g(x0 + 1, y0 + 1) - g(x0, y0 + 1)) * sx;
+        return a + (b - a) * sy;
+    };
+    const fbm = (u, v, s) => 0.45 * vnoise(u, v, 4, s) + 0.3 * vnoise(u, v, 16, s + 1) + 0.25 * vnoise(u, v, 64, s + 2);
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const u = x / size,
+                v = y / size;
+            const speck = hash(x, y, 9) > 0.985 ? (hash(x, y, 3) - 0.5) * 0.8 : 0; // 긁힘 점 — 한 픽셀씩 크게 튐
+            const i = (y * size + x) * 4;
+            img.data[i] = Math.round(255 * Math.min(1, Math.max(0, fbm(u, v, 0) + speck)));
+            img.data[i + 1] = Math.round(255 * Math.min(1, Math.max(0, fbm(u, v, 5) + speck)));
+            img.data[i + 2] = 128;
+            img.data[i + 3] = 255;
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+    return cv;
+}
+
+// ASCII 아트 폰트를 문서에 한 번만 등록하고 로드 Promise를 돌려준다(FontFace 없으면 바로 끝 — 대체 폰트)
+let _asciiFontFace = null;
+function loadAsciiFont() {
+    if (typeof FontFace === 'undefined' || !document.fonts) return Promise.resolve();
+    if (!_asciiFontFace) {
+        _asciiFontFace = new FontFace(ASCII_FONT_FAMILY, `url(${import.meta.env.BASE_URL}${ASCII_FONT_FILE})`, {
+            weight: '100 900', // 가변 폰트
+        });
+        document.fonts.add(_asciiFontFace);
+    }
+    return _asciiFontFace.load();
+}
+
+function buildAsciiAtlas() {
+    const th = ASCII_TILE_H;
+    const tw = Math.round((th * ASCII_PITCH[0]) / ASCII_PITCH[1]);
+    const levels = ASCII_FONT_WEIGHTS.length;
+    const cv = document.createElement('canvas');
+    cv.width = tw * levels * ASCII_MAX_GLYPHS; // 가로 = 글자(크기 순) × 밝기 레벨
+    cv.height = th * 4;
+    const ctx = cv.getContext('2d');
+    // 크기 맞춤 — 가장 굵은 굵기에서 가장 넓은 글자가 칸 폭의 ASCII_FONT_FIT 안에 들도록 모든 글자·굵기에
+    // 같은 px를 쓴다(굵기마다 따로 맞추면 굵은 글자만 작아진다)
+    let px = Math.round(th * ASCII_FONT_RATIO);
+    ctx.font = `${Math.max(...ASCII_FONT_WEIGHTS)} ${px}px ${ASCII_FONT}`;
+    const widest = Math.max(
+        ...Object.values(ASCII_GLYPHS)
+            .flat()
+            .map(ch => ctx.measureText(ch).width),
+    );
+    if (widest > tw * ASCII_FONT_FIT) px = Math.floor(px * ((tw * ASCII_FONT_FIT) / widest));
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = ctx.strokeStyle = '#fff';
+    ctx.lineJoin = 'round';
+    for (const st of [BLANK, CHO, JUNG, JONG]) {
+        for (let k = 0; k < levels * ASCII_GLYPHS[st].length; k++) {
+            const lv = k % levels;
+            const ch = ASCII_GLYPHS[st][Math.floor(k / levels)];
+            ctx.font = `${ASCII_FONT_WEIGHTS[lv]} ${px}px ${ASCII_FONT}`;
+            const m = ctx.measureText(ch);
+            const x = (k + 0.5) * tw;
+            const y = (st + 0.5) * th + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(k * tw, st * th, tw, th); // 굵은 획이 옆 칸으로 번지지 않게
+            ctx.clip();
+            ctx.fillText(ch, x, y);
+            // if (ASCII_WEIGHT[lv] > 0) { // (Inconsolata 시절) 획 덧칠로 굵게
+            //     ctx.lineWidth = ASCII_WEIGHT[lv] * th;
+            //     ctx.strokeText(ch, x, y);
+            // }
+            ctx.restore();
+        }
+    }
+    return cv;
+}
+
 function uploadWordData(gl, wordState, flashPhase) {
     const pts = wordState.points;
     const n = pts.length;
     if (n === 0) return;
-    const data = new Float32Array(n * 3 * 4); // row0: xy+weight+cellCx, row1: rgb+cellCy, row2: state,-,-,-
+    const data = new Float32Array(n * 3 * 4); // row0: xy+weight+cellCx, row1: rgb+cellCy, row2: state,brightness01,-,-
     for (let i = 0; i < n; i++) {
         const p = pts[i];
         data[i * 4 + 0] = p.localX;
@@ -1131,7 +1505,7 @@ function uploadWordData(gl, wordState, flashPhase) {
         // 속한 셀의 site)일 때만 읽어서 셀 단위로 다른 도형(\/X·)을 고른다.
         const base2 = n * 8 + i * 4;
         data[base2 + 0] = p.state;
-        data[base2 + 1] = 0;
+        data[base2 + 1] = Math.min(Math.max((p.brightness - 1) / 1.5, 0), 1); // CA 밝기 1~2.5 → 0~1 — ascii 모노 레벨
         data[base2 + 2] = 0;
         data[base2 + 3] = 0;
     }
@@ -1204,7 +1578,7 @@ export class SignalReceiver {
 
     async init(canvas) {
         this._canvas = canvas ?? document.createElement('canvas');
-        this._ownCanvas = !canvas;   // 밖에서 받은 캔버스는 dispose 때 건드리지 않는다
+        this._ownCanvas = !canvas; // 밖에서 받은 캔버스는 dispose 때 건드리지 않는다
         if (!canvas) {
             Object.assign(this._canvas.style, {
                 position: 'fixed',
@@ -1248,7 +1622,33 @@ export class SignalReceiver {
             sylPhaseStart: gl.getUniformLocation(this._prog, 'u_sylPhaseStart'),
             sylCount: gl.getUniformLocation(this._prog, 'u_sylCount'),
             bgAlpha: gl.getUniformLocation(this._prog, 'u_bgAlpha'),
+            ascii: gl.getUniformLocation(this._prog, 'u_ascii'),
+            grunge: gl.getUniformLocation(this._prog, 'u_grunge'),
+            grungeTile: gl.getUniformLocation(this._prog, 'u_grungeTile'),
+            grungeMid: gl.getUniformLocation(this._prog, 'u_grungeMid'),
         };
+
+        // ascii 모노 글자 아틀라스 — 폰트가 늦게 오면 그때 다시 굽는다(그 전엔 대체 폰트)
+        this._asciiTex = gl.createTexture();
+        this._uploadAscii();
+        // 그런지 displacement 맵 — 임시(절차적)로 먼저 깔고, 이미지가 지정돼 있으면 읽히는 대로 바꾼다
+        this._grungeTex = gl.createTexture();
+        this._uploadGrunge(buildGrungeCanvas(), [ASCII_DISPLACE.tile, ASCII_DISPLACE.tile]);
+        if (ASCII_DISPLACE.img) {
+            const im = new Image();
+            im.onload = () =>
+                this._gl &&
+                this._uploadGrunge(im, [
+                    im.naturalWidth * ASCII_DISPLACE.imgScale,
+                    im.naturalHeight * ASCII_DISPLACE.imgScale,
+                ]);
+            im.src = `${import.meta.env.BASE_URL}${ASCII_DISPLACE.img}`;
+        }
+        // document.fonts?.load(`${ASCII_TILE_H}px ${ASCII_FONT}`).then( // (Inconsolata 시절 — 페이지가 @font-face를 깔았다)
+        loadAsciiFont().then(
+            () => this._gl && this._uploadAscii(),
+            () => {},
+        );
 
         this._resize();
         // 이름 있는 핸들러 — 익명 화살표로 걸면 dispose()의 removeEventListener가 안 먹는다
@@ -1378,6 +1778,8 @@ export class SignalReceiver {
                 if (wordState._glTex) gl.deleteTexture(wordState._glTex);
             }
             if (this._quadBuf) gl.deleteBuffer(this._quadBuf);
+            if (this._asciiTex) gl.deleteTexture(this._asciiTex);
+            if (this._grungeTex) gl.deleteTexture(this._grungeTex);
             if (this._prog) gl.deleteProgram(this._prog);
         }
         if (this._ownCanvas && this._canvas?.parentNode) this._canvas.parentNode.removeChild(this._canvas);
@@ -1471,16 +1873,21 @@ export class SignalReceiver {
     }
 
     _animate = timestamp => {
-        // 유휴 정지 — 다음 프레임을 예약하지 않고 빠져나간다. 캔버스에는 마지막 프레임이 남고,
-        // u_time도 멈추므로 신호등 사이클이 그 순간 상태로 얼어붙는다.
-        if (timestamp - this._lastActivity > IDLE_PAUSE_MS) {
-            this._raf = null;
-            this._paused = true;
-            this._pausedAt = timestamp;
-            return;
-        }
+        // (예전) 유휴 정지 — 다음 프레임을 예약하지 않고 빠져나간다. 캔버스에는 마지막 프레임이 남고,
+        // u_time도 멈추므로 신호등 사이클이 그 순간 상태로 얼어붙는다. _wake()의 _paused 복귀 분기는
+        // 이걸 되살릴 때를 위해 남겨 둔다.
+        // if (timestamp - this._lastActivity > IDLE_PAUSE_MS) {
+        //     this._raf = null;
+        //     this._paused = true;
+        //     this._pausedAt = timestamp;
+        //     return;
+        // }
         this._raf = requestAnimationFrame(this._animate);
-        if (timestamp - this._lastFrame < this._FRAME_INTERVAL) return;
+        // 유휴 감속 — 루프는 계속 돌고 그리는 간격만 늘린다. 시계(u_time)는 wall-clock이라
+        // 신호등 사이클 속도는 그대로, CA 스텝도 IDLE_FPS 덕에 그대로, 셀 크기 보간(매 프레임)만 느려진다.
+        const idle = timestamp - this._lastActivity > IDLE_PAUSE_MS;
+        const interval = idle ? 1000 / IDLE_FPS : this._FRAME_INTERVAL;
+        if (timestamp - this._lastFrame < interval) return;
         this._lastFrame = timestamp;
         this._flashPhase += 0.08;
         this._time = timestamp; // 신호등 사이클용 wall-clock — appendSyllable()의 cyclePhaseStart와 같은 시계
@@ -1539,6 +1946,50 @@ export class SignalReceiver {
         this._lastActivity = now;
     }
 
+    // 그런지 맵은 TEXTURE2 전용 — 거울 반복, mip. tile = 한 장이 덮는 화면 크기(CSS px).
+    // 기준값(_grungeMid)은 맵 평균 — 64² 로 줄여 그려 잰다
+    _uploadGrunge(src, tile) {
+        const gl = this._gl;
+        this._grungeTile = tile;
+        const probe = document.createElement('canvas');
+        probe.width = probe.height = 64;
+        const pctx = probe.getContext('2d', { willReadFrequently: true });
+        pctx.drawImage(src, 0, 0, 64, 64);
+        const px = pctx.getImageData(0, 0, 64, 64).data;
+        let r = 0,
+            g = 0;
+        for (let i = 0; i < px.length; i += 4) {
+            r += px[i];
+            g += px[i + 1];
+        }
+        this._grungeMid = [r / (255 * 4096), g / (255 * 4096)];
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, this._grungeTex);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        gl.generateMipmap(gl.TEXTURE_2D); // 사진은 화면보다 커서 줄여 읽는다
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+        gl.activeTexture(gl.TEXTURE0);
+    }
+
+    // 아틀라스는 TEXTURE1 전용 — 단어 데이터 텍스처(TEXTURE0) 바인딩을 건드리지 않게
+    _uploadAscii() {
+        const gl = this._gl;
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this._asciiTex);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, buildAsciiAtlas());
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.activeTexture(gl.TEXTURE0);
+    }
+
     _draw() {
         const gl = this._gl;
         if (!gl) return;
@@ -1563,6 +2014,14 @@ export class SignalReceiver {
         gl.uniform1f(this._uniforms.cellSize, MIN_DIST);
         gl.uniform1f(this._uniforms.time, this._time ?? 0);
         gl.uniform1f(this._uniforms.bgAlpha, bgA);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this._asciiTex);
+        gl.uniform1i(this._uniforms.ascii, 1);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, this._grungeTex);
+        gl.uniform1i(this._uniforms.grunge, 2);
+        gl.uniform2f(this._uniforms.grungeTile, ...(this._grungeTile ?? [256, 256]));
+        gl.uniform2f(this._uniforms.grungeMid, ...(this._grungeMid ?? [0.5, 0.5]));
         gl.activeTexture(gl.TEXTURE0);
         gl.uniform1i(this._uniforms.data, 0);
 

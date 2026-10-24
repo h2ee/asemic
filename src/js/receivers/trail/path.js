@@ -172,7 +172,8 @@ export function sample(s, poly) {
 //                  루프가 앞으로 밀려 있었다. 이제 toBase 로 옮긴다 (음절 경계가 앞 음절과 무관해지려면 필수)
 // 구간 경계에서는 앞 구간 값과 segBlend(px) 만큼 크로스페이드해 연속을 지킨다.
 //
-// 구간은 orb 를 직접 지정할 수 있다 — plan[j].orbs = [{ at, r, fill?, off?, auto? }] (at = 구간 안 국소 px).
+// 구간은 orb 를 직접 지정할 수 있다 — plan[j].orbs = [{ at, r, fill?, off?, auto?, rays?, width? }] (at = 구간 안 국소 px).
+// rays/width 는 orb.style 'fan' 의 살 개수·굵기.
 // 주면 그 구간은 난수 배치(gap/prob/spread) 대신 그 자리에만 orb 를 둔다. 빈 배열 = 그 구간엔 orb 없음.
 // auto: true 면 법선 양쪽 중 실선이 덜 붐비는 쪽으로 off 를 둔다(settleSide) — 윤곽 바깥으로 나가게.
 //
@@ -348,7 +349,7 @@ function planOrbs(stroke, headPx, CFG) {
             plan[j].orbs.forEach((o, k) => {
                 const px = plan[j].px0 + o.at;
                 if (px > limit) return;
-                out.push({ px, off: o.off ?? 0, r: o.r, fill: o.fill, auto: !!o.auto, seed: hashSeed(plan[j].seed, 'orb', k), x: 0, y: 0 });
+                out.push({ px, off: o.off ?? 0, r: o.r, fill: o.fill, auto: !!o.auto, rays: o.rays, width: o.width, spikes: o.spikes, seed: hashSeed(plan[j].seed, 'orb', k), x: 0, y: 0 });
             });
             continue;
         }
@@ -382,6 +383,7 @@ function resolveOnSpine(items, spine, CFG) {
         if (!p) continue;
         d.x = p.x + p.nx * d.off + (d.jx ?? 0);
         d.y = p.y + p.ny * d.off + (d.jy ?? 0);
+        d.ang = p.angle; // 그 자리 실선 진행 방향 — fan 의 밑변
     }
 }
 

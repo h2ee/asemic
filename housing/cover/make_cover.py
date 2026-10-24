@@ -13,6 +13,7 @@
 """
 import math
 import re
+import sys
 from pathlib import Path
 
 import ezdxf
@@ -27,7 +28,10 @@ OUT = HERE
 PT = 25.4 / 72  # svg 단위 → mm
 
 # ── 치수 (mm) ──
-T = 1.5          # 판 두께 (예전 2.0 — t2는 안쪽 R20~150만 견적돼 브라켓 R15를 못 맞춤. 1.5t는 R10~150)
+T = 1.5         # 판 두께 (예전 2.0 — t2는 안쪽 R20~150만 견적돼 브라켓 R15를 못 맞춤. 1.5t는 R10~150)
+if len(sys.argv) > 1:  # python make_cover.py 1  → 1t (0.8~1.5t 모두 R10~150이라 R15 그대로)
+    T = float(sys.argv[1])
+TAG = f'AL5052_{T:g}t'  # 결과 파일 이름 꼬리
 R = 15.0         # 안쪽 절곡 R — 최대값 = 브라켓 둥근 부분 R15와 같은 중심(동심). 이보다 크면 브라켓을 누른다
 K = 0.50         # 중립축 계수 (R/t 큼 → 0.5 근처; R=t면 0.4). 업체가 자기 값으로 전개도를 다시 뽑는다
 W = 360.0        # 폭
@@ -35,6 +39,11 @@ SLOPE = 260.0    # 경사면 (안쪽 면 꼭짓점~꼭짓점)
 WING = 30.0      # 위 날개 (수평, 아크릴 밑)
 LOW = 30.0       # 아래 날개 (수직, 정면 기둥 위 브라켓 덮음)
 ANG = 45.0       # 각 절곡 각도 (꺾이는 양)
+# 위 날개 구멍 — 턴테이블 밑판(arduino/turntable/make_plates.py) 앞줄 프레임 M6와 같은 자리.
+# 볼트 하나가 밑판·날개·프로파일을 같이 조인다. 밑판 아랫면엔 날개가 들어갈 1.5 단차가 있다
+WING_HOLES_U = (15.0, W / 2, W - 15.0)  # 왼→오
+WING_HOLE_IN = 15.0                     # 위 꼭짓점(프레임 앞 모서리)에서 뒤로 = 3030 중심선
+WING_HOLE_D = 6.5                       # M6
 
 th = math.radians(ANG)
 SB = R * math.tan(th / 2)               # 꼭짓점 → 절곡 시작점(안쪽 면)
@@ -97,13 +106,48 @@ def read_marks(fn):
     return loops
 
 
-CUTS = read_cuts(PANEL_SVG)
+# 직사각형 구멍 모서리 최소 R — panel.svg에서 각진(rx 0) 사각 구멍에만 준다.
+# 사각 구멍은 부품 안쪽 몸통(각진 사각)에 한쪽 0.15 여유로 맞춘 것이라, 몸통 모서리가 안 걸리는 R은
+# 0.15 / (1 − 1/√2) ≈ 0.5까지다. R2를 주려면 구멍을 한쪽 0.6씩 키워야 한다(앞 덮개가 가림).
+# RECT_MIN_R = 2.0
+RECT_MIN_R = 0.5
+CUTS = [c if c[0] != 'rect' or c[5] >= RECT_MIN_R else (*c[:5], min(RECT_MIN_R, c[3] / 2, c[4] / 2))
+        for c in read_cuts(PANEL_SVG)]
 MARKS = read_marks(MARK_SVG)
+
+
+def silk_groups(gap=4.0):
+    """마킹 고리를 가까운 것끼리(gap mm 안) 묶어 인쇄 묶음 외곽 [(u0, v0, u1, v1)] — 경사면 좌표, 위→아래·왼→오른"""
+    groups = [[(l[:, 0].min(), l[:, 1].min(), l[:, 0].max(), l[:, 1].max())] for l in MARKS]
+    near = lambda a, b: not (a[2] + gap < b[0] or b[2] + gap < a[0] or a[3] + gap < b[1] or b[3] + gap < a[1])
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(groups)):
+            j = next((j for j in range(i + 1, len(groups))
+                      if any(near(a, b) for a in groups[i] for b in groups[j])), None)
+            if j is not None:
+                groups[i] += groups.pop(j)
+                merged = True
+                break
+    out = [(min(b[0] for b in g), min(b[1] for b in g), max(b[2] for b in g), max(b[3] for b in g)) for g in groups]
+    return sorted(out, key=lambda b: (round(b[1] / 10), b[0]))
+
+
+SILK_GROUPS = silk_groups()
+
+
+def wing_flat(u):
+    """위 날개 구멍 → 전개도 좌표. 날개 평면부는 끝에서부터 길이가 그대로다."""
+    return u, FLAT_L - (WING - WING_HOLE_IN)
 
 
 def check_cuts():
     """구멍이 경사면 평면부(절곡 시작 전) 안에 있는지 확인."""
     lim = SB + T  # 절곡 시작점에서 판 두께만큼은 띄운다
+    r = WING_HOLE_D / 2
+    if WING_HOLE_IN - r < lim or WING_HOLE_IN + r > WING:
+        print(f'  ! 위 날개 구멍이 평면부 밖: 꼭짓점에서 {WING_HOLE_IN:g} (평면부 {lim:.1f}~{WING:g})')
     for c in CUTS:
         u, v = c[1], c[2]
         if c[0] == 'circle':
@@ -163,12 +207,143 @@ def build_step():
             w, h, rr = cut[3], cut[4], cut[5]
             sk = loc * (RectangleRounded(w, h, min(rr, min(w, h) / 2 - 1e-3)) if rr > 0 else Rectangle(w, h))
         tools.append(extrude(sk, amount=T * 3, both=True))
+    for u in WING_HOLES_U:
+        wl = Plane(origin=(u, top[0] + WING_HOLE_IN, top[1]), x_dir=(1, 0, 0), z_dir=(0, 0, 1))
+        tools.append(extrude(wl * Circle(WING_HOLE_D / 2), amount=T * 3, both=True))
     for tl in tools:
         part = part - tl
-    export_step(part, str(OUT / f'cover_slope_AL5052_{T:g}t.step'))
+    export_step(part, str(OUT / f'cover_slope_{TAG}.step'))
     bb = part.bounding_box()
     print(f'STEP: volume {part.volume / 1000:.1f} cm³ (≈{part.volume * 2.68e-3:.0f} g), '
           f'bbox {bb.size.X:.1f} x {bb.size.Y:.1f} x {bb.size.Z:.1f}')
+    # build_silk_step(part, pl)  # 인쇄를 0.05 몸체로 얹던 방식 — 업체가 가공 형상으로 오해할 수 있어 면 색칠로 바꿈
+    build_silk_face_step(part, pl)
+
+
+def ink_face(out):
+    """MARKS → 바깥 면 평면 위 인쇄 영역 면(짝홀 — 감싼 고리 수가 홀수면 구멍)."""
+    from build123d import Polygon
+    from matplotlib.path import Path as MPath
+    loops = [np.asarray(l) for l in MARKS]
+    paths = [MPath(l) for l in loops]
+    solid, holes = [], []
+    for i, l in enumerate(loops):
+        depth = sum(paths[j].contains_point(l[0]) for j in range(len(loops)) if j != i)
+        f = (out * Polygon(*[(u, SLOPE - v) for u, v in l[::2]], align=None)).face()
+        (holes if depth % 2 else solid).append(f)
+    ink = solid[0]
+    for f in solid[1:]:
+        ink = ink + f
+    for f in holes:
+        ink = ink - f
+    return ink
+
+
+def build_silk_face_step(part, pl):
+    """덮개 한 몸체 STEP — 바깥 면을 인쇄 윤곽으로 나눠 그 면만 검정(두께 0, 형상은 그대로). 업체 전개·가공에 영향 없음."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Splitter
+    from OCP.BRepClass import BRepClass_FaceClassifier
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_IN
+    from OCP.collections import List_TopoDS_Shape
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.XCAFApp import XCAFApp_Application
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool, XCAFDoc_ColorSurf
+    from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.STEPControl import STEPControl_AsIs
+    from OCP.gp import gp_Pnt2d
+    from build123d import Compound, Vector
+    out = pl.offset(T)
+    ink = ink_face(out)
+    args, tools = List_TopoDS_Shape(), List_TopoDS_Shape()
+    args.Append(part.wrapped)
+    for f in ink.faces():
+        tools.Append(f.wrapped)
+    sp = BRepAlgoAPI_Splitter()
+    sp.SetArguments(args); sp.SetTools(tools); sp.Build()
+    assert sp.IsDone(), '면 나누기 실패'
+    solids = Compound(sp.Shape()).solids()
+    assert len(solids) == 1, f'몸체가 {len(solids)}개로 갈림'
+    body = solids[0]
+
+    def inside_point(f):
+        """면 안쪽이 확실한 점 하나(가운데가 비어 있는 고리 면도) — UV 격자에서 첫 IN"""
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(f.wrapped)
+        srf = BRep_Tool.Surface_s(f.wrapped)
+        for a in np.linspace(0.02, 0.98, 25):
+            for b in np.linspace(0.02, 0.98, 25):
+                uv = (u0 + (u1 - u0) * a, v0 + (v1 - v0) * b)
+                if BRepClass_FaceClassifier(f.wrapped, gp_Pnt2d(*uv), 1e-6).State() == TopAbs_IN:
+                    q = srf.Value(*uv)
+                    return Vector(q.X(), q.Y(), q.Z())
+        return f.center()
+
+    n = Vector(out.z_dir)
+    printed = []
+    for f in body.faces():
+        if abs(f.normal_at(f.center()).dot(n) - 1) > 1e-6 or abs((f.center() - Vector(out.origin)).dot(n)) > 1e-4:
+            continue  # 바깥 경사면 위 면만
+        if f.area > 0.5 * W * SLOPE:
+            continue  # 남은 큰 바깥 면
+        if ink.distance_to(inside_point(f)) < 1e-4:
+            printed.append(f)  # 글자 속(구멍) 조각은 여기서 빠진다
+
+    app = XCAFApp_Application.GetApplication_s()
+    doc = TDocStd_Document(TCollection_ExtendedString('MDTV-XCAF'))
+    app.InitDocument(doc)
+    st = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    ct = XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
+    lab = st.AddShape(body.wrapped, False)
+    TDataStd_Name.Set_s(lab, TCollection_ExtendedString(f'cover_slope_{TAG}'))
+    ct.SetColor(lab, Quantity_Color(0.78, 0.79, 0.81, Quantity_TOC_RGB), XCAFDoc_ColorSurf)
+    black = Quantity_Color(0, 0, 0, Quantity_TOC_RGB)
+    for f in printed:
+        sub = st.AddSubShape(lab, f.wrapped)
+        TDataStd_Name.Set_s(sub, TCollection_ExtendedString('SILK_PRINT_BLACK'))
+        ct.SetColor(sub, black, XCAFDoc_ColorSurf)
+    w = STEPCAFControl_Writer()
+    w.SetColorMode(True); w.SetNameMode(True)
+    w.Transfer(doc, STEPControl_AsIs)
+    w.Write(str(OUT / f'cover_slope_silk_{TAG}.step'))
+    area = sum(f.area for f in printed)
+    print(f'SILK STEP: cover_slope_silk_{TAG}.step (몸체 1, 검정 면 {len(printed)}개 = {area:.0f} mm², '
+          f'인쇄 영역 {ink.area:.0f} mm², 부피 {body.volume / 1000:.1f} cm³)')
+
+
+# 실크 인쇄를 3D에 — 바깥 면 위에 PRINT_H 두께 판으로 얹은 별도 몸체(검정). 실제 잉크는 ~0.01–0.02
+PRINT_H = 0.05
+
+
+def build_silk_step(part, pl):
+    """덮개 + 인쇄 몸체 어셈블리 STEP(색·이름 있음) / STL 두 개(덮개, 인쇄 — 같은 좌표, STL은 색이 없어서 나눔)."""
+    from build123d import Color, Compound, Polygon, Pos, export_stl, export_step, extrude
+    from matplotlib.path import Path as MPath
+    out = pl.offset(T)  # 바깥 면
+    loops = [np.asarray(l) for l in MARKS]
+    paths = [MPath(l) for l in loops]
+    solid_parts, hole_parts = [], []
+    for i, l in enumerate(loops):
+        depth = sum(paths[j].contains_point(l[0]) for j in range(len(loops)) if j != i)  # 짝홀: 감싼 고리 수
+        pts = [(u, SLOPE - v) for u, v in l[::2]]  # 0.5mm 간격이면 충분
+        body = extrude(out * Polygon(*pts, align=None), amount=PRINT_H, dir=out.z_dir)  # 감긴 방향과 상관없이 바깥으로
+        (hole_parts if depth % 2 else solid_parts).append(body)
+    ink = solid_parts[0]
+    for b in solid_parts[1:]:
+        ink = ink + b
+    for b in hole_parts:
+        ink = ink - b
+    part.label, part.color = 'cover', Color(0.78, 0.79, 0.81)
+    ink.label, ink.color = 'silk_print_black', Color(0, 0, 0)
+    asm = Compound(label=f'cover_slope_silk_{TAG}', children=[part, ink])
+    export_step(asm, str(OUT / f'cover_slope_silk_{TAG}.step'))
+    export_stl(part, str(OUT / f'cover_slope_{TAG}.stl'))
+    export_stl(ink, str(OUT / f'cover_slope_silk_print_{TAG}.stl'))
+    print(f'SILK STEP: cover_slope_silk_{TAG}.step (덮개 + 인쇄 {PRINT_H:g}mm, 고리 {len(solid_parts)}+구멍 {len(hole_parts)}), '
+          f'STL 2개, 인쇄 면적 {ink.volume / PRINT_H:.0f} mm²')
 
 
 # ── 전개도 DXF ──
@@ -181,7 +356,7 @@ def build_dxf():
     doc = ezdxf.new('R2010', setup=True)
     doc.units = ezdxf.units.MM
     for name, col, lt in [('CUT', 7, 'CONTINUOUS'), ('BEND', 1, 'DASHED'),
-                          ('MARK', 5, 'CONTINUOUS'), ('NOTE', 3, 'CONTINUOUS')]:
+                          ('MARK', 5, 'CONTINUOUS'), ('SILK', 6, 'DASHED'), ('NOTE', 3, 'CONTINUOUS')]:
         doc.layers.add(name, color=col, linetype=lt)
     msp = doc.modelspace()
     msp.add_lwpolyline([(0, 0), (W, 0), (W, FLAT_L), (0, FLAT_L)], close=True, dxfattribs={'layer': 'CUT'})
@@ -204,6 +379,8 @@ def build_dxf():
                 pts = [(x0 + rr, y0, 0), (x1 - rr, y0, b), (x1, y0 + rr, 0), (x1, y1 - rr, b),
                        (x1 - rr, y1, 0), (x0 + rr, y1, b), (x0, y1 - rr, 0), (x0, y0 + rr, b)]
                 msp.add_lwpolyline(pts, format='xyb', close=True, dxfattribs={'layer': 'CUT'})
+    for u in WING_HOLES_U:
+        msp.add_circle(wing_flat(u), WING_HOLE_D / 2, dxfattribs={'layer': 'CUT'})
     # 절곡선 (중립축 호의 가운데)
     y_top = FLAT_L - (FLAT_WING + BA / 2)
     y_low = FLAT_L - (FLAT_WING + BA + FLAT_SLOPE + BA / 2)
@@ -216,13 +393,195 @@ def build_dxf():
     hatch.dxf.hatch_style = 0  # 짝홀(odd parity) — 글자 속 구멍
     for loop in MARKS:
         pts = [to_flat(u, v) for u, v in loop]
-        msp.add_lwpolyline(pts, close=True, dxfattribs={'layer': 'MARK'})
+        # msp.add_lwpolyline(pts, close=True, dxfattribs={'layer': 'MARK'})  # 윤곽선 — 일러스트가 선 두께를 입혀 글자가 굵어져서 뺌(채움만)
         hatch.paths.add_polyline_path(pts, is_closed=True)
+    # 실크 인쇄 위치 — 묶음마다 외곽 사각형 + 번호(경사면 좌표 = 왼쪽 끝·위 꼭짓점에서)
+    for i, (u0, v0, u1, v1) in enumerate(SILK_GROUPS, 1):
+        a, b = to_flat(u0, v0), to_flat(u1, v1)
+        msp.add_lwpolyline([(a[0], a[1]), (b[0], a[1]), (b[0], b[1]), (a[0], b[1])], close=True,
+                           dxfattribs={'layer': 'SILK'})
+        msp.add_text(f'S{i}  X{u0:.1f} Y{v0:.1f}  {u1 - u0:.1f}x{v1 - v0:.1f}', height=2.5,
+                     dxfattribs={'layer': 'SILK'}).set_placement((a[0], a[1] + 1.5))
     msp.add_text(f'AL5052 t{T:g}  전개 {W:g} x {FLAT_L:.2f}  (K={K}, R{R:g} 기준 — 업체 장비 값으로 재전개)',
                  height=4, dxfattribs={'layer': 'NOTE'}).set_placement((0, -10))
-    doc.saveas(OUT / 'cover_slope_flat.dxf')
-    print(f'DXF: 전개 {W:g} x {FLAT_L:.2f} mm, 절단 {len(CUTS)}개, 마킹 고리 {len(MARKS)}개')
+    doc.saveas(OUT / f'cover_slope_flat_{TAG}.dxf')
+    print(f'DXF: 전개 {W:g} x {FLAT_L:.2f} mm, 절단 {len(CUTS)}+{len(WING_HOLES_U)}개, 마킹 고리 {len(MARKS)}개')
     return y_top, y_low
+
+
+# ── UV 인쇄용 1:1 PDF ──
+def build_mark_pdf():
+    """마킹 채움만(선 없음), 전개도 좌표 1:1. 외곽·구멍은 위치 맞춤용 가는 빨간 선(인쇄 안 함)."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import PathPatch, Circle as MCircle, Ellipse as MEllipse, FancyBboxPatch, Rectangle as MRect
+    from matplotlib.path import Path as MPath
+    M = 10  # 여백 mm
+    fig = plt.figure(figsize=((W + 2 * M) / 25.4, (FLAT_L + 2 * M) / 25.4))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(-M, W + M); ax.set_ylim(-M, FLAT_L + M); ax.axis('off')
+    ref = dict(fill=False, lw=0.25, ec='#ff0000')
+    ax.add_patch(MRect((0, 0), W, FLAT_L, **ref))
+    for cut in CUTS:
+        cx, cy = to_flat(cut[1], cut[2])
+        if cut[0] == 'circle':
+            ax.add_patch(MCircle((cx, cy), cut[3], **ref))
+        elif cut[0] == 'ellipse':
+            ax.add_patch(MEllipse((cx, cy), 2 * cut[3], 2 * cut[4], **ref))
+        else:
+            w, h, rr = cut[3], cut[4], cut[5]
+            ax.add_patch(FancyBboxPatch((cx - w / 2 + rr, cy - h / 2 + rr), w - 2 * rr, h - 2 * rr,
+                                        boxstyle=f'round,pad={rr}' if rr > 0 else 'square,pad=0', **ref))
+    for u in WING_HOLES_U:
+        ax.add_patch(MCircle(wing_flat(u), WING_HOLE_D / 2, **ref))
+    verts, codes = [], []
+    for loop in MARKS:
+        pts = [to_flat(u, v) for u, v in loop]
+        verts += pts + [pts[0]]
+        codes += [MPath.MOVETO] + [MPath.LINETO] * (len(pts) - 1) + [MPath.CLOSEPOLY]
+    ax.add_patch(PathPatch(MPath(verts, codes), fc='#000000', ec='none', lw=0))
+    fig.savefig(OUT / f'cover_slope_mark_{TAG}.pdf')
+    print(f'MARK: cover_slope_mark_{TAG}.pdf (1:1, {W + 2 * M:g} x {FLAT_L + 2 * M:.1f} mm)')
+
+
+# ── 실크 인쇄 위치도 DXF (업체가 CAD로 받아야 한다고 해서) ──
+def build_silk_dxf():
+    """경사면 완성 형상(360 x 260, 바깥 면에서 본 모습) 좌표. 원점 = 왼쪽 위 꼭짓점, y 위로+ (아래로 갈수록 −).
+    인쇄 = SILK_PRINT 해치(검정), 묶음 외곽 = SILK_BOX, 위치 치수 = SILK_DIM. 글자는 CAD 글꼴 문제 없게 영문."""
+    doc = ezdxf.new('R2010', setup=True)
+    doc.units = ezdxf.units.MM
+    for name, col, lt in [('OUTLINE', 7, 'CONTINUOUS'), ('CUT_REF', 8, 'CONTINUOUS'), ('BEND', 1, 'DASHED'),
+                          ('SILK_PRINT', 7, 'CONTINUOUS'), ('SILK_BOX', 6, 'DASHED'), ('SILK_DIM', 3, 'CONTINUOUS'),
+                          ('NOTE', 3, 'CONTINUOUS')]:
+        doc.layers.add(name, color=col, linetype=lt)
+    msp = doc.modelspace()
+    P = lambda u, v: (u, -v)
+    msp.add_lwpolyline([P(0, 0), P(W, 0), P(W, SLOPE), P(0, SLOPE)], close=True, dxfattribs={'layer': 'OUTLINE'})
+    for vv in (SB, SLOPE - SB):
+        msp.add_line(P(0, vv), P(W, vv), dxfattribs={'layer': 'BEND'})
+    for cut in CUTS:
+        cx, cy = P(cut[1], cut[2])
+        if cut[0] == 'circle':
+            msp.add_circle((cx, cy), cut[3], dxfattribs={'layer': 'CUT_REF'})
+        elif cut[0] == 'ellipse':
+            rx, ry = cut[3], cut[4]
+            major, ratio = ((rx, 0, 0), ry / rx) if rx >= ry else ((0, ry, 0), rx / ry)
+            msp.add_ellipse((cx, cy), major_axis=major, ratio=ratio, dxfattribs={'layer': 'CUT_REF'})
+        else:
+            w, h = cut[3], cut[4]
+            msp.add_lwpolyline([(cx - w / 2, cy - h / 2), (cx + w / 2, cy - h / 2), (cx + w / 2, cy + h / 2),
+                                (cx - w / 2, cy + h / 2)], close=True, dxfattribs={'layer': 'CUT_REF'})
+    hatch = msp.add_hatch(color=7, dxfattribs={'layer': 'SILK_PRINT'})
+    hatch.set_pattern_fill('SOLID')
+    hatch.dxf.hatch_style = 0  # 짝홀 — 글자 속 구멍
+    for loop in MARKS:
+        hatch.paths.add_polyline_path([P(u, v) for u, v in loop], is_closed=True)
+    dim = dict(dimstyle='EZDXF', override={'dimlfac': 1, 'dimtxt': 2.5, 'dimasz': 2, 'dimexe': 1, 'dimexo': 1, 'dimdec': 1},
+               dxfattribs={'layer': 'SILK_DIM'})
+    for i, (u0, v0, u1, v1) in enumerate(SILK_GROUPS, 1):
+        msp.add_lwpolyline([P(u0, v0), P(u1, v0), P(u1, v1), P(u0, v1)], close=True, dxfattribs={'layer': 'SILK_BOX'})
+        msp.add_text(f'S{i}', height=3, dxfattribs={'layer': 'SILK_BOX'}).set_placement((u0, -v0 + 1.5))
+        # 왼쪽 끝 → 묶음 왼쪽, 위 꼭짓점 → 묶음 위 (치수선은 묶음 바로 위·왼쪽에)
+        msp.add_linear_dim(base=(0, -v0 + 4), p1=(0, -v0), p2=(u0, -v0), angle=0, **dim).render()
+        msp.add_linear_dim(base=(u0 - 4 - 6 * (i // 2 % 2), 0), p1=(u0, 0), p2=(u0, -v0), angle=90, **dim).render()
+    notes = ['SILK PRINT: 1 COLOR, BLACK, OUTER FACE (VIEWER SIDE)',
+             f'VIEW: SLOPE FACE {W:g} x {SLOPE:g} AS FINISHED, SEEN FROM OUTSIDE',
+             'ORIGIN (0,0) = LEFT EDGE / UPPER BEND VERTEX (INNER MOLD LINE)',
+             'SILK_PRINT = INK AREA (SOLID HATCH)   SILK_BOX = GROUP EXTENT   SILK_DIM = POSITION',
+             'CUT_REF = HOLES (REFERENCE)   BEND = BEND START (FLAT AREA BETWEEN)']
+    for k, (u0, v0, u1, v1) in enumerate(SILK_GROUPS, 1):
+        notes.append(f'S{k}: X {u0:.1f}  Y {v0:.1f}  SIZE {u1 - u0:.1f} x {v1 - v0:.1f}')
+    for k, t in enumerate(notes):
+        msp.add_text(t, height=3, dxfattribs={'layer': 'NOTE'}).set_placement((0, -SLOPE - 15 - k * 6))
+    doc.saveas(OUT / f'cover_slope_silk_{TAG}.dxf')
+    print(f'SILK DXF: cover_slope_silk_{TAG}.dxf (경사면 좌표, 치수 {2 * len(SILK_GROUPS)}개)')
+
+
+# ── 실크 인쇄 위치도 PDF ──
+def build_silk_pdf():
+    """경사면(완성품, 바깥 면에서 본 모습)에 인쇄 묶음 위치를 치수로. 기준 = 왼쪽 끝 / 위 꼭짓점(안쪽 면 연장선).
+    전개도가 아니라 완성 형상 좌표라 업체가 재전개해도 값이 그대로다."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib import font_manager
+    from matplotlib.patches import Circle as MCircle, Ellipse as MEllipse, FancyBboxPatch, PathPatch, Rectangle as MRect
+    from matplotlib.path import Path as MPath
+    for f in [Path.home() / 'Library/Fonts/MonoplexKR-Regular.ttf']:
+        if f.exists():
+            font_manager.fontManager.addfont(str(f))
+            plt.rcParams['font.family'] = font_manager.FontProperties(fname=str(f)).get_name()
+    plt.rcParams['axes.unicode_minus'] = False
+
+    fig = plt.figure(figsize=(16.54, 11.69))  # A3 가로
+    fig.text(0.03, 0.955, f'경사면 덮개 — 실크 인쇄 위치도 (AL5052 {T:g}t)', fontsize=18)
+    fig.text(0.03, 0.93, f'경사면 {W:g} x {SLOPE:g}, 바깥 면(관람객 쪽)에서 본 모습. '
+             f'X = 왼쪽 끝에서, Y = 위 꼭짓점(위 날개 쪽 절곡, 안쪽 면 연장선)에서 아래로. 단위 mm',
+             fontsize=10, color='#444')
+    ax = fig.add_axes([0.03, 0.05, 0.62, 0.84])
+    flip = lambda u, v: (u, SLOPE - v)  # v 아래로 → 그림 y 위로
+    ax.add_patch(MRect((0, 0), W, SLOPE, fill=False, lw=1))
+    for vv in (SB, SLOPE - SB):  # 절곡 시작선 — 여기 넘어가면 평면이 아니다
+        ax.plot([0, W], [SLOPE - vv] * 2, color='#d33', ls=(0, (6, 3)), lw=0.6)
+    ax.text(W + 3, SLOPE - SB, f'위 절곡 시작 (Y {SB:.1f})', va='center', fontsize=7, color='#d33')
+    ax.text(W + 3, SB, f'아래 절곡 시작 (Y {SLOPE - SB:.1f})', va='center', fontsize=7, color='#d33')
+    ref = dict(fill=False, lw=0.5, ec='#aaa')
+    for cut in CUTS:
+        cx, cy = flip(cut[1], cut[2])
+        if cut[0] == 'circle':
+            ax.add_patch(MCircle((cx, cy), cut[3], **ref))
+        elif cut[0] == 'ellipse':
+            ax.add_patch(MEllipse((cx, cy), 2 * cut[3], 2 * cut[4], **ref))
+        else:
+            w, h, rr = cut[3], cut[4], cut[5]
+            ax.add_patch(FancyBboxPatch((cx - w / 2 + rr, cy - h / 2 + rr), w - 2 * rr, h - 2 * rr,
+                                        boxstyle=f'round,pad={rr}' if rr > 0 else 'square,pad=0', **ref))
+    verts, codes = [], []
+    for loop in MARKS:
+        pts = [flip(u, v) for u, v in loop]
+        verts += pts + [pts[0]]
+        codes += [MPath.MOVETO] + [MPath.LINETO] * (len(pts) - 1) + [MPath.CLOSEPOLY]
+    ax.add_patch(PathPatch(MPath(verts, codes), color='#000', lw=0))  # 실제 잉크 색
+    rows = []
+    for i, (u0, v0, u1, v1) in enumerate(SILK_GROUPS, 1):
+        x0, y1 = flip(u0, v0)
+        ax.add_patch(MRect((x0 - 1, y1 - (v1 - v0) - 1), u1 - u0 + 2, v1 - v0 + 2, fill=False, lw=0.5,
+                           ec='#c0c', ls=(0, (3, 2))))
+        ax.text(x0 - 1, y1 + 2, f'S{i}', fontsize=9, color='#c0c', va='bottom')
+        # 기준선에서 묶음 왼쪽 위 모서리까지
+        ax.plot([0, x0], [y1, y1], color='#c0c', lw=0.3, ls=':')
+        ax.plot([x0, x0], [SLOPE, y1], color='#c0c', lw=0.3, ls=':')
+        rows.append(f'S{i}   X {u0:6.1f}   Y {v0:6.1f}   {u1 - u0:5.1f} x {v1 - v0:5.1f}')
+    ax.annotate('', xy=(0, -10), xytext=(W, -10), arrowprops=dict(arrowstyle='<->', lw=0.6))
+    ax.text(W / 2, -16, f'{W:g}', ha='center', fontsize=9)
+    ax.annotate('', xy=(-12, 0), xytext=(-12, SLOPE), arrowprops=dict(arrowstyle='<->', lw=0.6))
+    ax.text(-15, SLOPE / 2, f'{SLOPE:g}', ha='right', va='center', fontsize=9)
+    ax.plot([0], [SLOPE], 'o', ms=5, color='#c0c')
+    ax.text(-3, SLOPE + 4, '기준 (X0, Y0)', ha='right', fontsize=8, color='#c0c')
+    ax.set_aspect('equal'); ax.set_xlim(-40, W + 60); ax.set_ylim(-25, SLOPE + 12); ax.axis('off')
+
+    notes = [
+        '인쇄 묶음 (점선 상자 = 묶음 외곽)',
+        '      왼쪽 위 모서리         크기',
+        *rows,
+        '',
+        '인쇄: 실크 1도, 잉크 검정, 바깥 면(관람객 쪽)',
+        '순서: 블라스트·아노다이징 → 인쇄',
+        '  (절곡 전 평판 인쇄 / 절곡 후 인쇄는 귀사 판단.',
+        f'   인쇄는 모두 경사면 평면부 안 — 아래 절곡 시작까지',
+        f'   {SLOPE - SB - max(b[3] for b in SILK_GROUPS):.1f} 여유)',
+        '필름 원본: cover_slope_mark_{TAG}.pdf'.format(TAG=TAG),
+        '  (전개도 좌표 1:1, 검정 = 인쇄, 빨간 선 = 위치 참고)',
+        f'DXF: cover_slope_flat_{TAG}.dxf — MARK(인쇄)·SILK(묶음) 레이어',
+        '회색 = 절단 구멍(참고), 빨강 점선 = 절곡 시작',
+    ]
+    fig.text(0.68, 0.86, '\n'.join(notes), fontsize=9.5, va='top', linespacing=1.7)
+    fig.savefig(OUT / f'cover_slope_silk_{TAG}.pdf')
+    fig.savefig(OUT / f'cover_slope_silk_{TAG}.png', dpi=110)
+    print(f'SILK: cover_slope_silk_{TAG}.pdf — 묶음 {len(SILK_GROUPS)}개')
+    for r in rows:
+        print('  ' + r)
 
 
 # ── 견적 도면 PDF ──
@@ -306,6 +665,11 @@ def build_pdf(y_top, y_low):
             w, h, rr = cut[3], cut[4], cut[5]
             ax.add_patch(FancyBboxPatch((cx - w / 2 + rr, cy - h / 2 + rr), w - 2 * rr, h - 2 * rr,
                                         boxstyle=f'round,pad={rr}' if rr > 0 else 'square,pad=0', fill=False, lw=0.6))
+    for u in WING_HOLES_U:
+        ax.add_patch(MCircle(wing_flat(u), WING_HOLE_D / 2, fill=False, lw=0.6))
+    hy = wing_flat(0)[1]
+    ax.text(WING_HOLES_U[0] + 6, hy, f'{len(WING_HOLES_U)}-Ø{WING_HOLE_D:g} (M6) — 날개 끝에서 {WING - WING_HOLE_IN:g}, '
+            f'양 끝에서 {WING_HOLES_U[0]:g}·가운데', va='center', fontsize=7)
     from matplotlib.path import Path as MPath
     verts, codes = [], []
     for loop in MARKS:
@@ -318,7 +682,7 @@ def build_pdf(y_top, y_low):
         for yy in (y - BA / 2, y + BA / 2):  # 절곡 구간 시작·끝
             ax.plot([-8, W + 8], [yy, yy], color='#d33', ls=(0, (6, 3)), lw=0.6)
         ax.text(W + 10, y, f'절곡 45°\n(뒤로 접힘) 안쪽 R{R:g}', va='center', fontsize=8, color='#d33')
-    ax.text(W / 2, (FLAT_L + y_top) / 2, '위 날개 (아크릴 밑)', ha='center', va='center', fontsize=8, color='#999')
+    ax.text((W / 2 + WING_HOLES_U[-1]) / 2, (FLAT_L + y_top) / 2, '위 날개 (아크릴 밑)', ha='center', va='center', fontsize=8, color='#999')
     ax.text(W / 2, y_low / 2, '아래 날개', ha='center', va='center', fontsize=8, color='#999')
     ax.annotate('', xy=(0, -10), xytext=(W, -10), arrowprops=dict(arrowstyle='<->', lw=0.6))
     ax.text(W / 2, -16, f'{W:g}', ha='center', fontsize=9)
@@ -328,20 +692,22 @@ def build_pdf(y_top, y_low):
     ax.set_title('전개도 (바깥 면에서 본 모습) — 검정 = 절단, 파랑 = 마킹, 빨강 점선 = 절곡', fontsize=11, loc='left')
 
     notes = [
-        f'재질: AL5052-H32  t{T:g}',
+        f'재질: AL5052  t{T:g}',
         '수량: 1EA',
         f'가공: 레이저 절단 → R 절곡 2곳 (45°, 같은 방향, 안쪽 R{R:g})',
         f'  브라켓 R15와 동심으로 감쌈.',
+        f'위 날개 구멍 {len(WING_HOLES_U)}-Ø{WING_HOLE_D:g}: 위 밑판·프레임과 M6 공용 체결',
         '표면: 비드(샌드)블라스트 → 무색 아노다이징, 무광',
-        '마킹: 파란 영역 — UV 인쇄',
+        # f'마킹: 파란 영역 — UV 인쇄. 인쇄 원본 = cover_slope_mark_{TAG}.pdf (1:1, 검정 채움, 빨간 선은 위치 참고)',
+        f'마킹: 파란 영역 — 실크 인쇄 1도, 잉크 검정. 위치 = cover_slope_silk_{TAG}.pdf, 필름 원본 = cover_slope_mark_{TAG}.pdf (1:1)',
         f'전개 길이는 참고값(K={K}). 3D(STEP) 형상 기준으로 귀사 장비 값으로 재전개 바랍니다',
     ]
     fig.text(0.03, 0.26, '\n'.join(notes), fontsize=9.5, va='top', linespacing=1.7)
-    fig.text(0.03, 0.06, f'첨부: cover_slope_AL5052_{T:g}t.step (3D) / cover_slope_flat.dxf (전개도: CUT·BEND·MARK 레이어)',
+    fig.text(0.03, 0.06, f'첨부: cover_slope_{TAG}.step (3D) / cover_slope_flat_{TAG}.dxf (전개도: CUT·BEND·MARK·SILK 레이어)',
              fontsize=9, color='#444')
-    fig.savefig(OUT / 'cover_slope_drawing.pdf')
-    fig.savefig(OUT / 'cover_slope_drawing.png', dpi=110)
-    print('PDF: cover_slope_drawing.pdf')
+    fig.savefig(OUT / f'cover_slope_drawing_{TAG}.pdf')
+    fig.savefig(OUT / f'cover_slope_drawing_{TAG}.png', dpi=110)
+    print(f'PDF: cover_slope_drawing_{TAG}.pdf')
 
 
 if __name__ == '__main__':
@@ -350,3 +716,6 @@ if __name__ == '__main__':
     build_step()
     yt, yl = build_dxf()
     build_pdf(yt, yl)
+    build_mark_pdf()
+    build_silk_pdf()
+    build_silk_dxf()

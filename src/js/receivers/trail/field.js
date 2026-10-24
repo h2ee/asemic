@@ -148,7 +148,10 @@ export function createField(gl, quadBuf) {
         gl.uniform1f(uComp('u_growGain'), p.growGain);
         gl.uniform1f(uComp('u_growOpacity'), p.growOpacity);
         gl.uniform2f(uComp('u_cssSize'), cssW, cssH);
-        gl.uniform1f(uComp('u_pixel'), p.pixel ?? 0);
+        const px = Array.isArray(p.pixel) ? p.pixel : [p.pixel ?? 0, p.pixel ?? 0];
+        gl.uniform1f(uComp('u_pixel'), px[0]);
+        gl.uniform1f(uComp('u_pixelHi'), px[1]);
+        gl.uniform2f(uComp('u_pixelVar'), p.pixelVar?.block ?? 12, p.pixelVar?.scale ?? 0.02);
         gl.uniform2fv(uComp('u_origin'), p.origin ?? [0, 0]);
         const G = p.grain ?? {};
         gl.uniform4f(uComp('u_grain'), G.amount ?? 0, G.freq ?? 1, G.warp ?? 0, G.scale ?? 0.03);

@@ -14,9 +14,19 @@
 // 글자 모양은 화면 크기와 무관하다 — layoutFor와 같은 방식으로 기준 크기(sylSize × H/refHeight)
 // 모양을 만들고 셰이더 균일 스케일(glyphScale)로 키운다. 즉 전시 화면의 그 글자를 확대한 것.
 // 음절 하나씩이라 허브·연결 실은 없다(연결 실은 이전 음절이 있어야 생긴다).
+//
+// ?receiver=sora — 클라드니 원 하나 = 음절 하나(bake-common.js makeSoraBake). 창 크기와 무관하게
+// 출력 크기 캔버스에 바로 그린다(size=0이면 창 짧은 변×DPR). fill = 보이는 원 지름 비율.
+// sora 선은 fwidth 기반 ~1px라 출력이 클수록 원에 비해 선이 가늘어진다(전시 원 지름은 대략 수백 px).
+// sora는 종성을 안 봐서 받침만 다른 음절은 같은 그림이다.
+//
+// ?receiver=signal — 음절 하나 = lattice 하나(bake-common.js makeSignalBake). ?steps=N 이면 CA를 N step
+// (전시 시간으로 N×0.14초) 돌린 순간을 굽는다. ?settle=1 이면 그 뒤 셀 크기 보간이 끝날 때까지 기다린다.
+// ?sylsize= 음절 기준 크기(CSS px, 기본 receiver 값) — 셀은 12px 고정이라 이게 셀 개수를 정한다.
+// 파일 이름에 step이 붙는다(NNNN_가_s12.png).
 
-import { decomposeSyllables, syllablesToUniforms } from '../js/core.js';
-import { makeBakeReceiver, glyphScaleFor, readAccum, listSaved, savePng } from './bake-common.js';
+import { decomposeSyllables, syllablesToUniforms, JAMO } from '../js/core.js';
+import { makeBakeReceiver, makeSoraBake, makeSignalBake, glyphScaleFor, readAccum, listSaved, savePng } from './bake-common.js';
 
 const $ = id => document.getElementById(id);
 const q = new URLSearchParams(location.search);
@@ -30,13 +40,36 @@ function ks2350() {
     return s;
 }
 
+const RECEIVER = ['sora', 'signal'].includes(q.get('receiver')) ? q.get('receiver') : 'mycelium';
+$('receiver').value = RECEIVER;
+$('receiver').onchange = () => {
+    q.set('receiver', $('receiver').value);
+    q.delete('dir');
+    location.search = q.toString();
+};
+if (RECEIVER !== 'mycelium') $('instant-row').style.display = 'none'; // sora는 모프를 스냅, signal은 step으로 정한다
+if (RECEIVER !== 'signal') for (const el of document.querySelectorAll('.signal-row')) el.style.display = 'none';
+
 $('text').value = q.get('text') ?? '';
 $('size').value = q.get('size') ?? 1080;
 $('fill').value = q.get('fill') ?? 0.84;
-$('dir').value = q.get('dir') ?? 'mycelium';
+$('dir').value = q.get('dir') ?? RECEIVER;
 $('instant').checked = q.get('instant') === '1';
+$('steps').value = q.get('steps') ?? 0;
+$('settle').checked = q.get('settle') === '1';
 
-const { r, waitIdle } = await makeBakeReceiver();
+let r, waitIdle, sora, signal;
+if (RECEIVER === 'mycelium') ({ r, waitIdle } = await makeBakeReceiver());
+else {
+    const cvs = document.createElement('canvas');
+    cvs.id = `${RECEIVER}-canvas`;
+    document.body.appendChild(cvs);
+    if (RECEIVER === 'sora') sora = await makeSoraBake(cvs);
+    else {
+        signal = await makeSignalBake(cvs);
+        $('sylsize').value = q.get('sylsize') ?? signal.r.sylSize;
+    }
+}
 
 let resizes = 0;
 window.addEventListener('resize', () => resizes++);
@@ -54,6 +87,28 @@ async function grow(ch, fill, instant) {
     if (instant) r.forceRebake(u, 1);
     else r.update(u, 1, items);
     await waitIdle();
+}
+
+// sora: 출력 크기 캔버스에 바로 한 장
+async function bakeSora(ch, fill, size) {
+    const items = decomposeSyllables(ch).filter(s => !s.isSpace);
+    const side = size || Math.round(Math.min(innerWidth, innerHeight) * Math.min(devicePixelRatio, 2));
+    sora.draw(items, JAMO, side, fill);
+    const cvs = sora.r._canvas;
+    const blob = await new Promise(res => cvs.toBlob(res, 'image/png'));
+    return { blob, Q: side };
+}
+
+// signal: CA를 steps만큼 돌린 순간을 출력 크기 캔버스에 한 장
+async function bakeSignal(ch, fill, size, steps, settle) {
+    const items = decomposeSyllables(ch).filter(s => !s.isSpace);
+    const side = size || Math.round(Math.min(innerWidth, innerHeight) * Math.min(devicePixelRatio, 2));
+    const sylSize = Math.max(24, parseFloat($('sylsize').value) || signal.r.sylSize);
+    signal.draw(items, JAMO, side, fill, steps, settle, sylSize);
+    await new Promise(res => setTimeout(res)); // 몇백 step이면 한 음절이 길다 — 화면·중지 버튼이 숨 쉬게
+    const cvs = signal.r._canvas;
+    const blob = await new Promise(res => cvs.toBlob(res, 'image/png'));
+    return { blob, Q: side };
 }
 
 // 누적 버퍼 가운데 정사각형 → PNG Blob
@@ -74,10 +129,13 @@ async function run() {
     const chars = [...new Set([...($('text').value.trim() || ks2350())].filter(c => c >= '가' && c <= '힣'))];
     const size = Math.max(0, parseInt($('size').value, 10) || 0);
     const fill = parseFloat($('fill').value) || 0.84;
-    const dir = $('dir').value.trim() || 'mycelium';
+    const dir = $('dir').value.trim() || RECEIVER;
     const instant = $('instant').checked;
+    const steps = Math.max(0, parseInt($('steps').value, 10) || 0);
+    const settle = $('settle').checked;
     const pad = String(chars.length).length < 4 ? 4 : String(chars.length).length;
-    const names = chars.map((c, i) => `${String(i + 1).padStart(pad, '0')}_${c}.png`);
+    const tag = signal ? `_s${steps}${settle ? 'z' : ''}` : '';
+    const names = chars.map((c, i) => `${String(i + 1).padStart(pad, '0')}_${c}${tag}.png`);
 
     const existing = $('skip').checked ? await listSaved(dir) : new Set();
 
@@ -87,7 +145,9 @@ async function run() {
     for (let i = 0; i < chars.length && running; i++) {
         if (existing.has(names[i])) continue;
         let blob, Q;
-        for (;;) {
+        if (sora) ({ blob, Q } = await bakeSora(chars[i], fill, size));
+        else if (signal) ({ blob, Q } = await bakeSignal(chars[i], fill, size, steps, settle));
+        else for (;;) {
             const rz = resizes;
             await grow(chars[i], fill, instant);
             if (rz !== resizes) continue; // 굽는 도중 창 크기가 바뀌었다 — 다시
@@ -109,7 +169,7 @@ async function run() {
         );
     }
     setStatus(`${running ? '완료' : '중지'} — 이번에 ${done}장 저장 (bake/${dir}/)${warned}`);
-    r.clearAccum();
+    (sora?.r ?? signal?.r ?? r).clearAccum();
 }
 
 $('go').onclick = async () => {
@@ -131,5 +191,6 @@ $('go').onclick = async () => {
 };
 
 const dpr = Math.min(window.devicePixelRatio, 2);
-setStatus(`준비됨 — 창 짧은 변×DPR = ${Math.round(Math.min(innerWidth, innerHeight) * dpr)}px`);
+if (sora || signal) setStatus(`준비됨 (${RECEIVER}) — 출력 ${$('size').value || '창 짧은 변×DPR'}px 정사각`);
+else setStatus(`준비됨 — 창 짧은 변×DPR = ${Math.round(Math.min(innerWidth, innerHeight) * dpr)}px`);
 if (q.get('auto') === '1') $('go').click();
