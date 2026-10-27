@@ -13,13 +13,65 @@
 //   현재: 1~4 (이전: 1~7)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAX_SYL = 9;
+import { jongEntry } from './trail/jamoTrail.js';
+
+// 셰이더 슬롯(원) 수 상한. 화면에 띄우는 단어 수는 따로 maxWords(기본 MAX_WORDS) — bake-text가 한 행의
+// 문장들을 한 캔버스에 그릴 때만 늘린다(2026-10-28). 셰이더 루프는 u_sylCount에서 끊겨서 상한이 커도 비용은 같다
+export const MAX_SYL = 32;
+export const MAX_WORDS = 9;
+// 문장 단어를 MAX_WORDS개씩 박스(전시 한 화면)로 나눌 때, 마지막 박스가 이 개수 이하면 앞 박스에 붙인다(2026-10-28).
+// 11단어 = 9 + 2 → 11 한 박스. bake-text 박스 나누기 전용 — 전시는 그대로 maxWords(9)개만(타이핑 중 13단어째에
+// 10~12번째 원이 사라지는 게 어색해서 안 씀)
+export const MERGE_WORDS = 3;
+export function wordBoxSizes(n, max = MAX_WORDS, merge = MERGE_WORDS) {
+    const sizes = [];
+    for (let left = n; left > 0; left -= sizes[sizes.length - 1]) sizes.push(Math.min(max, left));
+    if (sizes.length > 1 && sizes[sizes.length - 1] <= merge) sizes[sizes.length - 2] += sizes.pop();
+    return sizes;
+}
 const MORPH_DUR = 0.8;
 const WAVE_DUR = 2.4;
 
 // ── 복잡도 조절 파라미터 (실험중)──────────────────────────────────────────────────────
 const M_MAX = 2.0; // f1ToM 상한 (낮출수록 단순)
 const N_MAX = 7.0; // f2ToN 상한
+
+// ── 종성 → 나선 잔물결 (2026-10-28) ──────────────────────────────────────────────
+// 예전엔 종성을 안 봐서 가/각/간/강/갑… 이 같은 그림이었다. 클라드니 본체(m·n)·색은 그대로 두고,
+// 덧씌운 나선 잔물결 sin(r·freq + θ·2 + phase) 만 종성으로 바꾼다. θ 계수 2(팔 둘 = 소라 나선)는 건드리지 않는다
+//   조음방법 → r 주파수(나선이 감기는 촘촘함) / 조음위치 → 위상(물결이 도는 각도)
+// 받침 없음 = (12, 0) — 예전 잔물결 그대로. 주파수 12 는 원래 눈으로 고른 값이다
+const DISP_FREQ = 12;
+// [조음방법 y, 주파수] — 파열 0 · 파찰 0.33 · 마찰 0.5 · 비음 0.75 · 유음 1.
+// 직선(8~17)으로 두면 마찰(12.5)·파찰(11)이 받침 없음(12)에 붙어 가↔갓·갖·갛이 안 갈려서 12 근처를 비켜 놓았다
+const JONG_FREQ = [
+    [0, 8],
+    [0.33, 9.5],
+    [0.5, 15],
+    [0.75, 17],
+    [1, 19],
+];
+// 조음위치 x(양순 0 → 후두 1) → 위상. 한 바퀴(2π)면 양 끝(ㅂ·ㅎ)이 같아져서 1.5π 까지만
+const JONG_PHASE = 1.5 * Math.PI;
+
+// 단어 원끼리 색이 섞이는 경계 폭 — 클수록 좁다(원 중심까지 거리 / 반경 차이에 곱한다). FRAG main() 참고
+const COLOR_BLEND_K = 20;
+
+function jongFreq(y) {
+    let i = 1;
+    while (i < JONG_FREQ.length - 1 && y > JONG_FREQ[i][0]) i++;
+    const [y0, f0] = JONG_FREQ[i - 1],
+        [y1, f1] = JONG_FREQ[i];
+    return f0 + (f1 - f0) * Math.min(1, Math.max(0, (y - y0) / (y1 - y0)));
+}
+
+// → [잔물결 주파수, 위상]
+function jongRipple(JAMO, jong) {
+    const e = jongEntry(JAMO, jong);
+    if (!e?.pos) return [DISP_FREQ, 0];
+    const [x, y] = e.pos;
+    return [jongFreq(y), x * JONG_PHASE];
+}
 
 const VERT = `#version 300 es
 in vec2 position;
@@ -32,6 +84,7 @@ precision highp float;
 #endif
 #define PI      3.14159265
 #define MAX_SYL ${MAX_SYL}
+#define COLOR_BLEND_K ${COLOR_BLEND_K.toFixed(1)}
 
 uniform vec2  u_resolution;
 uniform float u_time;
@@ -44,6 +97,8 @@ uniform float u_waveT[MAX_SYL];
 uniform float u_radii[MAX_SYL];
 uniform float u_sminK;
 uniform float u_f3Norm[MAX_SYL];
+uniform vec2  u_ripple[MAX_SYL];     // 종성 → 잔물결 (r 주파수, 위상) — JS jongRipple()
+uniform vec2  u_ripplePrev[MAX_SYL]; // 모프 시작값 (u_prev 와 같은 역할)
 
 out vec4 fragColor;
 
@@ -117,8 +172,9 @@ float sylSDF(int i, vec2 p, float aspect) {
   float d = chladniVal(m, n, theta, r);
   d *= 1.0 + waveAmp * 0.4;
 
-  // sine 방식
-  float disp = sin(r * 12.0 + theta * 2.0) * 0.9; //0.4, 1.4
+  // sine 방식 — r 주파수·위상은 종성 (받침 없으면 12, 0)
+  vec2  rip  = mix(u_ripplePrev[i], u_ripple[i], eio(clamp(u_morphT[i], 0.0, 1.0)));
+  float disp = sin(r * rip.x + theta * 2.0 + rip.y) * 0.9; //0.4, 1.4
   //noise 방식 (rand 활용)
   float disp2 = rand(vec3(floor(delta * 270.0), 0.0)) * 0.05;
   // 선에 필압 같은 효과
@@ -171,7 +227,7 @@ vec3 heatmap2(float t, float choX, float choZ) {
 
 //현재 사용
 vec3 heatmap3(float t, float choX, float choZ) {
-  vec3  hue   = hue2rgb(choX * 1.82); // 1.82
+  vec3  hue   = hue2rgb(choX * 0.82); // 0.82
   float vivid = 0.05 + choZ * 0.50;
   vec3  peak  = mix(vec3(0.95), hue, vivid);
   vec3  dark  = peak * 1.5; //0.15, 3.15, 1.15
@@ -196,25 +252,40 @@ void main() {
   vec2 shk = vec2(cos(shk_a), sin(shk_a)) * shk_r;
   //uv += shk;
 
+  // ── 색 = 단어 원마다 고유 색, 원 경계 근처만 섞기 (2026-10-28) ─────────────────────
+  // 예전엔 choX/choZ를 (0.5, 0.33)에서 시작해 SDF 가중치 1/(d²) 로 평균했다. 원 하나면 그 결과가
+  //   (choX + 0.5·(d²+0.001), choZ + 0.33·(d²+0.001)) — 마디선에서 멀수록 초성과 무관하게 올라가는 몫이 지금 룩의 색 띠다.
+  // 원이 여럿이면 가중치 합이 커져 그 몫이 줄고 초성끼리 평균이 돼서, 문장 안 단어 원들이 단독일 때보다 바래고 비슷해졌다.
+  // 이제 초성 값은 가장 가까운 원(원 중심까지 거리 / 반경)을 따르고 경계에서만 COLOR_BLEND_K 폭으로 섞으며,
+  // 색 띠 몫은 합친 무늬 d로 얹는다 — 원 하나면 예전과 픽셀까지 같다
   float d       = 1e9;
-  float choXAcc = 0.5;
-  float choZAcc = 0.33;
+  float choXAcc = 0.0;
+  float choZAcc = 0.0;
   float totalW  = 0.0;
+
+  float dnMin = 1e9; // 가장 가까운 원까지 거리 / 반경
+  for (int i = 0; i < MAX_SYL; i++) {
+    if (i >= count) break;
+    vec2 dl = uv - u_pos[i];
+    dl.x   *= aspect;
+    dnMin   = min(dnMin, length(dl) / u_radii[i]);
+  }
 
   for (int i = 0; i < MAX_SYL; i++) {
     if (i >= count) break;
     float di   = sylSDF(i, uv, aspect);
     vec4  cp   = interpParams(i);
-    float choX = cp.z;
-    float choZ = cp.w;
-    float w    = 1.0 / (di * di + 0.001);
-    choXAcc   += choX * w;
-    choZAcc   += choZ * w;
+    vec2  dl   = uv - u_pos[i];
+    dl.x      *= aspect;
+    float dn   = length(dl) / u_radii[i];
+    float w    = exp(-(dn - dnMin) * COLOR_BLEND_K); // 가장 가까운 원 = 1 (언더플로 없음)
+    choXAcc   += cp.z * w;
+    choZAcc   += cp.w * w;
     totalW    += w;
     d = smin(d, di, u_sminK);
   }
-  choXAcc /= totalW;
-  choZAcc /= totalW;
+  choXAcc = choXAcc / totalW + 0.5 * (d * d + 0.001);
+  choZAcc = choZAcc / totalW + 0.33 * (d * d + 0.001);
 
   // presence: per-slot smoothstep 후 max 합산
   float presence = 0.0;
@@ -327,6 +398,8 @@ export class SoraReceiver {
         this._morphStart = Array(MAX_SYL).fill(-999);
         this._waveStart = Array(MAX_SYL).fill(-999);
         this._f3Norms = Array(MAX_SYL).fill(0.5);
+        this._ripple = Array.from({ length: MAX_SYL }, () => [DISP_FREQ, 0]); // 종성 → 잔물결 [주파수, 위상]
+        this._prevRipple = Array.from({ length: MAX_SYL }, () => [DISP_FREQ, 0]);
         this._frozen = Array(MAX_SYL).fill(false);
         this._wordPositions = new Map(); // wordId → [x, y] (뷰포트 uv)
         this._wordRadii = new Map(); // wordId → radius (한 번 배정 후 유지)
@@ -335,6 +408,7 @@ export class SoraReceiver {
         this._sylCount = 0;
         this._sminK = 0.06;
         this.lineHeightRatio = 1.5;
+        this.maxWords = MAX_WORDS; // 화면에 띄우는 단어(원) 수 — MAX_SYL 이하
     }
 
     async init(canvas) {
@@ -388,6 +462,8 @@ export class SoraReceiver {
             this._locs[`wave_${i}`] = gl.getUniformLocation(this._prog, `u_waveT[${i}]`);
             this._locs[`f3_${i}`] = gl.getUniformLocation(this._prog, `u_f3Norm[${i}]`);
             this._locs[`rad_${i}`] = gl.getUniformLocation(this._prog, `u_radii[${i}]`);
+            this._locs[`rip_${i}`] = gl.getUniformLocation(this._prog, `u_ripple[${i}]`);
+            this._locs[`ripPrev_${i}`] = gl.getUniformLocation(this._prog, `u_ripplePrev[${i}]`);
         }
 
         this._raf = requestAnimationFrame(this._animate);
@@ -439,7 +515,7 @@ export class SoraReceiver {
         });
 
         const wordIds = [...wordGroups.keys()].sort((a, b) => a - b);
-        const slotCount = Math.min(wordIds.length, MAX_SYL);
+        const slotCount = Math.min(wordIds.length, this.maxWords, MAX_SYL);
 
         // 단어 슬롯 위치 + 반경: wordId별로 한 번만 배정, 이후 유지
         const MARGIN = 0.22;
@@ -451,10 +527,7 @@ export class SoraReceiver {
             if (!this._wordPositions.has(wid)) {
                 this._wordPositions.set(
                     wid,
-                    this._toRect(
-                        MARGIN + Math.random() * (1 - MARGIN * 2),
-                        MARGIN + Math.random() * (1 - MARGIN * 2),
-                    ),
+                    this._toRect(MARGIN + Math.random() * (1 - MARGIN * 2), MARGIN + Math.random() * (1 - MARGIN * 2)),
                 );
             }
             if (!this._wordRadii.has(wid)) {
@@ -495,8 +568,13 @@ export class SoraReceiver {
 
             const next = [f1ToM(f1, choX), f2ToN(f2), choX, choZ];
             const cur = this._cells[slotIdx];
+            // 종성 — 받침만 바뀌어도(가→각, 각→간) 모프·파동이 돈다
+            const nextRip = jongRipple(JAMO, lastSyl.syl.jong);
+            const curRip = this._ripple[slotIdx];
 
-            const changed = next.some((v, j) => Math.abs(v - cur[j]) > 0.01);
+            const changed =
+                next.some((v, j) => Math.abs(v - cur[j]) > 0.01) ||
+                nextRip.some((v, j) => Math.abs(v - curRip[j]) > 0.01);
             if (changed) {
                 // 모프 도중 인터럽트 시: 현재 보간값을 prev로 캡처 (시각적 점프 방지)
                 const elapsed = nowSec - this._morphStart[slotIdx];
@@ -505,6 +583,9 @@ export class SoraReceiver {
                 const prev = this._prevCells[slotIdx];
                 this._prevCells[slotIdx] = cur.map((v, j) => prev[j] + (v - prev[j]) * eased);
                 this._cells[slotIdx] = next;
+                const prevRip = this._prevRipple[slotIdx];
+                this._prevRipple[slotIdx] = curRip.map((v, j) => prevRip[j] + (v - prevRip[j]) * eased);
+                this._ripple[slotIdx] = nextRip;
                 this._morphStart[slotIdx] = nowSec;
                 this._waveStart[slotIdx] = nowSec;
             }
@@ -528,6 +609,7 @@ export class SoraReceiver {
     async flushQueue() {
         for (let i = 0; i < MAX_SYL; i++) {
             this._prevCells[i] = [...this._cells[i]];
+            this._prevRipple[i] = [...this._ripple[i]];
             this._morphStart[i] = -999;
             this._waveStart[i] = -999;
         }
@@ -552,6 +634,8 @@ export class SoraReceiver {
         this._morphStart = Array(MAX_SYL).fill(-999);
         this._waveStart = Array(MAX_SYL).fill(-999);
         this._f3Norms = Array(MAX_SYL).fill(0.5);
+        this._ripple = Array.from({ length: MAX_SYL }, () => [DISP_FREQ, 0]);
+        this._prevRipple = Array.from({ length: MAX_SYL }, () => [DISP_FREQ, 0]);
         this._frozen = Array(MAX_SYL).fill(false);
         this._wordPositions.clear();
         this._wordRadii.clear();
@@ -604,6 +688,8 @@ export class SoraReceiver {
             gl.uniform1f(l[`wave_${i}`], wt);
             gl.uniform1f(l[`f3_${i}`], this._f3Norms[i]);
             gl.uniform1f(l[`rad_${i}`], this._radii[i]);
+            gl.uniform2fv(l[`rip_${i}`], this._ripple[i]);
+            gl.uniform2fv(l[`ripPrev_${i}`], this._prevRipple[i]);
         }
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);

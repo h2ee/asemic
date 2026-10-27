@@ -2007,7 +2007,8 @@ export class SignalReceiver {
             this._cssWidth ?? this._canvas.width,
             this._cssHeight ?? this._canvas.height,
         );
-        gl.uniform1f(this._uniforms.gapPx, GAP_PX);
+        // _gapPxOverride — bake-text가 출력 배율에 맞춰 가장자리 폭을 출력 px로 고정할 때(전시에선 늘 null)
+        gl.uniform1f(this._uniforms.gapPx, this._gapPxOverride ?? GAP_PX);
         gl.uniform1f(this._uniforms.corner, CORNER_ROUND);
         gl.uniform1f(this._uniforms.cutoff, EDGE_CUTOFF);
         gl.uniform1f(this._uniforms.sylSize, this._sylSize);

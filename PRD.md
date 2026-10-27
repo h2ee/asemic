@@ -26,7 +26,7 @@ Communication = transmission(전달) + exchange(교환) + connection(연결)로 
 | 🍄 mycelium | Language / 균사체 네트워크 — 위험신호를 주고받는 망 | 에피사이클 경로 + 레이마칭 |
 | 🚦 signal | Light / Man-made / Society — 사회와 규칙 | 셀룰러 오토마타 + 가중 Voronoi |
 | 🐚 sora | Sea / 소라고둥 속 파도소리 | 클라드니 도형 + 나선 변형 |
-| 🌼 dandelion | Plant / Wind — 식물과 바람 | 자모→음절→단어 3단 궤적 |
+| 🌼 dandelion | Plant / Wind — 식물과 바람 | 자모 궤적(터틀 모션) + GPU 밀도장 goo |
 
 ---
 
@@ -96,7 +96,7 @@ Communication = transmission(전달) + exchange(교환) + connection(연결)로 
 - [~] **사운드 — 사물 공명** (2026-10-01 1차 완성) — `jamo_data.csv` 숫자를 그대로 쓰되 **목소리가 아니라 사물로 해석**한다. 처음엔 F1/F2/F3를 밴드패스 필터로 거는 포먼트 합성이었는데 실제 모음처럼 들려 버렸다(CHANGELOG 폐기된 설계).
     - 중성 F1/F2/F3 → 사물의 공명 모드(울리는 음 자체) / 초성 → 건드리는 방식(조음방법=치기·긁기·문지르기·누르기·휘기, 긴장도=세기·어택, 조음위치=접촉음 색) / 종성 → 끝맺기(막기·웅웅·휘기) / receiver → 재질(mycelium 젖은 나무, sora 조개 맥놀이, dandelion 바람 휘파람, signal 삑)
     - 코드: `core.voiceFor()`(무엇을) + `src/js/sound.js`(연주). 트리거는 mycelium=음절이 자라기 시작할 때, 나머지=음절이 생기는 입력 순간. 받침이 늦게 붙으면 울리는 소리에 그때 끝맺음을 건다
-    - 남은 것: 실물 스피커 라우팅(C) · mycelium 외 3종을 "자라기 시작" 시점에 맞추기(dandelion은 `trail/` 엔진 수정 필요 — sketch 사본도 같이) · 이중모음 미반영 · 실제 청취 튜닝
+    - 남은 것: 실물 스피커 라우팅(C) · mycelium 외 3종을 "자라기 시작" 시점에 맞추기(dandelion은 `trail/` 엔진 수정 필요 — 2026-10-27부터 sketch와 안 맞춰도 됨) · 이중모음 미반영 · 실제 청취 튜닝
 - [ ] **말풍선 시안 확정** — 1~4번 중 하나(`?bubble=N`), 배경 BG_d / BG_day / BG_night 중 하나
 - [ ] **iPad 다이얼 실기 테스트** — `dial.html`을 iPad에서 `ws://<맥 IP>:9980`로
 - [ ] `calcTextboxLayout`에 `offsetX` 추가 — 글자 영역이 고정 rect라 캔버스 배치로 우회 가능, 급하지 않음

@@ -4,9 +4,9 @@
 // sketch 프로젝트 `04_trail_gl` 의 "마우스 궤적 + GPU 밀도장 goo" 엔진으로 교체했다.
 // 구버전이 필요하면 git 이력에서 꺼낼 것.
 //
-// 엔진 파일들은 `trail/` 에 있고 sketch 쪽과 '바이트 단위로 동일'하다 — 스케치에서
-// 튜닝하고 그대로 복사해 오는 워크플로를 유지하기 위함. 디렉터리 이름이 receiver 이름과
-// 다른 건 그래서다(엔진은 receiver 가 아니라 "궤적 엔진"이다). 이 파일만 asemic 전용.
+// 엔진 파일들은 `trail/` 에 있다. 원래 sketch 쪽과 '바이트 단위로 동일'하게 유지했으나
+// 2026-10-27부터 sketch와 맞추지 않는다 — asemic 쪽에서 직접 고친다(첫 분기: opts.dprCap).
+// 디렉터리 이름이 receiver 이름과 다른 건 그 역사 때문이다(엔진은 receiver 가 아니라 "궤적 엔진"이다).
 //
 // 구조
 //   CPU  자모 → 궤적 점 배열(trail/jamoTrail.js) → 리샘플/스무딩/동반 곡선
@@ -368,9 +368,10 @@ export class DandelionReceiver {
             // TD 에선 흰 판이 크롬을 덮는다. 종이색은 body 배경 + 맨 아래 캔버스(underlay) CSS 배경 두 곳
             bodyBg: !this._opts.transparentOutput,
             paperBg: !this._opts.transparentOutput,
+            dprCap: this._opts.dprCap, // bake 고해상도용 — 없으면 엔진 기본(2)
         });
         // 엔진은 오버레이(얇은 잉크·bead)를 body 끝에 붙인다 — 그러면 글자 창(#glyph-window)의 위쪽 페이드
-        // mask·말풍선 clip이 안 걸린다. goo 캔버스 바로 뒤로 옮긴다(trail/은 sketch 사본이라 여기서)
+        // mask·말풍선 clip이 안 걸린다. goo 캔버스 바로 뒤로 옮긴다(원래 trail/이 sketch 사본이라 여기서 했다)
         const { gl, overlay } = this._trail?.canvases ?? {};
         if (gl?.parentNode && overlay && overlay.parentNode !== gl.parentNode)
             gl.parentNode.insertBefore(overlay, gl.nextSibling);
@@ -575,7 +576,7 @@ export class DandelionReceiver {
             // 마지막 단어는 아직 타이핑 중일 수 있으므로 hold — 음절이 더 붙기를 기다린다.
             if (rebuild && !isLast) {
                 // 다시 그리는 앞 단어들은 이미 화면에 있던 것 — 윤곽선이 한 바퀴 도는 애니메이션 없이 바로(2026-10-08).
-                // 엔진(trail/, sketch 사본)은 안 고치고 그 순간만 CFG를 끈다
+                // 엔진(trail/)은 안 고치고 그 순간만 CFG를 끈다
                 const anim = this._trail.CFG.outline.anim;
                 const on = anim.on;
                 anim.on = false;

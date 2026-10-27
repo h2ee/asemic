@@ -5,6 +5,7 @@
 
 공통 인터페이스는 `src/js/receivers/ReceiverManager.js` (init / update / dispose + registry).
 레지스트리에 등록된 건 `sora`, `signal`, `dandelion`, `mycelium` 네 개. 기본값은 `mycelium`.
+PNG 굽기(bake.html / bake-text.html)가 전시와 다르게 그리는 부분은 맨 아래 [bake 절](#-bake--전시-화면과-다른-점).
 
 **submit 계약** (`flushQueue` / `captureFrame` / `clearAccum` / `finishGrowing`) 구현 현황:
 
@@ -27,7 +28,10 @@
     - 허브 등록: 음절 확정 시 `cho.y < 0.75`(비음/유음 제외)면 허브 후보로 등록
     - 연결 트리거: 된/거센소리(`cho.z >= 0.65`) / 연음(이전 종성 + 현재 초성 ㅇ) / 종성 존재 — 만족 개수로 연결 0~2개, `connections+1` 가중치로 rich-get-richer 선택
     - `u_hubCenters[2]`, `u_connCount` uniform으로 셰이더에 전달
-- 재질: 금속(toon quantized diffuse) + body/lump 색 분리 옵션 A(현재 다른 색) + 검은 edge glow
+- 재질: 4단 toon diffuse + 검은 edge glow(`rim² × 1.68`). 몸통(경로)은 회색(`monoCol`, 초성색 대신 0.48), **혹(구슬)만 색**(`baseCol × 0.95`), 이음매는 `g_matID`(smooth union 폭 0.012)로 섞인다
+    - **혹 색 = 초성 좌표 그대로 RGB** — `choCol = u_cho`(R = 조음위치 x, G = 조음방법 y, B = 긴장도 z, `jamo_data.csv` 값). HSL 매핑 `choToColor()`는 주석 처리돼 안 쓴다. 중성·종성은 색에 안 들어간다. `u_cho`가 음절마다 하나라 한 음절의 혹은 전부 같은 색
+    - 명암: `mix(choCol, 거의 흰색, 3 − band) × 1.2`. 조명 L(정규화 안 함, 픽셀마다 xz 지터 = 띠 경계 점묘)이라 diff가 1을 넘는다 — diff ≥ 1 면만 초성색(≥ 1.5면 비율이 음수라 더 진해짐), 그늘(diff < 1)은 흰 쪽으로 외삽돼 거의 흰색. 즉 **빛 받는 면에만 색, 그늘은 하얗게** 날아가는 반전 명암
+    - 초성은 혹 개수(`20 + z·34`)·배치 난수 씨앗(`x·13.7 + z·5.3 + …`)도 정한다
 - `sylSize = 100`, `lineHeightRatio = 4.0`, `layoutScale = {x:1.28, y:1.0}` (카메라 오프셋 보정용)
 - 배경색 `vec3(0.7)` (회색)
 - **해상도 독립 (2026-09-26)** — 글자 모양은 `sylSize/H` 비율 하나로 정해진다(셰이더의 캡슐 반경·혹·노이즈가 월드 상수라서). `refHeight`(859)를 들고 있으면 `layoutFor`가 px 값을 `H/refHeight` 배로 스케일 → 어느 화면에서든 맥북 브라우저에서 잡은 룩 그대로
@@ -147,9 +151,10 @@ outColor = vec4(finalColor * alpha, alpha);        // premultiplied
 - 그래서 `core.js layoutFor(rect)`가 안 먹고 **`setRect({x,y,w,h})`**(뷰포트 px)를 따로 받는다. 랜덤 uv를 rect 안쪽으로 접고(`_toRect`), 반경 기준도 `rect.h / innerHeight` 배로 줄인다(반경은 y-uv 단위 — 셰이더가 `delta.x`에만 aspect를 곱한다). **이미 자리를 받은 단어는 그대로 둔다** — 자리를 유지하는 게 이 receiver의 규칙이라, rect를 바꿔도 기존 단어는 안 움직인다
 - **2026-09-26 프리멀티플라이드 알파 수정** — 캔버스가 `premultipliedAlpha:true`인데 `fragColor = vec4(col, presence)`(곱하지 않은 RGB), `blendFunc(SRC_ALPHA, …)`, `clearColor(0.98, 0.99, 1, 0)`(알파 0인데 RGB는 흰색)이 섞여 있었다. 결과는 **투명해야 할 자리가 흰색으로 칠해지는 것** — 페이지 배경이 흰색이던 시절엔 구분이 안 됐고 TD 투명 합성으로 오면서 흰 상자로 드러났다. 셋을 프리멀티플라이드로 통일(`vec4(col * presence, presence)` / `blendFunc(ONE, ONE_MINUS_SRC_ALPHA)` / `clearColor(0,0,0,0)`). 흰 배경 위 룩은 그대로다(예전 clear가 사실상 흰색이었기 때문)
 - `M_MAX = 2.0`, `N_MAX = 7.0` (복잡도 상한, 낮출수록 단순)
-- 색상: `heatmap3()` — 초성 조음위치(choX)→hue, 긴장도(choZ)→채도, 근접 가중 평균으로 슬롯 간 보간
+- 색상: `heatmap3()` — 초성 조음위치(choX)→hue, 긴장도(choZ)→채도. **2026-10-28부터 단어 원마다 고유 색** — 초성 값은 가장 가까운 원(중심까지 거리 / 반경)을 따르고 경계에서만 `COLOR_BLEND_K`(20) 폭으로 섞는다. 그 위에 색 띠 몫 `(0.5, 0.33)·(d²+0.001)`(d = 합친 무늬)을 얹는다 — 예전 식(초기값 0.5/0.33에서 SDF 1/d² 가중평균)을 원 하나일 때 그대로 풀어 쓴 것이라 단어 하나면 예전과 픽셀까지 같다. 예전 식은 원이 여럿이면 가중치 합이 커져 색 띠가 바래고 초성끼리 평균이 돼서, 문장 안 단어 원들이 단독일 때보다 옅고 비슷했다
 - displacement(사인/노이즈)로 클라드니 마디선을 비틀어 손그림 느낌 추가
-- `sylSize = 150`, `MAX_SYL = 9`(단어 슬롯 최대 개수)
+- **종성 → 나선 잔물결 (2026-10-28)** — 사인 displacement `sin(r·freq + θ·2 + phase)`의 r 주파수 = 종성 조음방법(`JONG_FREQ`), 위상 = 조음위치 × `JONG_PHASE`(1.5π). 받침 없음 = (12, 0)으로 예전 그대로. 본체(m·n)·색·팔 수(θ 계수 2)는 안 건드려서 받침만 다른 글자는 "같은 집안, 다른 결"로 보인다. m/n과 같이 `MORPH_DUR` 모프(`u_ripplePrev` → `u_ripple`)
+- `sylSize = 150`, 화면에 띄우는 단어 수 `maxWords` = `MAX_WORDS` 9 (bake-text 박스 나누기는 남는 단어가 `MERGE_WORDS` 3개 이하면 앞 박스에 붙인다 — `wordBoxSizes`. 전시는 안 씀). 셰이더 슬롯 상한 `MAX_SYL`은 32(2026-10-28) — bake-text가 한 행의 문장들을 한 캔버스에 그릴 때만 `maxWords`를 늘린다. 셰이더 루프는 `u_sylCount`에서 끊겨 전시 비용은 같다
 - **음절 네모 = 단어마다 하나 (2026-10-08)** — `wordAnchors()`가 떠 있는 원들의 중심·보이는 반경(px)을 내놓고, 페이지(`sylTags`)가 원 가운데 아래(`SORA_TAG_Y` × 반경)에 그 단어 음절을 한 네모에 이어 붙인다(관람객 = 원문, 수신자 = 구조 블록 여럿). 세로 scroll은 없다(랜덤 자리라 줄 개념이 없음)
 - **LLM 드러내기 0.8자/초** (`llm.js revealRateFor.sora`, 다른 수신자 2) — 2자/초면 모프가 끝나기 전에 다음 음절이 덮는다
 
@@ -171,9 +176,9 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
 > 폐기됐다. 필요하면 git 이력에서 꺼낼 것. `update(sylItems, positions, JAMO)` 시그니처와
 > `calcTextboxLayout` 사용은 그대로.
 
-엔진은 `receivers/trail/` 에 있고 sketch 프로젝트 `~/sketch/projects/04_trail_gl` 과
-**바이트 단위로 동일**하다(`jamoTrail.js` 만 asemic 전용). 스케치에서 튜닝하고 복사해 오는
-워크플로 전제 — **엔진을 고칠 땐 양쪽을 같이 맞출 것**. `.frag/.vert/.glsl` 을 직접 import 하므로
+엔진은 `receivers/trail/` 에 있다. sketch 프로젝트 `~/sketch/projects/04_trail_gl` 에서 왔고
+예전엔 바이트 단위로 동일하게 맞췄지만, **2026-10-27부터 sketch와 맞추지 않는다** — 엔진은
+asemic 쪽에서 직접 고친다(첫 분기: `createTrail({ dprCap })`, bake 고해상도용). `.frag/.vert/.glsl` 을 직접 import 하므로
 `vite-plugin-glsl` 이 필요하다(vite.config.js).
 
 ### 파이프라인
@@ -187,7 +192,8 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
 2. **획 단위 = 단어** — 음절 하나는 경로가 200px 안팎이라 동반 곡선 생성기가 놀 공간이 없다.
    단어로 묶으면 1400px 안팎(루프 14~15개). 음절마다 "순 전진 = 1 walk unit"으로 국소 정규화하고
    `wrapStep` 으로 환산 → **append-only**(뒤에 붙여도 앞 좌표가 안 움직임). `LINE_PULL=1` 이라
-   각도 오차가 누적되지 않는다.
+   각도 오차가 누적되지 않는다. 순 전진에는 하한(`NET_FLOOR` = 음절 bbox 긴 변 × 0.4)이 있다 —
+   이중모음처럼 획이 출발점 근처로 되돌아오는 음절이 `wrapStep` 의 17배까지 커지던 것을 막는다(2026-10-27).
 3. **CPU 경로 가공** (`trail/path.js`) — 리샘플 → 스무딩 → 동반 곡선(점선, 방황·사행·루프 이벤트)·장식 사각형.
    난수는 전부 시드 기반(mulberry32 + FNV-1a)이고 하위 시스템마다 스트림이 분리돼 있다
    (공유하면 `decorGap` 만 바꿔도 루프 위치가 따라 변한다). 난수 소비가 **경로 길이에만** 의존하므로
@@ -266,4 +272,59 @@ sora의 "자라는 중"은 성장 큐가 아니라 **슬롯별 모프**(`MORPH_D
 - 자주 바뀌는 값: `CFG_OVERRIDE`(dandelion.js 상단, goo/grow/part/outline/halo/base/bead/orb 포함), 자모 → 시각 매핑 표(`ORB_JAMO` — orb·부채·가시·walker 크기 / `HALO_VOWEL_DIR`·`HALO_CHO_DIR`·`HALO_TONE`), `jamoTrail.js` 의 `MEANDER_*` / `DC_TURNS` / `AC_TURN` / `JOIN_STEER` / `LINE_PULL`
 - 성장장·파티클 레이어는 구현돼 있으나 **기본 off** (`grow.on` / `part.on`)
 - 콘솔: `rm.current.cfg()` / `rm.current.engine()` / `rm.current.setGenerator('anchor')`(구 앵커 보간 방식과 A/B). 구운 것까지 바꾸려면 `rm.current.engine().replay()`
-- **엔진 새 옵션은 기본 off** — 엔진(`trail/`, sketch 사본) 기본값은 예전 룩 그대로 두고 dandelion 이 `CFG_OVERRIDE`로 켠다. 엔진을 고치면 `trailgl.js`·`path.js`·`field.js`·`marchingSquares.js`·`composite.frag`를 sketch 쪽에 복사해 `cmp`로 맞출 것
+- **엔진 새 옵션은 기본 off** — 엔진(`trail/`, 원래 sketch 사본) 기본값은 예전 룩 그대로 두고 dandelion 이 `CFG_OVERRIDE`로 켠다. (2026-10-27부터 sketch 쪽에 복사·`cmp` 하지 않는다)
+
+---
+
+## 🖨 bake — 전시 화면과 다른 점
+
+굽기 도구는 `src/dev/` 두 페이지(저장 = vite.config.js `/__bake` → `bake/<dir>/`, gitignore). 쿼리 옵션은 각 파일 머리 주석이 원본.
+
+- **bake.html** (`bake.js`) — 음절 하나 = 정사각 PNG 하나. 기본 KS X 1001 2350자, `?text=`로 일부만
+- **bake-text.html** (`bake-text.js` + 다른 수신자는 `bake-text-others.js`) — 텍스트 = 세로로 긴 PNG. 한 줄 최대 `perLine`(7)음절로 접고(`breakLines`, 단어는 안 쪼갬), `---` 줄에서 이미지를 나눈다. 문장 끝 = 단어 끝 `.?!…。`(뒤 따옴표·괄호 허용) 또는 줄바꿈. 출력 가로 기본 2160(인쇄용)
+
+### 수신자 코드 안의 bake 전용 훅 (전시에선 늘 기본값)
+
+| 훅 | 위치 | 전시 | bake |
+| --- | --- | --- | --- |
+| `_gapPxOverride` | signal `_draw()` | null → `GAP_PX` 0.5 CSS px | bake-text `?edge`(출력 px로 고정) |
+| `dprCap` | dandelion 옵션 → trail `createTrail` | 없음 → `DPR_CAP` 2 | `?dpr`(bake 2, bake-text 3) — `devicePixelRatio`도 덮음 |
+| `maxWords` | sora 인스턴스 | `MAX_WORDS` 9 | bake-text가 `MAX_SYL` 32로 올림(한 행 한 캔버스) |
+| `wordBoxSizes` / `MERGE_WORDS` | sora.js export | 안 씀 | bake-text 문장 박스 나누기 |
+
+### 수신자별 차이
+
+**공통으로 전시와 같은 것**: 자모 → 모양 매핑, 색, 셰이더. 위 훅 말고 수신자 코드는 전시와 같은 경로를 탄다.
+
+- **mycelium**
+  - 프레임을 페이지가 직접 돌린다(rAF 끊고 MessageChannel 루프 + 1px `readPixels` 동기화) — 24fps 스로틀 없이 빠르지만 성장은 렌더 프레임당 전진이라 모양은 같다. `?instant=1`이면 성장 생략(성장 자취가 없는 다른 모양)
+  - 글자 크기: 기준 크기 모양을 `glyphScaleFor`로 균일 확대 — 전시 그 글자를 키운 것. 출력이 원본(창 × DPR)보다 크면 확대 저장 + 경고
+  - bake.html: 음절이 화면 정중앙에 하나뿐이라 **허브·연결 실이 없다**
+  - bake-text: 줄을 **늘 화면 세로 정중앙**에서 키운다(전시는 줄마다 화면 높이가 달라 카메라 원근이 다르다). 연결 실은 **문장 단위**(전시 = 엔터로 낸 한 문장이 한 누적 버퍼) — 줄이 바뀌면 남은 허브를 한 줄 위로 옮겨 다시 심고, 다른 문장 허브는 지운다. 띄어쓰기 0.2칸(calcTextboxLayout)
+- **sora**
+  - rAF·resize를 끊고 출력 크기 캔버스에 바로 그린다 — 창 크기와 무관. 모프·파동을 끝난 상태로 스냅(`_prevRipple`까지)
+  - bake.html: 음절 하나 = 원 하나, **정중앙·고정 반경**(전시는 단어마다 랜덤 자리·반경 0.25~1배). 선이 fwidth 기반 ~1px라 출력이 클수록 원 대비 선이 가늘다
+  - bake-text: 문장마다 보이지 않는 정사각 박스(9단어씩, 꼬리 3단어 이하는 앞 박스에 붙임), 박스를 읽는 순서로 한 행 `?boxes`(3)개. 한 행을 캔버스 하나에 그려 옆 문장 원과도 smin으로 이어진다(전시엔 문장이 한 화면씩이라 없는 일). 원 자리 = 박스 안 랜덤, 여백 `SORA_MARGIN` 0.12, 옆 박스 쪽 `SORA_SPILL` 0.25. 단어는 하나씩 `update()`에 넣는다 — 한꺼번에 넣으면 뒤에 단어가 있는 슬롯이 초기값으로 남는다(sora는 마지막 단어 슬롯만 갱신)
+- **signal**
+  - `_animate`를 가짜 60Hz 시각으로 직접 돌린다 — 24fps 스로틀·셀 보간·FREEZE 구간 CA 정지까지 전시 시간축 그대로. 색은 신호등 사이클을 NORMAL로 고정(BLINK 모노로 안 굳게, `captureFrame`과 같음). 지터·신호등 셀은 매번 랜덤
+  - 셀 격자는 CSS px(MIN_DIST 12)라 셀 개수 = `?sylsize`가 정한다. 캔버스는 CSS 박스를 출력 px로 키운 backing store
+  - bake.html `?steps`/`?settle` — 전부 넣고 N step. bake-text 기본 `typing` — `?interval` ms마다 한 음절(앞 글자일수록 CA가 더 진행, 전시 타이핑처럼) + 끝난 뒤 `?after` step
+  - bake-text: 줄 안 배치는 calcShelfLayout 규칙, 줄 구성만 breakLines. 페이지 가로 = 한 줄 최대 음절 × 1.5·sylSize라 오른쪽이 보통 빈다. 슈퍼샘플 `?ss`(2), 세로 청크(8192px, 면적 3200만 px 이하 — 넘으면 Chrome이 버퍼를 말없이 줄여 빈 PNG)
+- **dandelion**
+  - orb·halo 칸·오프셋이 전부 CSS px라 셰이더로 못 키운다 — **전시 크기 그대로** 그려 잘라낸다. 해상도는 `?dpr`로만 올린다(모양 같고 선명도만)
+  - `flushQueue`로 즉시 완성 → 두 프레임 뒤 찍는다. 성장 애니메이션·윤곽선 도는 애니메이션 없음. main bead(`waitLive`)는 실선 끝에 막 선 자리
+  - bake.html: 음절 하나 = 단어 하나 = 획 하나, `?box`(540 CSS px) 정사각을 알파 범위 가운데로 잘라냄 — 넘으면 '잘림'
+  - bake-text: 줄마다 비우고 화면 가운데 기준선에 놓고 굽는다(페이지 가로 = 2·1.5·wrapStep + 음절 수 × 100px). 단어가 줄을 넘으면 획도 끊긴다(전시와 같음)
+
+### 백그라운드 탭
+
+| | bake.html | bake-text |
+| --- | --- | --- |
+| mycelium · sora · signal | 탭 뒤로 보내도 됨 | 탭 뒤로 보내도 됨 |
+| dandelion | **앞에 둘 것** | **앞에 둘 것** |
+
+dandelion은 엔진이 rAF로 돌아 백그라운드에서 멈춘다. 나머지는 rAF를 안 쓰고, 이벤트 루프 양보도 MessageChannel이다(setTimeout은 백그라운드에서 1초, 오래 숨기면 1분으로 늘어남). 이 노트북처럼 발열 감속이 있으면 오래 구울수록 느려지지만 메모리가 쌓이는 건 아니다.
+
+### 굽기 결과가 낡는 경우
+
+모양·색 상수를 바꾸면 그 수신자의 `bake/` 출력은 다시 구워야 한다. 2026-10-28 기준: sora는 종성 잔물결·단어 원 고유 색·`heatmap3` 0.82 이전 출력이 전부 낡음, dandelion은 `NET_FLOOR` 이전 177자(`bake/_dandelion-before-floor/`로 옮겨 둠).

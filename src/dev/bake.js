@@ -18,15 +18,31 @@
 // ?receiver=sora — 클라드니 원 하나 = 음절 하나(bake-common.js makeSoraBake). 창 크기와 무관하게
 // 출력 크기 캔버스에 바로 그린다(size=0이면 창 짧은 변×DPR). fill = 보이는 원 지름 비율.
 // sora 선은 fwidth 기반 ~1px라 출력이 클수록 원에 비해 선이 가늘어진다(전시 원 지름은 대략 수백 px).
-// sora는 종성을 안 봐서 받침만 다른 음절은 같은 그림이다.
+// 종성은 나선 잔물결만 바꾼다(2026-10-28) — 받침만 다른 음절은 본체가 같고 결만 다르다.
 //
 // ?receiver=signal — 음절 하나 = lattice 하나(bake-common.js makeSignalBake). ?steps=N 이면 CA를 N step
 // (전시 시간으로 N×0.14초) 돌린 순간을 굽는다. ?settle=1 이면 그 뒤 셀 크기 보간이 끝날 때까지 기다린다.
 // ?sylsize= 음절 기준 크기(CSS px, 기본 receiver 값) — 셀은 12px 고정이라 이게 셀 개수를 정한다.
 // 파일 이름에 step이 붙는다(NNNN_가_s12.png).
+//
+// ?receiver=dandelion — 음절 하나 = 단어 하나 = 획 하나(bake-common.js makeDandelionBake). 전시 크기 그대로
+// 그려 완성 직후(main bead가 실선 오른쪽 끝에 막 선 순간)를 찍고, 알파 범위 가운데를 중심으로 ?box=(CSS px)
+// 정사각형을 잘라낸다. 원본 해상도 = box × DPR — ?dpr=2(기본)로 엔진 배율을 고정해 기기와 무관하게 맞춘다.
+// 글자가 box를 넘으면 상태에 '잘림'이 뜬다. 엔진이 rAF로 도니 굽는 동안 탭을 앞에 둘 것.
+// ?dandelion=invert 도 그대로 먹는다(엔진이 location을 직접 읽음).
 
 import { decomposeSyllables, syllablesToUniforms, JAMO } from '../js/core.js';
-import { makeBakeReceiver, makeSoraBake, makeSignalBake, glyphScaleFor, readAccum, listSaved, savePng } from './bake-common.js';
+import {
+    makeBakeReceiver,
+    makeSoraBake,
+    makeSignalBake,
+    makeDandelionBake,
+    alphaBounds,
+    glyphScaleFor,
+    readAccum,
+    listSaved,
+    savePng,
+} from './bake-common.js';
 
 const $ = id => document.getElementById(id);
 const q = new URLSearchParams(location.search);
@@ -40,7 +56,7 @@ function ks2350() {
     return s;
 }
 
-const RECEIVER = ['sora', 'signal'].includes(q.get('receiver')) ? q.get('receiver') : 'mycelium';
+const RECEIVER = ['sora', 'signal', 'dandelion'].includes(q.get('receiver')) ? q.get('receiver') : 'mycelium';
 $('receiver').value = RECEIVER;
 $('receiver').onchange = () => {
     q.set('receiver', $('receiver').value);
@@ -49,6 +65,8 @@ $('receiver').onchange = () => {
 };
 if (RECEIVER !== 'mycelium') $('instant-row').style.display = 'none'; // sora는 모프를 스냅, signal은 step으로 정한다
 if (RECEIVER !== 'signal') for (const el of document.querySelectorAll('.signal-row')) el.style.display = 'none';
+if (RECEIVER !== 'dandelion') for (const el of document.querySelectorAll('.dandelion-row')) el.style.display = 'none';
+else $('fill-row').style.display = 'none'; // dandelion은 글자 크기가 전시 그대로 — 비율 대신 box로 자른다
 
 $('text').value = q.get('text') ?? '';
 $('size').value = q.get('size') ?? 1080;
@@ -57,9 +75,11 @@ $('dir').value = q.get('dir') ?? RECEIVER;
 $('instant').checked = q.get('instant') === '1';
 $('steps').value = q.get('steps') ?? 0;
 $('settle').checked = q.get('settle') === '1';
+$('box').value = q.get('box') ?? 540;
 
-let r, waitIdle, sora, signal;
+let r, waitIdle, sora, signal, dandelion;
 if (RECEIVER === 'mycelium') ({ r, waitIdle } = await makeBakeReceiver());
+else if (RECEIVER === 'dandelion') dandelion = await makeDandelionBake(Number(q.get('dpr') ?? 2));
 else {
     const cvs = document.createElement('canvas');
     cvs.id = `${RECEIVER}-canvas`;
@@ -111,6 +131,26 @@ async function bakeSignal(ch, fill, size, steps, settle) {
     return { blob, Q: side };
 }
 
+// dandelion: 완성 직후 합성 캔버스에서 알파 범위 가운데를 중심으로 box(CSS px) 정사각형
+async function bakeDandelion(ch, size, box) {
+    const items = decomposeSyllables(ch).filter(s => !s.isSpace);
+    const cvs = await dandelion.draw(items, JAMO);
+    const dpr = cvs.width / window.innerWidth;
+    const b = alphaBounds(cvs);
+    const Q = Math.round(box * dpr);
+    const out = new OffscreenCanvas(size || Q, size || Q);
+    if (!b) return { blob: await out.convertToBlob({ type: 'image/png' }), Q, ext: [0, 0], clipped: false };
+    const x0 = Math.round((b[0] + b[2] - Q) / 2);
+    const y0 = Math.round((b[1] + b[3] - Q) / 2);
+    const ctx = out.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(cvs, x0, y0, Q, Q, 0, 0, out.width, out.height);
+    const ext = [(b[2] - b[0]) / dpr, (b[3] - b[1]) / dpr]; // 글자 범위(CSS px)
+    // 화면 가장자리에 닿았으면 창 밖으로도 잘린 것
+    const clipped = Math.max(...ext) > box || b[0] === 0 || b[1] === 0 || b[2] === cvs.width || b[3] === cvs.height;
+    return { blob: await out.convertToBlob({ type: 'image/png' }), Q, ext, clipped };
+}
+
 // 누적 버퍼 가운데 정사각형 → PNG Blob
 async function capture(size) {
     const tgt = r._accumTarget;
@@ -133,6 +173,7 @@ async function run() {
     const instant = $('instant').checked;
     const steps = Math.max(0, parseInt($('steps').value, 10) || 0);
     const settle = $('settle').checked;
+    const box = Math.max(16, parseFloat($('box').value) || 540);
     const pad = String(chars.length).length < 4 ? 4 : String(chars.length).length;
     const tag = signal ? `_s${steps}${settle ? 'z' : ''}` : '';
     const names = chars.map((c, i) => `${String(i + 1).padStart(pad, '0')}_${c}${tag}.png`);
@@ -142,11 +183,23 @@ async function run() {
     const t0 = performance.now();
     let done = 0;
     let warned = '';
+    const maxExt = [0, 0]; // dandelion — 이번에 구운 글자 중 가장 큰 범위(CSS px), box 정하는 기준
+    const clippedChars = [];
     for (let i = 0; i < chars.length && running; i++) {
         if (existing.has(names[i])) continue;
         let blob, Q;
         if (sora) ({ blob, Q } = await bakeSora(chars[i], fill, size));
         else if (signal) ({ blob, Q } = await bakeSignal(chars[i], fill, size, steps, settle));
+        else if (dandelion) for (;;) {
+            const rz = resizes;
+            let ext, clipped;
+            ({ blob, Q, ext, clipped } = await bakeDandelion(chars[i], size, box));
+            if (rz !== resizes) continue; // 굽는 도중 창 크기가 바뀌었다 — 다시
+            maxExt[0] = Math.max(maxExt[0], Math.ceil(ext[0]));
+            maxExt[1] = Math.max(maxExt[1], Math.ceil(ext[1]));
+            if (clipped) clippedChars.push(chars[i]);
+            break;
+        }
         else for (;;) {
             const rz = resizes;
             await grow(chars[i], fill, instant);
@@ -154,7 +207,14 @@ async function run() {
             ({ blob, Q } = await capture(size));
             break;
         }
-        if (size > Q) warned = `\n⚠️ 창 짧은 변×DPR=${Q}px < ${size}px — 확대 저장됨. 창을 키울 것`;
+        if (!dandelion && size > Q) warned = `\n⚠️ 창 짧은 변×DPR=${Q}px < ${size}px — 확대 저장됨. 창을 키울 것`;
+        if (dandelion)
+            warned =
+                `\n가장 큰 글자 ${maxExt[0]}×${maxExt[1]}px (box ${box})` +
+                (clippedChars.length
+                    ? `\n⚠️ 잘림 ${clippedChars.length}자: ${clippedChars.slice(-20).join('')} — box(또는 창)를 키울 것`
+                    : '') +
+                (size > Q ? `\n⚠️ box×DPR=${Q}px < ${size}px — 확대 저장됨` : '');
         await savePng(dir, names[i], blob);
         const prev = $('last').src;
         $('last').src = URL.createObjectURL(blob);
@@ -169,7 +229,7 @@ async function run() {
         );
     }
     setStatus(`${running ? '완료' : '중지'} — 이번에 ${done}장 저장 (bake/${dir}/)${warned}`);
-    (sora?.r ?? signal?.r ?? r).clearAccum();
+    (sora?.r ?? signal?.r ?? dandelion?.r ?? r).clearAccum();
 }
 
 $('go').onclick = async () => {
@@ -191,6 +251,10 @@ $('go').onclick = async () => {
 };
 
 const dpr = Math.min(window.devicePixelRatio, 2);
-if (sora || signal) setStatus(`준비됨 (${RECEIVER}) — 출력 ${$('size').value || '창 짧은 변×DPR'}px 정사각`);
+if (dandelion)
+    setStatus(
+        `준비됨 (dandelion) — DPR ${window.devicePixelRatio}, 원본 box×DPR px 정사각\n굽는 동안 탭을 앞에 둘 것 (엔진이 rAF로 돈다)`,
+    );
+else if (sora || signal) setStatus(`준비됨 (${RECEIVER}) — 출력 ${$('size').value || '창 짧은 변×DPR'}px 정사각`);
 else setStatus(`준비됨 — 창 짧은 변×DPR = ${Math.round(Math.min(innerWidth, innerHeight) * dpr)}px`);
 if (q.get('auto') === '1') $('go').click();

@@ -1,10 +1,11 @@
 // ── bake-common.js ────────────────────────────────────────────────────────────
 // bake.html(음절 하나 = PNG 하나)과 bake-text.html(단어·문단 = 세로로 긴 PNG 하나)이 같이 쓰는 것:
-// 투명 출력 mycelium, 직접 돌리는 프레임 루프, 누적 버퍼 영역 읽기, /__bake 저장. bake.html의 sora·signal 한 장 굽기.
+// 투명 출력 mycelium, 직접 돌리는 프레임 루프, 누적 버퍼 영역 읽기, /__bake 저장. bake.html의 sora·signal·dandelion 한 장 굽기.
 
 import { MyceliumReceiver } from '../js/receivers/mycelium.js';
 import { SoraReceiver } from '../js/receivers/sora.js';
 import { SignalReceiver } from '../js/receivers/signal.js';
+import { DandelionReceiver } from '../js/receivers/dandelion.js';
 import { calcSignalLatticeSize } from '../js/core.js';
 
 // 투명 출력 mycelium을 띄우고 receiver의 rAF 루프를 끊는다. 대신 _animate를 직접 한 프레임씩 부른다 —
@@ -82,7 +83,7 @@ export async function savePng(dir, name, blob) {
 // sora는 누적 버퍼·성장 큐가 없다 — 유니폼만 정해 주면 그 순간 한 장이 완성된다(모프·파동만 시간에 걸림).
 // 그래서 rAF와 resize를 끊고 정사각 캔버스(한 변 = 출력 px)를 직접 잡아, 음절 하나를 단어 하나(슬롯 하나)로
 // 정중앙·고정 반경에 놓고 모프를 끝난 상태로 스냅해 한 번 그린다. 창 크기와 무관.
-// ⚠️ sora는 종성을 안 본다(초성·중성만) — 가/각/간…은 같은 그림이 나온다.
+// 종성은 나선 잔물결(주파수·위상)만 바꾼다(2026-10-28) — 가/각/간…이 본체는 같고 결만 다르다.
 
 export async function makeSoraBake(canvas) {
     const r = new SoraReceiver();
@@ -100,6 +101,7 @@ export async function makeSoraBake(canvas) {
         // flushQueue와 같은 스냅(rAF 대기만 뺌) — 모프 끝, 파동 끝
         for (let i = 0; i < r._cells.length; i++) {
             r._prevCells[i] = [...r._cells[i]];
+            r._prevRipple[i] = [...r._ripple[i]];
             r._morphStart[i] = -999;
             r._waveStart[i] = -999;
         }
@@ -151,4 +153,46 @@ export async function makeSignalBake(canvas) {
         r._draw();
     }
     return { r, draw };
+}
+
+// ── dandelion ─────────────────────────────────────────────────────────────────
+// dandelion(trail 엔진)은 캔버스가 창 크기 × DPR이고 orb·halo 칸·오프셋이 전부 CSS px라
+// 셰이더 스케일로 키울 수 없다 — 전시 화면 크기 그대로 그려서 잘라낸다. 그래서 출력 해상도는 box × DPR이 원본이다.
+// dpr을 주면 window.devicePixelRatio를 그 값으로 덮고 엔진 상한(기본 2)도 그만큼 풀어, 엔진이 그 배율로
+// 캔버스를 잡게 한다(모양은 같고 선명도만). 3·4면 캔버스가 창 × 3·4라 음절당 시간·메모리가 는다.
+// 음절 하나 = 단어 하나 = 획 하나로 놓고 flushQueue로 즉시 완성, 두 프레임 뒤 합성 캔버스를 읽는다 —
+// main bead(waitLive)는 완결된 순간부터 fps(2) 박자로 움직이므로 이때는 실선 끝(오른쪽)에 막 선 자리다.
+// 프레임은 엔진 자신의 rAF로 돈다 — 탭이 뒤로 가면 멈춘다(mycelium처럼 직접 돌리지 않음).
+export async function makeDandelionBake(dpr) {
+    if (dpr > 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => dpr, configurable: true });
+    const r = new DandelionReceiver({ transparentOutput: true, dprCap: dpr > 0 ? dpr : undefined });
+    await r.init();
+
+    async function draw(items, JAMO) {
+        r.clearAccum(); // 도장 bead·main bead 시각(resetStamps)까지 비운다
+        // 앵커 = 음절 셀 왼쪽 — 셀 가운데가 화면 가운데쯤 오게. 정확한 중심은 잘라낼 때 알파 범위로 다시 잡는다
+        r.update(items, [[0.5 - r.wrapStep / 2 / window.innerWidth, 0.5]], JAMO);
+        await r.flushQueue();
+        return r._trail.captureCanvas();
+    }
+    return { r, draw };
+}
+
+// 캔버스에서 알파가 있는 범위 [x0, y0, x1, y1] (디바이스 px, x1·y1 제외). 비었으면 null
+export function alphaBounds(cvs) {
+    const { width: w, height: h } = cvs;
+    const a = cvs.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+    let x0 = w,
+        y0 = h,
+        x1 = -1,
+        y1 = -1;
+    for (let y = 0; y < h; y++)
+        for (let x = 0, i = y * w * 4 + 3; x < w; x++, i += 4)
+            if (a[i]) {
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                y1 = y;
+            }
+    return x1 < 0 ? null : [x0, y0, x1 + 1, y1 + 1];
 }

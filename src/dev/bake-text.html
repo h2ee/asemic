@@ -81,11 +81,21 @@
                 spellcheck="false"
                 placeholder="줄바꿈 = 강제 줄바꿈&#10;--- 만 있는 줄 = 다음 이미지로 나눔"
             ></textarea>
-            <label>한 줄 최대 음절<input id="perLine" type="number" min="1" step="1" /></label>
+            <label>receiver<select id="receiver"><option>mycelium</option><option>sora</option><option>signal</option><option>dandelion</option></select></label>
+            <label data-for="mycelium signal dandelion">한 줄 최대 음절<input id="perLine" type="number" min="1" step="1" /></label>
+            <label data-for="sora">한 줄 박스(문장) 수<input id="boxes" type="number" min="1" step="1" /></label>
             <label>출력 가로(px, 0=원본)<input id="width" type="number" min="0" step="1" /></label>
-            <label>줄 간격(× 글자 크기)<input id="lh" type="number" min="0.5" step="0.1" /></label>
+            <label data-for="mycelium signal dandelion">줄 간격(× 글자 크기)<input id="lh" type="number" min="0.5" step="0.1" /></label>
+            <label data-for="signal">sylSize(CSS px, 셀 수)<input id="sylsize" type="number" min="24" step="1" /></label>
+            <label data-for="signal">슈퍼샘플(× 출력, 그린 뒤 줄임)<input id="ss" type="number" min="1" max="4" step="0.5" /></label>
+            <label data-for="signal">가장자리 폭(출력 px, 0=전시값)<input id="edge" type="number" min="0" step="0.5" /></label>
+            <label data-for="signal">시점<select id="mode"><option value="typing">타이핑 순서대로</option><option value="steps">모든 음절 같은 step</option></select></label>
+            <label data-for="signal">타이핑 음절 간격(ms)<input id="interval" type="number" min="0" step="50" /></label>
+            <label data-for="signal">타이핑 끝난 뒤 step<input id="after" type="number" min="0" step="1" /></label>
+            <label data-for="signal">step 모드: CA step<input id="steps" type="number" min="0" step="1" /></label>
+            <label data-for="signal"><span>step 모드: 셀 크기 수렴(settle)</span><input id="settle" type="checkbox" /></label>
             <label>폴더 (bake/…)<input id="dir" type="text" size="12" /></label>
-            <label><span>성장 생략(instant)</span><input id="instant" type="checkbox" /></label>
+            <label data-for="mycelium"><span>성장 생략(instant)</span><input id="instant" type="checkbox" /></label>
             <label><span>PNG 저장</span><input id="save" type="checkbox" checked /></label>
             <button id="go">굽기</button>
             <div id="status">준비 중…</div>

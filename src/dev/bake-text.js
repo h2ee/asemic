@@ -24,10 +24,21 @@
 //   - 화면 밖(위)으로 나간 허브는 버린다 — 줄은 늘 화면 가운데서 자라니 대략 1~2줄 위까지만 닿는다.
 //   - 다른 문장의 허브는 지우고, 문장 첫 음절이 앞 문장 끝 음절을 허브로 등록하지 못하게 막는다
 //     (mycelium update()는 새 음절을 붙일 때 바로 앞 음절을 무조건 허브 후보로 올린다).
+//
+// ?receiver=signal|dandelion|sora (2026-10-28) — bake-text-others.js. 줄 접기 규칙(breakLines)과 저장은 같다.
+//   signal    ?mode=typing(기본)|steps  ?interval=500(ms, typing 음절 간격)  ?after=0(typing 마지막 음절 뒤 step)
+//             ?steps=0 ?settle=1(steps 모드)  ?sylsize=  — 출력 가로 0이면 CSS px × 2
+//             ?ss=2 슈퍼샘플 — 출력의 ss배로 그려서 줄여 저장(셀 경계 gap이 0.5 CSS px라 k≈1이면 계단이 진다). 시간 ≈ ss²배
+//             ?edge=1 셀 가장자리 섞는 폭(출력 px) — 0이면 전시값 0.5 CSS px(출력을 키우면 같이 번진다)
+//   dandelion ?dpr=3 — 전시 크기 그대로라 창 가로 ≥ 페이지(한 줄 음절 × 100px + 여백). 출력 가로 0이면 페이지 × dpr
+// 출력 가로 기본 2160(인쇄용). mycelium·dandelion은 원본(창 × DPR / 페이지 × dpr)이 그보다 작으면 확대 저장되고 경고가 뜬다.
+// signal·sora는 출력 해상도로 바로 그려서 상관없다
+//   sora      ?boxes=3 — 문장마다 정사각 박스(안에 단어 원 랜덤), 한 줄 N박스. 출력 가로 0이면 박스 한 변 1080
 
 import * as THREE from 'three';
-import { decomposeSyllables, syllablesToUniforms } from '../js/core.js';
+import { JAMO, decomposeSyllables, syllablesToUniforms } from '../js/core.js';
 import { makeBakeReceiver, glyphScaleFor, readAccum, listSaved, savePng } from './bake-common.js';
+import { makeSignalText, makeDandelionText, makeSoraText } from './bake-text-others.js';
 
 const $ = id => document.getElementById(id);
 const q = new URLSearchParams(location.search);
@@ -36,17 +47,41 @@ const BAND = 1.9; // 줄 중심에서 띠 위아래 끝까지(글자 크기 배�
 const PAD = 0.3; // 종이 맨 위/아래 여백(글자 크기 배수)
 const MAX_PNG_H = 16384; // 이보다 길면 _p1, _p2…로 나눠 저장(브라우저 캔버스 한계)
 
-const { r, frame, waitIdle } = await makeBakeReceiver();
-const overlay = r._renderer.domElement;
-overlay.style.pointerEvents = 'none';
-overlay.style.zIndex = '5';
+const RECEIVER = ['sora', 'signal', 'dandelion'].includes(q.get('receiver')) ? q.get('receiver') : 'mycelium';
+$('receiver').value = RECEIVER;
+$('receiver').onchange = () => {
+    q.set('receiver', $('receiver').value);
+    for (const k of ['dir', 'lh', 'width']) q.delete(k); // 수신자마다 기본값이 다르다
+    location.search = q.toString();
+};
+for (const el of document.querySelectorAll('[data-for]'))
+    if (!el.dataset.for.split(' ').includes(RECEIVER)) el.style.display = 'none';
+
+let r, frame, waitIdle, overlay, other;
+if (RECEIVER === 'mycelium') {
+    ({ r, frame, waitIdle } = await makeBakeReceiver());
+    overlay = r._renderer.domElement;
+    overlay.style.pointerEvents = 'none';
+    overlay.style.zIndex = '5';
+} else if (RECEIVER === 'signal') other = await makeSignalText();
+else if (RECEIVER === 'dandelion') other = await makeDandelionText(Number(q.get('dpr') ?? 3)); // 7음절 페이지 1000px × 3 ≥ 2160
+else other = await makeSoraText();
 
 $('text').value = q.get('text') ?? '';
 $('perLine').value = q.get('perLine') ?? 7;
-$('width').value = q.get('width') ?? 1080;
-$('lh').value = q.get('lh') ?? r.lineHeightRatio;
-$('dir').value = q.get('dir') ?? 'mycelium-text';
+$('width').value = q.get('width') ?? 2160; // 인쇄용 — 가로 2160 이상(2026-10-28)
+$('lh').value = q.get('lh') ?? (r ?? other.r).lineHeightRatio;
+$('dir').value = q.get('dir') ?? `${RECEIVER}-text`;
 $('instant').checked = q.get('instant') === '1';
+$('mode').value = q.get('mode') === 'steps' ? 'steps' : 'typing';
+$('interval').value = q.get('interval') ?? 500;
+$('after').value = q.get('after') ?? 0;
+$('steps').value = q.get('steps') ?? 0;
+$('settle').checked = q.get('settle') === '1';
+$('sylsize').value = q.get('sylsize') ?? (RECEIVER === 'signal' ? other.r.sylSize : '');
+$('ss').value = q.get('ss') ?? 2;
+$('edge').value = q.get('edge') ?? 1;
+$('boxes').value = q.get('boxes') ?? 3;
 const FILL = parseFloat(q.get('fill')) || 0.96;
 if (q.get('bg')) document.documentElement.style.setProperty('--bg', q.get('bg'));
 
@@ -59,13 +94,15 @@ let resizes = 0;
 window.addEventListener('resize', () => resizes++);
 
 // ── 줄 접기 ───────────────────────────────────────────────────────────────────
-// 줄 = [{ syl, u, sent }] — u는 줄 안 가로 위치(음절 간격 단위, 첫 음절 0), sent는 문장 번호. 빈 배열 = 빈 줄
+// 줄 = [{ syl, u, sent, word }] — u는 줄 안 가로 위치(음절 간격 단위, 첫 음절 0), sent는 문장 번호,
+// word는 텍스트 전체에서 단어 번호(줄을 넘어 쪼개진 단어도 같은 번호). 빈 배열 = 빈 줄
 const SPACE_U = 0.2; // core.calcTextboxLayout: 공백 = wrapStep × 0.2
 const SENTENCE_END = /[.?!…。][."'”’)\]]*$/; // 단어 끝 문장부호(뒤에 붙는 따옴표·괄호 허용)
 function breakLines(text, perLine) {
     const maxU = perLine - 1;
     const lines = [];
     let sent = 0;
+    let word = 0;
     let open = false; // 지금 문장에 음절이 있나 — 빈 문장으로 번호만 넘기지 않게
     const endSentence = () => {
         if (open) sent++;
@@ -94,10 +131,11 @@ function breakLines(text, perLine) {
                     flush();
                     u = 0;
                 }
-                cur.push({ syl, u, sent });
+                cur.push({ syl, u, sent, word });
                 open = true;
                 u += 1;
             }
+            word++;
             if (SENTENCE_END.test(raw)) endSentence();
         }
         flush(); // 문단 끝(빈 문단이면 빈 줄)
@@ -106,6 +144,18 @@ function breakLines(text, perLine) {
     while (lines.length && !lines[lines.length - 1].length) lines.pop();
     while (lines.length && !lines[0].length) lines.shift();
     return lines;
+}
+
+// 문장 = [단어 = [syl…]…] — sora용. 문장 끝 규칙은 breakLines와 같다(문장부호로 끝나는 단어, 줄바꿈)
+function splitSentences(text) {
+    const sents = [];
+    for (const line of breakLines(text, Infinity))
+        for (const { syl, sent, word } of line) {
+            const s = (sents[sent] ??= new Map());
+            if (!s.has(word)) s.set(word, []);
+            s.get(word).push(syl);
+        }
+    return sents.filter(Boolean).map(s => [...s.values()]);
 }
 
 // 창 크기 → 글자 크기·줄 배치(CSS px)
@@ -136,15 +186,17 @@ function geometry(perLine, lh) {
 // ── 연결 실(허브) — 문장 단위 ────────────────────────────────────────────────
 // mycelium update()가 새 음절 i를 붙일 때 부르는 허브 등록(_maybeRegisterHub(i-1))을 이 페이지에서 감싼다:
 // 지금 음절과 같은 문장일 때만 등록하고, 허브에 문장 번호를 붙여 둔다
-const registerHub = r._maybeRegisterHub.bind(r);
 let lineSent = []; // 지금 줄의 음절별 문장 번호
 let curSent = -1; // 지금 붙이는 음절의 문장
-r._maybeRegisterHub = (i, ud) => {
-    if (lineSent[i] !== curSent) return;
-    registerHub(i, ud);
-    const h = r._hubs.get(i);
-    if (h) h.sent = lineSent[i];
-};
+if (r) {
+    const registerHub = r._maybeRegisterHub.bind(r);
+    r._maybeRegisterHub = (i, ud) => {
+        if (lineSent[i] !== curSent) return;
+        registerHub(i, ud);
+        const h = r._hubs.get(i);
+        if (h) h.sent = lineSent[i];
+    };
+}
 function dropOtherSentences() {
     for (const [id, h] of r._hubs) if (h.sent !== curSent) r._hubs.delete(id);
 }
@@ -176,7 +228,32 @@ function setStatus(s) {
 }
 
 // ── 굽기 ──────────────────────────────────────────────────────────────────────
-// 텍스트 하나 → 종이에 줄 띠를 붙여 가며 굽고, 출력 해상도 띠 목록을 돌려준다
+// signal·dandelion·sora — bake-text-others.js가 띠 목록을 다 만든 뒤 종이에 한꺼번에 붙여 보여 준다
+async function bakeOther(text, opts, label) {
+    const res = await other.bakeEntry(text, opts, {
+        JAMO,
+        breakLines,
+        splitSentences,
+        running: () => running,
+        setStatus: s => setStatus(`${label} ${s}`),
+    });
+    if (!res) return null;
+    const paper = $('paper');
+    const z = window.innerWidth / res.outW; // 출력 px → 화면 CSS px
+    paper.replaceChildren();
+    paper.style.height = `${res.outH * z}px`;
+    for (const { strip, xOut, yOut } of res.strips) {
+        const view = document.createElement('canvas');
+        view.width = strip.width;
+        view.height = strip.height;
+        view.getContext('2d').drawImage(strip, 0, 0);
+        Object.assign(view.style, { left: `${xOut * z}px`, top: `${yOut * z}px`, width: `${strip.width * z}px`, height: `${strip.height * z}px` });
+        paper.appendChild(view);
+    }
+    return res;
+}
+
+// mycelium — 텍스트 하나 → 종이에 줄 띠를 붙여 가며 굽고, 출력 해상도 띠 목록을 돌려준다
 async function bakeEntry(text, opts, label) {
     const { perLine, lh, outWidth, instant } = opts;
     const lines = breakLines(text, perLine);
@@ -272,7 +349,13 @@ async function bakeEntry(text, opts, label) {
     liveCenter = null;
     r.clearAccum();
     await frame();
-    return { strips, outW, outH: Math.round(g.totalH(lines.length) * k), lines: lines.length };
+    return {
+        strips,
+        outW,
+        outH: Math.round(g.totalH(lines.length) * k),
+        lines: lines.length,
+        warn: outW > Wd ? `⚠️ 원본 ${Wd}px < 출력 ${outW}px — 확대 저장됨. 창을 넓힐 것` : '',
+    };
 }
 
 // 띠들을 세로로 긴 PNG로(너무 길면 나눠서)
@@ -282,8 +365,8 @@ async function toPngs({ strips, outW, outH }) {
         const h = Math.min(MAX_PNG_H, outH - a);
         const c = new OffscreenCanvas(outW, h);
         const ctx = c.getContext('2d');
-        for (const { strip, yOut } of strips) {
-            if (yOut + strip.height > a && yOut < a + h) ctx.drawImage(strip, 0, yOut - a);
+        for (const { strip, xOut = 0, yOut } of strips) {
+            if (yOut + strip.height > a && yOut < a + h) ctx.drawImage(strip, xOut, yOut - a);
         }
         blobs.push(await c.convertToBlob({ type: 'image/png' }));
     }
@@ -308,11 +391,22 @@ async function run() {
     if (!entries.length) return setStatus('한글 텍스트를 넣을 것');
     const opts = {
         perLine: Math.max(1, parseInt($('perLine').value, 10) || 7),
-        lh: parseFloat($('lh').value) || r.lineHeightRatio,
+        lh: parseFloat($('lh').value) || (r ?? other.r).lineHeightRatio,
         outWidth: Math.max(0, parseInt($('width').value, 10) || 0),
         instant: $('instant').checked,
+        // signal
+        sylSize: Math.max(24, parseFloat($('sylsize').value) || 180),
+        ss: Math.min(4, Math.max(1, parseFloat($('ss').value) || 1)),
+        edgePx: Math.max(0, parseFloat($('edge').value) || 0),
+        mode: $('mode').value,
+        interval: Math.max(0, parseFloat($('interval').value) || 0),
+        after: Math.max(0, parseInt($('after').value, 10) || 0),
+        steps: Math.max(0, parseInt($('steps').value, 10) || 0),
+        settle: $('settle').checked,
+        // sora
+        boxesPerRow: Math.max(1, parseInt($('boxes').value, 10) || 3),
     };
-    const dir = $('dir').value.trim() || 'mycelium-text';
+    const dir = $('dir').value.trim() || `${RECEIVER}-text`;
     const save = $('save').checked;
     const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
     const saved = save ? await listSaved(dir) : new Set();
@@ -323,13 +417,15 @@ async function run() {
         let res;
         for (;;) {
             const rz = resizes;
-            res = await bakeEntry(entries[i], opts, label);
+            res = await (r ? bakeEntry : bakeOther)(entries[i], opts, label);
             if (rz !== resizes && running) continue; // 굽는 도중 창 크기가 바뀌었다 — 이 텍스트 처음부터
             break;
         }
         if (!res) break;
+        const unit = res.unit ?? '줄';
+        if (res.warn) log.push(`${label} ${res.warn}`);
         if (!save) {
-            log.push(`${label} ${res.lines}줄 · ${res.outW}×${res.outH}px (저장 안 함)`);
+            log.push(`${label} ${res.lines}${unit} · ${res.outW}×${res.outH}px (저장 안 함)`);
             continue;
         }
         const blobs = await toPngs(res);
@@ -340,7 +436,7 @@ async function run() {
             await savePng(dir, name, blobs[p]);
             log.push(`${label} → bake/${dir}/${name}`);
         }
-        log.push(`   ${res.lines}줄 · ${res.outW}×${res.outH}px`);
+        log.push(`   ${res.lines}${unit} · ${res.outW}×${res.outH}px`);
     }
     setStatus(`${running ? '완료' : '중지'}\n${log.join('\n')}`);
 }

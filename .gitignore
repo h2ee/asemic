@@ -4,6 +4,7 @@ dist
 CLAUDE.md
 .env
 bake/
+desktop.ini
 
 .venv/
 __pycache__/

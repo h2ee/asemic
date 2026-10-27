@@ -333,6 +333,11 @@ const JOIN_STEER = 0.35; // 음절 경계에서 새 초성의 출발 방향을 �
 // 흘러나간다(0.55 로 뒀다가 두 번째 단어가 화면 위로 빠져나갔다). 의도적인 baseline
 // 흔들림이 필요하면 여기가 아니라 음절마다 독립적인 각도를 주는 식이어야 한다.
 const LINE_PULL = 1.0;
+// 순 전진 하한 = 음절 bbox 긴 변 × 이 값 (2026-10-27). 이중모음은 사행 위상을 중간에 뒤집어서
+// (curvatureProgram) 획이 출발점 근처로 되돌아오는 일이 잦다 — 순 전진이 0 에 가까우면 1/netLen 배율이
+// 폭주해 춰·틥·뤽 같은 음절이 advancePx 의 17배까지 커졌다. 0.4 → 음절 크기 최대 advancePx / 0.4.
+// KS 2350자 중 177자(대부분 이중모음, 획이 되돌아오는 단모음 몇)만 바뀌고 나머지는 그대로
+const NET_FLOOR = 0.4;
 
 const wrapPi = a => Math.atan2(Math.sin(a), Math.cos(a));
 
@@ -364,11 +369,21 @@ export function jamoWordTrail(JAMO, syls, ax, ay, advancePx, stepPx = 5, meta = 
         const end = pts[pts.length - 1];
         const netLen = Math.hypot(end.x, end.y);
         if (netLen < 1e-6) continue;
+        let minX = Infinity,
+            maxX = -Infinity,
+            minY = Infinity,
+            maxY = -Infinity;
+        for (const p of pts) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+        }
         const netDir = Math.atan2(end.y, end.x);
         const rot = -wrapPi(netDir) * LINE_PULL;
         const cs = Math.cos(rot),
             sn = Math.sin(rot),
-            sc = 1 / netLen;
+            sc = 1 / Math.max(netLen, Math.max(maxX - minX, maxY - minY) * NET_FLOOR);
 
         for (let i = 1; i < pts.length; i++) {
             const px = pts[i].x * sc,

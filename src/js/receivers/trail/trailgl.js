@@ -41,7 +41,7 @@ import { makeQuadBuffer } from './glutil.js';
 import { wordOutline, wordCells, densityGrid, densitySampler, addCapsules, capsuleDensity, contourGrid } from './marchingSquares.js';
 
 const BIRTH_SCALE = 60; // birth 를 "분" 단위로 저장 (16F 누적 레인지 보호)
-const DPR_CAP = 2;
+const DPR_CAP = 2; // 기본 상한 — opts.dprCap 으로 덮는다 (bake 고해상도 굽기)
 
 const hex2rgb = h => [
     parseInt(h.slice(1, 3), 16) / 255,
@@ -429,7 +429,7 @@ export function createTrail(opts = {}) {
         dpr = 1;
 
     function resize() {
-        dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+        dpr = Math.min(window.devicePixelRatio || 1, opts.dprCap ?? DPR_CAP);
         // 0 으로 떨어지지 않게 — 창이 0 크기인 채로 로드되면(숨겨진 패널 등) 캔버스 width 가 0 이
         // 되고, drawImage 가 매 프레임 InvalidStateError 를 던져 프레임 루프가 영구히 죽는다.
         W = Math.max(1, window.innerWidth);
