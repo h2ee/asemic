@@ -476,31 +476,26 @@ export function syllablesToUniforms(sylItems, positions, sylSize, layoutScale = 
 // (public/imgs/<type>.svg)를 얹을 때도 쓴다 — **6종 이름 = SVG 파일명**이라
 // 매핑 테이블이 없다. 새 이름을 추가하면 SVG도 같이 만들어야 한다.
 //
-//   vertical     종성✗ · F2 높음(ㅏㅓㅣ)   초성 좌 + 중성 우(세로 모음)
-//   horizontal   종성✗ · F2 낮음(ㅗㅜㅡ)   초성 위 + 중성 아래(가로 모음)
-//   per75        종성✗ · 이중모음(ㅘㅝ)    초성 좌상 + 중성이 나머지를 감쌈
-//   right_click  종성○ · F2 높음(간)       초성/중성 상단 2칸 + 종성 하단
-//   hamburger    종성○ · F2 낮음(곤)       초성/중성/종성 3단
-//   bed          종성○ · 이중모음(관)      초성 좌상 + 중성 우상·중단 + 종성 하단
+//   vertical     종성✗ · 좌우결합(가 거 기)   초성 좌 + 중성 우(세로 모음)
+//   horizontal   종성✗ · 상하결합(고 구 그)   초성 위 + 중성 아래(가로 모음)
+//   per75        종성✗ · 섞임 모음(과 귀 긔)  초성 좌상 + 중성이 나머지를 감쌈
+//   right_click  종성○ · 좌우결합(간)         초성/중성 상단 2칸 + 종성 하단
+//   hamburger    종성○ · 상하결합(곤)         초성/중성/종성 3단
+//   bed          종성○ · 섞임 모음(관)        초성 좌상 + 중성 우상·중단 + 종성 하단
 //
 // 2026-09-26: signal.js 안에 private이던 것을 여기로 옮김(채팅창이 같이 쓴다).
+// 2026-10-28: 모음 F2(소리)·이중모음 여부로 가르던 것을 글자 모양 기준으로 바꿈 —
+//   ㅓ가 상하결합, ㅡ가 좌우결합, ㅑㅕㅛㅠ가 섞임으로 잘못 나왔다.
 export const PATTERN_TYPES = ['vertical', 'horizontal', 'per75', 'right_click', 'hamburger', 'bed'];
 
-// 세로 모음/가로 모음을 가르는 F2(Hz). 실측 F2 범위 580~2600의 가운데쯤.
-export const F2_BOUNDARY = 1100;
+const VERTICAL_JUNG = new Set(['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅣ']);
+const HORIZONTAL_JUNG = new Set(['ㅗ', 'ㅛ', 'ㅜ', 'ㅠ', 'ㅡ']);
+// 나머지(ㅘ ㅙ ㅚ ㅝ ㅞ ㅟ ㅢ) = 섞임
 
-export function getPatternType(jung, jong, jamo = JAMO) {
+export function getPatternType(jung, jong) {
     if (!jung) return 'vertical';
-    const entry = jamo[jung];
-    const diph = entry?.diphthong ?? 0;
-    const f2 = entry?.pos?.[1] ?? 1000;
-
-    if (!jong) {
-        if (diph) return 'per75';
-        return f2 >= F2_BOUNDARY ? 'vertical' : 'horizontal';
-    }
-    if (diph) return 'bed';
-    return f2 >= F2_BOUNDARY ? 'right_click' : 'hamburger';
+    const shape = VERTICAL_JUNG.has(jung) ? 0 : HORIZONTAL_JUNG.has(jung) ? 1 : 2;
+    return (jong ? ['right_click', 'hamburger', 'bed'] : ['vertical', 'horizontal', 'per75'])[shape];
 }
 
 // ── 레이아웃 분기 ─────────────────────────────────────────────────────────────

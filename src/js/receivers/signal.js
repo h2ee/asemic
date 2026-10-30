@@ -66,7 +66,7 @@ const HIGH_R = 0.6;
 const LOW_R = 0.4;
 const OFFSET_R = 0.2;
 
-// F2 경계(vertical/horizontal 구분)는 core.js의 F2_BOUNDARY로 옮겼다 — getPatternType과 함께.
+// vertical/horizontal 구분은 core.js getPatternType이 글자 모양(모음 종류)으로 한다.
 
 // state별 목표 셀 크기 (brightness와 독립적인 값 — 자유롭게 실험 가능)
 const CHO_SCALE = 1.4;
@@ -554,7 +554,7 @@ function appendSyllable(wordState, syl, sylIndex, JAMO, sylSize, sylW, sylH, syl
     const jungEntry = JAMO[syl.jung];
     const choEntry = JAMO[syl.cho]?.cho ?? JAMO[syl.cho];
     const jongEntry = syl.jong ? (JAMO[syl.jong + '_jong'] ?? JAMO[syl.jong]) : null;
-    const type = getPatternType(syl.jung, syl.jong, JAMO);
+    const type = getPatternType(syl.jung, syl.jong);
     const sylMeta = {
         choEntry,
         jungEntry,

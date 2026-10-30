@@ -51,7 +51,10 @@ export default defineConfig({
     base: '/asemic/',
     // 기본은 localhost만 — 공용 와이파이에서 소스·/__bake가 남에게 열리지 않게(2026-10-08).
     // iPad(dial.html)를 붙일 땐 `npm run dev:lan`(vite --host)으로 LAN에 연다. 브릿지(:9980)는 원래 모든 인터페이스에서 듣는다
-    server: { host: 'localhost' },
+    server: {
+        host: 'localhost',
+        watch: { ignored: ['**/bake/**/~*.idlk'] },
+    },
     build: {
         target: 'esnext',
         // gh-pages 시연용 — 스탠드얼론 외에 전시 화면(output)과 시연 입구(demo = output?llm=lorem&gui=1)도 싣는다

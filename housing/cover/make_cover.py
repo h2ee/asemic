@@ -6,8 +6,10 @@
        SVG 위쪽(v=0) = 경사면 위 끝(턴테이블 쪽), 아래쪽 = 관람객 쪽. 바깥에서 본 모습.
 
 치수 기준: 판의 **안쪽 면(프레임에 닿는 면)**. 꺾이는 곳의 기준점은 안쪽 면 연장선이 만나는
-가상 꼭짓점(mold line) = 프레임 프로파일 바깥 면 연장선이 만나는 점. 그래서 경사면 260이
-견적 도면의 260과 같고, SVG 구멍 좌표를 그대로 쓴다.
+가상 꼭짓점(mold line). 아래 꼭짓점 = 프레임 프로파일 바깥 면 연장선이 만나는 점.
+위 날개는 프레임 윗면에서 아크릴(GAP) 두께만큼 떠 있어서 위 꼭짓점은 프레임 꼭짓점보다 경사면을 따라
+GAP/sin45 ≈ 4.2 위에 있다. 그래서 경사면 = 260(프레임) + 4.2이고, SVG(프레임 260 기준) 구멍은
+v에 그만큼 더해 프레임에 대해 같은 자리에 둔다.
 
 실행: python make_cover.py   (build123d, ezdxf, svgelements, matplotlib 필요)
 """
@@ -35,17 +37,23 @@ TAG = f'AL5052_{T:g}t'  # 결과 파일 이름 꼬리
 R = 15.0         # 안쪽 절곡 R — 최대값 = 브라켓 둥근 부분 R15와 같은 중심(동심). 이보다 크면 브라켓을 누른다
 K = 0.50         # 중립축 계수 (R/t 큼 → 0.5 근처; R=t면 0.4). 업체가 자기 값으로 전개도를 다시 뽑는다
 W = 360.0        # 폭
-SLOPE = 260.0    # 경사면 (안쪽 면 꼭짓점~꼭짓점)
-WING = 30.0      # 위 날개 (수평, 아크릴 밑)
+SLOPE_FRAME = 260.0  # 경사면 프레임 (프레임 꼭짓점~꼭짓점) = panel.svg 높이
 LOW = 30.0       # 아래 날개 (수직, 정면 기둥 위 브라켓 덮음)
 ANG = 45.0       # 각 절곡 각도 (꺾이는 양)
-# 위 날개 구멍 — 턴테이블 밑판(arduino/turntable/make_plates.py) 앞줄 프레임 M6와 같은 자리.
-# 볼트 하나가 밑판·날개·프로파일을 같이 조인다. 밑판 아랫면엔 날개가 들어갈 1.5 단차가 있다
-WING_HOLES_U = (15.0, W / 2, W - 15.0)  # 왼→오
-WING_HOLE_IN = 15.0                     # 위 꼭짓점(프레임 앞 모서리)에서 뒤로 = 3030 중심선
+# 위 날개는 아크릴 위를 덮는다: 프레임 윗면 ─ 아크릴 GAP ─ 날개. 위 브라켓과 날개 사이도 GAP만큼 뜬다(옆면이라 괜찮음)
+GAP = 3.0        # 아크릴 3t
+WING_FRAME = 60.0  # 날개 끝 = 프레임 앞 모서리에서 60 (브라켓 30 + 뒤 프로파일 30)
+# 위 날개 구멍 — 브라켓 뒤 프로파일(30~60) 가운데, 양 끝 2개. 볼트가 날개·아크릴·프로파일을 같이 조인다
+WING_HOLES_U = (15.0, W - 15.0)         # 왼→오
+WING_HOLE_FRAME = 45.0                  # 프레임 앞 모서리에서 뒤로 = 프로파일 중심선
 WING_HOLE_D = 6.5                       # M6
 
 th = math.radians(ANG)
+DS = GAP / math.sin(th)                 # 위 꼭짓점이 프레임 꼭짓점보다 경사면 따라 위로 간 거리
+DX = GAP / math.tan(th)                 # 〃 수평으로 뒤로 간 거리
+SLOPE = SLOPE_FRAME + DS                # 경사면 (안쪽 면 꼭짓점~꼭짓점)
+WING = WING_FRAME - DX                  # 위 날개 (수평, 위 꼭짓점에서)
+WING_HOLE_IN = WING_HOLE_FRAME - DX     # 위 꼭짓점에서
 SB = R * math.tan(th / 2)               # 꼭짓점 → 절곡 시작점(안쪽 면)
 BA = th * (R + K * T)                   # 중립축 호 길이
 FLAT_WING = WING - SB
@@ -113,7 +121,8 @@ def read_marks(fn):
 RECT_MIN_R = 0.5
 CUTS = [c if c[0] != 'rect' or c[5] >= RECT_MIN_R else (*c[:5], min(RECT_MIN_R, c[3] / 2, c[4] / 2))
         for c in read_cuts(PANEL_SVG)]
-MARKS = read_marks(MARK_SVG)
+CUTS = [(c[0], c[1], c[2] + DS, *c[3:]) for c in CUTS]  # 프레임 꼭짓점 기준 → 위 꼭짓점 기준
+MARKS = [l + (0, DS) for l in read_marks(MARK_SVG)]
 
 
 def silk_groups(gap=4.0):
@@ -486,7 +495,7 @@ def build_silk_dxf():
         msp.add_linear_dim(base=(0, -v0 + 4), p1=(0, -v0), p2=(u0, -v0), angle=0, **dim).render()
         msp.add_linear_dim(base=(u0 - 4 - 6 * (i // 2 % 2), 0), p1=(u0, 0), p2=(u0, -v0), angle=90, **dim).render()
     notes = ['SILK PRINT: 1 COLOR, BLACK, OUTER FACE (VIEWER SIDE)',
-             f'VIEW: SLOPE FACE {W:g} x {SLOPE:g} AS FINISHED, SEEN FROM OUTSIDE',
+             f'VIEW: SLOPE FACE {W:g} x {SLOPE:.1f} AS FINISHED, SEEN FROM OUTSIDE',
              'ORIGIN (0,0) = LEFT EDGE / UPPER BEND VERTEX (INNER MOLD LINE)',
              'SILK_PRINT = INK AREA (SOLID HATCH)   SILK_BOX = GROUP EXTENT   SILK_DIM = POSITION',
              'CUT_REF = HOLES (REFERENCE)   BEND = BEND START (FLAT AREA BETWEEN)']
@@ -508,7 +517,7 @@ def build_silk_pdf():
     from matplotlib import font_manager
     from matplotlib.patches import Circle as MCircle, Ellipse as MEllipse, FancyBboxPatch, PathPatch, Rectangle as MRect
     from matplotlib.path import Path as MPath
-    for f in [Path.home() / 'Library/Fonts/MonoplexKR-Regular.ttf']:
+    for f in [Path.home() / 'Library/Fonts/MonoplexKR-Regular.ttf', Path('C:/Windows/Fonts/malgun.ttf')]:
         if f.exists():
             font_manager.fontManager.addfont(str(f))
             plt.rcParams['font.family'] = font_manager.FontProperties(fname=str(f)).get_name()
@@ -516,7 +525,7 @@ def build_silk_pdf():
 
     fig = plt.figure(figsize=(16.54, 11.69))  # A3 가로
     fig.text(0.03, 0.955, f'경사면 덮개 — 실크 인쇄 위치도 (AL5052 {T:g}t)', fontsize=18)
-    fig.text(0.03, 0.93, f'경사면 {W:g} x {SLOPE:g}, 바깥 면(관람객 쪽)에서 본 모습. '
+    fig.text(0.03, 0.93, f'경사면 {W:g} x {SLOPE:.1f}, 바깥 면(관람객 쪽)에서 본 모습. '
              f'X = 왼쪽 끝에서, Y = 위 꼭짓점(위 날개 쪽 절곡, 안쪽 면 연장선)에서 아래로. 단위 mm',
              fontsize=10, color='#444')
     ax = fig.add_axes([0.03, 0.05, 0.62, 0.84])
@@ -556,7 +565,7 @@ def build_silk_pdf():
     ax.annotate('', xy=(0, -10), xytext=(W, -10), arrowprops=dict(arrowstyle='<->', lw=0.6))
     ax.text(W / 2, -16, f'{W:g}', ha='center', fontsize=9)
     ax.annotate('', xy=(-12, 0), xytext=(-12, SLOPE), arrowprops=dict(arrowstyle='<->', lw=0.6))
-    ax.text(-15, SLOPE / 2, f'{SLOPE:g}', ha='right', va='center', fontsize=9)
+    ax.text(-15, SLOPE / 2, f'{SLOPE:.1f}', ha='right', va='center', fontsize=9)
     ax.plot([0], [SLOPE], 'o', ms=5, color='#c0c')
     ax.text(-3, SLOPE + 4, '기준 (X0, Y0)', ha='right', fontsize=8, color='#c0c')
     ax.set_aspect('equal'); ax.set_xlim(-40, W + 60); ax.set_ylim(-25, SLOPE + 12); ax.axis('off')
@@ -591,7 +600,7 @@ def build_pdf(y_top, y_low):
     import matplotlib.pyplot as plt
     from matplotlib import font_manager
     from matplotlib.patches import Circle as MCircle, Ellipse as MEllipse, FancyBboxPatch, Polygon, Rectangle as MRect, Arc
-    for f in [Path.home() / 'Library/Fonts/MonoplexKR-Regular.ttf']:
+    for f in [Path.home() / 'Library/Fonts/MonoplexKR-Regular.ttf', Path('C:/Windows/Fonts/malgun.ttf')]:
         if f.exists():
             font_manager.fontManager.addfont(str(f))
             plt.rcParams['font.family'] = font_manager.FontProperties(fname=str(f)).get_name()
@@ -633,18 +642,25 @@ def build_pdf(y_top, y_low):
     # 프레임 (참고) — 정면 기둥, 경사 프로파일, 윗면 프로파일 단면 + 브라켓 R15
     ax.add_patch(MRect((0, -LOW - 40), 30, LOW + 40 - 30.2, color='#ddd'))
     hinge1 = np.array([15, -15 * math.tan(th / 2)])
-    hinge2 = np.array(top) + np.array([15 * math.tan(th / 2), -15])
+    ftop = np.array(top) - np.array([DX, GAP])  # 프레임 위 꼭짓점
+    hinge2 = ftop + np.array([15 * math.tan(th / 2), -15])
     for h in (hinge1, hinge2):
         ax.add_patch(MCircle(h, 15, fill=False, ec='#bbb', lw=0.8))
+    ax.add_patch(MRect(tuple(ftop), WING_FRAME + 10, GAP, color='#bde', lw=0))  # 아크릴 (참고)
+    ax.text(ftop[0] + WING_FRAME + 12, ftop[1], f'아크릴 {GAP:g}t', fontsize=7, color='#68a', va='bottom')
+    for x in (WING_HOLE_FRAME - WING_HOLE_D / 2, WING_HOLE_FRAME + WING_HOLE_D / 2):
+        ax.plot([ftop[0] + x] * 2, [ftop[1] - 6, top[1] + T + 2], color='#888', lw=0.4, ls=':')
+    ax.text(ftop[0] + WING_HOLE_FRAME, ftop[1] - 8, f'M6\n(프레임 앞에서 {WING_HOLE_FRAME:g})', ha='center', va='top',
+            fontsize=6, color='#888')
     ax.text(hinge1[0] + 17, hinge1[1] + 2, '브라켓 R15\n(축 = 프로파일 중심)', fontsize=7, color='#888')
     ax.annotate('', xy=(-12, 0), xytext=(-12, -LOW), arrowprops=dict(arrowstyle='<->', lw=0.6))
     ax.text(-14, -LOW / 2, f'{LOW:g}', ha='right', va='center', fontsize=9)
     mid = np.array(top) / 2 + np.array([-s, s]) * 14
-    ax.text(*mid, f'{SLOPE:g}', ha='center', va='center', rotation=45, fontsize=9)
+    ax.text(*mid, f'{SLOPE:.1f}', ha='center', va='center', rotation=45, fontsize=9)
     ax.annotate('', xy=(top[0], top[1] + 12), xytext=(top[0] + WING, top[1] + 12), arrowprops=dict(arrowstyle='<->', lw=0.6))
     ax.text(top[0] + WING / 2, top[1] + 14, f'{WING:g}', ha='center', fontsize=9)
     ax.text(34, -LOW + 2, '아래 날개\n(정면 기둥 위\n브라켓 덮음)', fontsize=7)
-    ax.text(top[0] + 2, top[1] - 12, '위 날개\n(아크릴 밑)', fontsize=7)
+    ax.text(top[0] + 2, top[1] + 4, '위 날개 (아크릴 위)', fontsize=7)
     ax.text(top[0] * 0.15, top[1] * 0.62, '바깥 (관람객)', fontsize=8, color='#666')
     ax.text(top[0] * 0.75, top[1] * 0.35, '안쪽 (프레임)', fontsize=8, color='#666')
     ax.text(top[0] + 4, top[1] - 34, '135°', fontsize=9)
@@ -669,7 +685,7 @@ def build_pdf(y_top, y_low):
         ax.add_patch(MCircle(wing_flat(u), WING_HOLE_D / 2, fill=False, lw=0.6))
     hy = wing_flat(0)[1]
     ax.text(WING_HOLES_U[0] + 6, hy, f'{len(WING_HOLES_U)}-Ø{WING_HOLE_D:g} (M6) — 날개 끝에서 {WING - WING_HOLE_IN:g}, '
-            f'양 끝에서 {WING_HOLES_U[0]:g}·가운데', va='center', fontsize=7)
+            f'양 끝에서 {WING_HOLES_U[0]:g}', va='center', fontsize=7)
     from matplotlib.path import Path as MPath
     verts, codes = [], []
     for loop in MARKS:
@@ -682,7 +698,7 @@ def build_pdf(y_top, y_low):
         for yy in (y - BA / 2, y + BA / 2):  # 절곡 구간 시작·끝
             ax.plot([-8, W + 8], [yy, yy], color='#d33', ls=(0, (6, 3)), lw=0.6)
         ax.text(W + 10, y, f'절곡 45°\n(뒤로 접힘) 안쪽 R{R:g}', va='center', fontsize=8, color='#d33')
-    ax.text((W / 2 + WING_HOLES_U[-1]) / 2, (FLAT_L + y_top) / 2, '위 날개 (아크릴 밑)', ha='center', va='center', fontsize=8, color='#999')
+    ax.text((W / 2 + WING_HOLES_U[-1]) / 2, (FLAT_L + y_top) / 2, '위 날개 (아크릴 위)', ha='center', va='center', fontsize=8, color='#999')
     ax.text(W / 2, y_low / 2, '아래 날개', ha='center', va='center', fontsize=8, color='#999')
     ax.annotate('', xy=(0, -10), xytext=(W, -10), arrowprops=dict(arrowstyle='<->', lw=0.6))
     ax.text(W / 2, -16, f'{W:g}', ha='center', fontsize=9)
@@ -695,8 +711,8 @@ def build_pdf(y_top, y_low):
         f'재질: AL5052  t{T:g}',
         '수량: 1EA',
         f'가공: 레이저 절단 → R 절곡 2곳 (45°, 같은 방향, 안쪽 R{R:g})',
-        f'  브라켓 R15와 동심으로 감쌈.',
-        f'위 날개 구멍 {len(WING_HOLES_U)}-Ø{WING_HOLE_D:g}: 위 밑판·프레임과 M6 공용 체결',
+        f'  아래: 브라켓 R15와 동심으로 감쌈. 위: 아크릴 {GAP:g}t 위를 덮어 브라켓과 {GAP:g} 뜸.',
+        f'위 날개 구멍 {len(WING_HOLES_U)}-Ø{WING_HOLE_D:g}: 아크릴·프레임과 M6 공용 체결',
         '표면: 비드(샌드)블라스트 → 무색 아노다이징, 무광',
         # f'마킹: 파란 영역 — UV 인쇄. 인쇄 원본 = cover_slope_mark_{TAG}.pdf (1:1, 검정 채움, 빨간 선은 위치 참고)',
         f'마킹: 파란 영역 — 실크 인쇄 1도, 잉크 검정. 위치 = cover_slope_silk_{TAG}.pdf, 필름 원본 = cover_slope_mark_{TAG}.pdf (1:1)',
