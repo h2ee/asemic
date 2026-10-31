@@ -18,6 +18,7 @@
 // 개발 중 TD 대역: `npm run bridge`
 
 import { ReceiverManager } from '../js/receivers/ReceiverManager.js';
+import { setLightCurve, getLightCurve } from '../js/receivers/signal.js';
 import {
     MAX_SYL,
     decomposeSyllables,
@@ -52,7 +53,8 @@ document.documentElement.style.setProperty('--bg-img', `url('${asset('imgs/BG_d.
 // receiver별 배경 — 여기 없는 receiver는 BG_d. 지금은 한 장(BG_n)뿐이라 body::before 한 겹으로 크로스페이드
 // (output.html). 두 장 이상 갈리게 되면 겹을 늘려야 한다
 const BG_ALT = asset('imgs/BG_n.jpeg');
-const BG_ALT_RECEIVERS = new Set(['signal']);
+// signal 기본(light 룩, 2026-10-31~)은 밝은 배경에서 보려는 것이라 BG_d에 둔다. BG_n은 예전 어두운 룩 `?signal=dark`에서만
+const BG_ALT_RECEIVERS = new Set(new URLSearchParams(location.search).get('signal') === 'dark' ? ['signal'] : []);
 document.documentElement.style.setProperty('--bg-alt', `url('${BG_ALT}')`);
 new Image().src = BG_ALT; // 처음 전환 때 디코딩하느라 페이드가 끊기지 않게 미리 받아 둔다
 
@@ -853,6 +855,17 @@ window.addEventListener(
         e.preventDefault(); // macOS Alt+S = ß
         e.stopPropagation();
         serial.request().then(() => input.focus());
+    },
+    { capture: true },
+);
+// Alt+C — signal light 룩의 색 곡선 비교: RGB 곡선(signal_curve) ↔ CMYK 곡선(signal_curve_cmyk, PSD 룩). 시작값은 `?curve=`
+window.addEventListener(
+    'keydown',
+    e => {
+        if (!(e.altKey && e.code === 'KeyC')) return;
+        e.preventDefault(); // macOS Alt+C = ç
+        e.stopPropagation();
+        console.log('[signal] curve →', setLightCurve(getLightCurve() === 'cmyk' ? 'rgb' : 'cmyk'));
     },
     { capture: true },
 );

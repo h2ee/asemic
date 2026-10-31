@@ -87,7 +87,7 @@ PNG 굽기(bake.html / bake-text.html)가 전시와 다르게 그리는 부분�
 
 ### 색 합성
 
-- **음절 센터 배경 radial gradient**: 셀을 그리기 전 단계에서 각 음절 중심을 기준으로 배경(`BG_GRAY`)보다 밝은 halo가 깔리고 바깥으로 페이드 → 셀 색은 `mix(bg, cellShaded, edge)`로 그 위에 얹힌다. 상수 `SYL_GRADIENT_STRENGTH` / `SYL_GRADIENT_RADIUS_RATIO` / `SYL_GRADIENT_FALLOFF`. 단어 quad 밖(단어 사이 여백)엔 안 깔린다.
+- **음절 센터 배경 radial gradient**(dark 룩 기준 — light 룩은 halo 색이 음절 메인 컬러, 위 절): 셀을 그리기 전 단계에서 각 음절 중심을 기준으로 배경(`BG_GRAY`)보다 밝은 halo가 깔리고 바깥으로 페이드 → 셀 색은 `mix(bg, cellShaded, edge)`로 그 위에 얹힌다. 상수 `SYL_GRADIENT_STRENGTH` / `SYL_GRADIENT_RADIUS_RATIO` / `SYL_GRADIENT_FALLOFF`. 단어 quad 밖(단어 사이 여백)엔 안 깔린다.
 - **셀 내부 미세 radial gradient (컬러 모드 전용)**: `cellT = pow(clamp(|v_local - bestPos| / (√bestW * CELL_GRADIENT_RADIUS_RATIO)), CELL_GRADIENT_FALLOFF)`, 채도항 `mix(vec3(luma), color, 1 + CELL_GRADIENT_SAT*cellT)` + 명도항 `*(1 - CELL_GRADIENT_DEPTH*cellT)`, 최종 clamp. 둘 다 `cellT` 구동이라 각 상수가 0이면 그 항만 꺼진다. 기준 반경을 `√bestW`(≈ `currentScale × MIN_DIST`)에 맞춘 것은 셀 크기가 weight로 제각각이기 때문. mono(BLINK) 모드는 `finalColor`를 통째로 덮어쓰므로 영향 없음.
 
 ### 배치 — `calcShelfLayout`이 원본 (2026-10-08)
@@ -101,6 +101,17 @@ PNG 굽기(bake.html / bake-text.html)가 전시와 다르게 그리는 부분�
 ### 세로 scroll — 2026-10-08
 
 `scrollTo(t)`는 `scrollBase`를 바로 t로 두고(페이지가 positions에서 뺀다) 화면은 `_slide`만큼 뒤처져 있다가 그린 프레임마다 `SCROLL_EASE`(0.12)로 따라간다 — `_draw()`가 단어 원점에 `_slide`를 더할 뿐, 단어 캐시는 안 건드린다. 줄 높이가 음절마다 달라서 `layoutFor`는 줄 번호가 아니라 첫 줄·마지막 줄 아래끝 차로 `scrollY`를 잰다.
+
+### light 룩 = 기본 — 2026-10-31
+
+밝은 배경(BG_d 위 전시, bake → 인쇄)용 룩이고 **기본값**이다. 예전 어두운 룩(흰 halo + 흰 BLANK, 배경 `BG_n`)은 `?signal=dark`로만 남았다(셰이더 `#if SIGNAL_LIGHT`, JS `LIGHT`). 아래 다른 절에서 "흰 halo"·"흰 글자"로 적힌 것은 dark 룩 기준이다.
+
+- **halo** = 음절 메인 컬러 계열 — 셀이 가장 많은 state(BLANK 제외, 동률이면 `meta.haloState`) → `LIGHT_HALO_COLOR`, 매 프레임 `sylHaloColors` → `u_sylHalo[]`
+- **BLANK 셀** = 연회색 radial gradient(`LIGHT_BLANK_IN`→`OUT`) + 테두리. 테두리 = 셀 중심색 × `LIGHT_BORDER_DARKEN`, BLANK가 아니어도 RGB가 전부 `LIGHT_WHITE_MIN` 이상이면 두른다
+- **색 곡선** `LIGHT_CURVE` = Photoshop `bake/signal_colorcurve.acv`(RGB 합성 곡선)를 자연 3차 스플라인 8비트 LUT로 — Photoshop 결과와 픽셀 단위 일치. **투명 출력에서만** 건다(불투명 index.html이면 BG_GRAY까지 곡선을 타서 하얗게 뜬다). 인쇄 책(`bake/signal-book.indd` → `bake/pdf/신호등-rgb.pdf`)도 이 RGB 곡선 룩(`bake/signal_curve`)
+- **CMYK 곡선(비교용, 기본 아님)** — `?curve=cmyk` 또는 전시 화면 Alt+C. 같은 `.acv`를 CMYK 채널에 건 룩(h2ee의 `0157_긋_s10.psd`, `bake/signal_curve_cmyk`)을 RGB 64³ 격자째 Photoshop으로 돌린 3D LUT(`public/imgs/signal_cmyk_lut.png`)로 낸다. acv엔 색 모드가 안 적혀서 같은 파일이라도 결과가 전혀 다르다
+- **ASCII 모노** — 흰 글자 대신 그 셀이 화면에 내는 가장 어두운 색(곡선 후, `lightCellDarkest`), BLANK는 `LIGHT_ASCII_BLANK_GRAY`
+- 써 보고 버린 시안: navy halo만 / halo 없이 검정 BLANK(`?signal=navy|black`, 같은 날 지움)
 
 ### 투명 출력 — 2026-09-26
 
@@ -306,6 +317,7 @@ asemic 쪽에서 직접 고친다(첫 분기: `createTrail({ dprCap })`, bake �
   - bake.html: 음절 하나 = 원 하나, **정중앙·고정 반경**(전시는 단어마다 랜덤 자리·반경 0.25~1배). 선이 fwidth 기반 ~1px라 출력이 클수록 원 대비 선이 가늘다
   - bake-text: 문장마다 보이지 않는 정사각 박스(9단어씩, 꼬리 3단어 이하는 앞 박스에 붙임), 박스를 읽는 순서로 한 행 `?boxes`(3)개. 한 행을 캔버스 하나에 그려 옆 문장 원과도 smin으로 이어진다(전시엔 문장이 한 화면씩이라 없는 일). 원 자리 = 박스 안 랜덤, 여백 `SORA_MARGIN` 0.12, 옆 박스 쪽 `SORA_SPILL` 0.25. 단어는 하나씩 `update()`에 넣는다 — 한꺼번에 넣으면 뒤에 단어가 있는 슬롯이 초기값으로 남는다(sora는 마지막 단어 슬롯만 갱신)
 - **signal**
+  - 룩은 전시 기본과 같은 light + RGB 곡선(투명 PNG라 곡선이 셰이더에서 걸린다). 2026-10-31 이전 출력(`bake/signal`, `signal_nonbg`)은 곡선 전이라 Photoshop/파이썬으로 곡선을 따로 건 것이 `bake/signal_curve`
   - `_animate`를 가짜 60Hz 시각으로 직접 돌린다 — 24fps 스로틀·셀 보간·FREEZE 구간 CA 정지까지 전시 시간축 그대로. 색은 신호등 사이클을 NORMAL로 고정(BLINK 모노로 안 굳게, `captureFrame`과 같음). 지터·신호등 셀은 매번 랜덤
   - 셀 격자는 CSS px(MIN_DIST 12)라 셀 개수 = `?sylsize`가 정한다. 캔버스는 CSS 박스를 출력 px로 키운 backing store
   - bake.html `?steps`/`?settle` — 전부 넣고 N step. bake-text 기본 `typing` — `?interval` ms마다 한 음절(앞 글자일수록 CA가 더 진행, 전시 타이핑처럼) + 끝난 뒤 `?after` step
@@ -327,4 +339,4 @@ dandelion은 엔진이 rAF로 돌아 백그라운드에서 멈춘다. 나머지�
 
 ### 굽기 결과가 낡는 경우
 
-모양·색 상수를 바꾸면 그 수신자의 `bake/` 출력은 다시 구워야 한다. 2026-10-28 기준: sora는 종성 잔물결·단어 원 고유 색·`heatmap3` 0.82 이전 출력이 전부 낡음, dandelion은 `NET_FLOOR` 이전 177자(`bake/_dandelion-before-floor/`로 옮겨 둠).
+모양·색 상수를 바꾸면 그 수신자의 `bake/` 출력은 다시 구워야 한다. signal은 2026-10-31 light 기본화 이전 `bake/signal`(dark 룩)이 낡음. 2026-10-28 기준: sora는 종성 잔물결·단어 원 고유 색·`heatmap3` 0.82 이전 출력이 전부 낡음, dandelion은 `NET_FLOOR` 이전 177자(`bake/_dandelion-before-floor/`로 옮겨 둠).

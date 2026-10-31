@@ -121,6 +121,73 @@ const SYL_GRADIENT_FALLOFF = 1.6; // 페이드 곡선 exponent — 클수록 밝
 // 투명 출력(transparentOutput)일 때만 쓰임 — halo가 배경 위에 얹히는 세기.
 // 0이면 셀만 남고 halo가 사라진다. 1.0 = gradT 그대로.
 const SYL_HALO_ALPHA = 1.0;
+// ── light 룩 (2026-10-31, 같은 날 기본값이 됨) — 어두운 배경 없이도(밝은 배경·bake) 보이게:
+// 흰 halo 대신 음절 메인 컬러 halo, 흰 BLANK 셀은 연회색(BLANK_IN) + 가장자리로 어두워지는 회색 radial gradient, RGB 색 곡선.
+// 예전 어두운 룩(흰 halo + 흰 BLANK, 배경 BG_n)은 `?signal=dark`. (navy halo만 / halo 없이 검정 BLANK 시안은 써 보고 버림)
+const LIGHT = !(typeof location !== 'undefined' && new URLSearchParams(location.search).get('signal') === 'dark');
+const LIGHT_BLANK_IN = 240 / 255; // BLANK 셀 site 중심 회색
+const LIGHT_BLANK_OUT = 400 / 255; // BLANK 셀 가장자리 회색 — 셀 내부 gradient와 같은 cellT로 섞는다
+const LIGHT_BORDER_PX = 0.2; // BLANK 셀 테두리 굵기(출력 px) — gap 안쪽에 그린다
+const LIGHT_BORDER_DARKEN = 0.75; // 테두리 = 셀 중심색 × 이 값(명도만 낮춤 — 색상·채도 유지). 0.75 ≈ 예전 회색 180/240
+const LIGHT_WHITE_MIN = 0.0; // BLANK가 아니어도 site 색의 RGB가 전부 이 이상이면 "흰 셀"로 보고 테두리를 두른다
+// halo 색 = 그 음절의 메인 컬러 계열 — 셀이 가장 많은 state(BLANK 제외)를 매 프레임 세서 고른다(_drawWord).
+// state ↔ 계열은 신호등 셀과 같다(SIGNAL_STATE_FOR_COLOR — CHO 초록 / JUNG 노랑 / JONG 빨강)
+const LIGHT_HALO_COLOR = {
+    [CHO]: [0.839, 1, 0.49],
+    [JUNG]: [1.0, 0.984, 0.471],
+    [JONG]: [1.0, 0.529, 0.345],
+};
+// 색 곡선 (2026-10-31) — Photoshop 곡선 `bake/signal_colorcurve.acv`(RGB 합성 곡선, [입력, 출력] 0~255)를 그대로 옮긴 것.
+// bake PNG에 걸었던 그 룩(bake/signal_curve/)을 전시 화면에서도 낸다. 보간은 Photoshop과 같은 자연 3차 스플라인 →
+// 8비트 LUT(같은 PNG에 Photoshop으로 건 결과와 픽셀 단위로 같았다). 투명 출력(output.html·bake)에서만 건다 —
+// 불투명 스탠드얼론(index.html)이면 BG_GRAY 배경까지 곡선을 타서 회색이 하얗게 뜬다. null이면 끔
+// ASCII 글자 색(light) — 셀이 화면에 내는 색 중 가장 어두운 것(곡선 룩에서 흰 글자가 안 보여서).
+// BLANK 셀은 연회색이라 가장 어두운 색도 거의 흰색 → 대신 이 회색(0~1, 곡선 안 탐)
+const LIGHT_ASCII_BLANK_GRAY = 0.35;
+// CMYK 곡선 룩 (2026-10-31) — bake/signal_curve_cmyk(h2ee의 0157_긋_s10.psd 방식)과 같은 색: 원본 RGB → Japan Color 2001
+// Coated(지각적 + BPC) → CMYK 채널에 같은 곡선 → sRGB. 셰이더가 CMYK 변환을 못 하니 Photoshop으로 RGB 64³ 격자 전체를
+// 그 순서로 돌린 3D LUT를 읽는다(public/imgs/signal_cmyk_lut.png — 512² = 8×8 슬라이스, 슬라이스 = B, 칸 안 x = R, y = G).
+// '긋'에서 Photoshop TIFF 결과와 평균 1 이내. 어느 곡선을 쓸지는 `?curve=cmyk|rgb`(기본 rgb), 전시 화면 Alt+C로 순환
+const LIGHT_CMYK_LUT = 'imgs/signal_cmyk_lut.png';
+let _lightCurveMode = typeof location !== 'undefined' && new URLSearchParams(location.search).get('curve') === 'cmyk' ? 'cmyk' : 'rgb';
+// 모든 signal 인스턴스가 같이 따른다(receiver를 바꿨다 돌아와도 유지)
+export function setLightCurve(mode) {
+    _lightCurveMode = mode === 'cmyk' ? 'cmyk' : 'rgb';
+    return _lightCurveMode;
+}
+export const getLightCurve = () => _lightCurveMode;
+const LIGHT_CURVE = [[0, 0], [21, 255], [112, 109], [209, 191], [255, 255]];
+// 자연 3차 스플라인 → 256칸 LUT(0~255 정수). Photoshop 곡선과 같은 보간
+function curveLUT(pts) {
+    const n = pts.length, x = pts.map(p => p[0]), y = pts.map(p => p[1]);
+    const h = x.slice(1).map((v, i) => v - x[i]);
+    const m = new Array(n).fill(0); // 2계 도함수 — 양 끝 0(natural), 가운데는 삼중대각 Thomas 풀이
+    if (n > 2) {
+        const a = [], b = [], c = [], d = [];
+        for (let i = 1; i < n - 1; i++) {
+            a.push(h[i - 1]); b.push(2 * (h[i - 1] + h[i])); c.push(h[i]);
+            d.push(6 * ((y[i + 1] - y[i]) / h[i] - (y[i] - y[i - 1]) / h[i - 1]));
+        }
+        for (let i = 1; i < b.length; i++) { const w = a[i] / b[i - 1]; b[i] -= w * c[i - 1]; d[i] -= w * d[i - 1]; }
+        for (let i = b.length - 1; i >= 0; i--) m[i + 1] = (d[i] - (i + 1 < b.length ? c[i] * m[i + 2] : 0)) / b[i];
+    }
+    const lut = [];
+    for (let t = 0; t < 256; t++) {
+        let v;
+        if (t <= x[0]) v = y[0];
+        else if (t >= x[n - 1]) v = y[n - 1];
+        else {
+            let i = 0;
+            while (t >= x[i + 1]) i++;
+            const dx = t - x[i], hi = h[i];
+            v = y[i] + ((y[i + 1] - y[i]) / hi - (hi * (2 * m[i] + m[i + 1])) / 6) * dx + (m[i] / 2) * dx * dx + ((m[i + 1] - m[i]) / (6 * hi)) * dx * dx * dx;
+        }
+        lut.push(Math.min(255, Math.max(0, Math.floor(v + 0.5))));
+    }
+    return lut;
+}
+const NAVY_HALO_RADIUS_RATIO = 0.55; // gradient 반경 / min(음절 width, height)
+const NAVY_HALO_FALLOFF = 2.2; // 페이드 곡선 exponent
 
 // ── 셀 내부 미세 radial gradient (컬러 모드 전용) ─────────────────────────────
 // 각 셀이 site 중심에선 원래 색, 바깥으로 갈수록 색이 변함 — 평평한 모자이크
@@ -980,10 +1047,13 @@ uniform float u_time; // 신호등 플래싱용 wall-clock(ms) — JS의 rAF tim
 // 전체가 공유하는 값이라 점(셀) 개수만큼 중복 저장할 필요 없이 배열 인덱싱이면 충분.
 // (BLINK 때 어떤 "도형"을 그릴지는 셀 단위라 이 배열이 아니라 u_data의 row2에서 읽음.)
 uniform float u_sylPhaseStart[${MAX_SYL_UNIFORM}];
+uniform vec3 u_sylHalo[${MAX_SYL_UNIFORM}]; // light 변형 — 음절별 halo 색(메인 컬러 계열)
 uniform int u_sylCount;
 // 셀 바깥(배경)의 알파. 1.0 = 자기 배경(BG_GRAY)을 칠하는 원래 모드,
 // 0.0 = 투명 출력(TD 합성). 1.0이면 아래 식이 전부 예전 그대로로 접힌다.
 uniform float u_bgAlpha;
+uniform highp sampler3D u_cmykLut; // light CMYK 곡선 룩 3D LUT (TEXTURE3)
+uniform float u_curveMode;         // 0 = RGB 곡선(LIGHT_CURVE_LUT), 1 = CMYK 곡선(u_cmykLut)
 #define HALO_ALPHA ${SYL_HALO_ALPHA.toFixed(4)}
 out vec4 outColor;
 
@@ -1027,11 +1097,53 @@ out vec4 outColor;
 #define SYL_GRAD_STRENGTH ${SYL_GRADIENT_STRENGTH.toFixed(4)}
 #define SYL_GRAD_RADIUS_RATIO ${SYL_GRADIENT_RADIUS_RATIO.toFixed(4)}
 #define SYL_GRAD_FALLOFF ${SYL_GRADIENT_FALLOFF.toFixed(4)}
+#define SIGNAL_LIGHT ${LIGHT ? 1 : 0}
+#define LIGHT_BLANK_IN ${LIGHT_BLANK_IN.toFixed(4)}
+#define LIGHT_BLANK_OUT ${LIGHT_BLANK_OUT.toFixed(4)}
+#define LIGHT_BORDER_PX ${LIGHT_BORDER_PX.toFixed(4)}
+#define LIGHT_BORDER_DARKEN ${LIGHT_BORDER_DARKEN.toFixed(4)}
+#define LIGHT_WHITE_MIN ${LIGHT_WHITE_MIN.toFixed(4)}
+#define LIGHT_CURVE_ON ${LIGHT && LIGHT_CURVE ? 1 : 0}
+#define LIGHT_ASCII_BLANK_GRAY ${LIGHT_ASCII_BLANK_GRAY.toFixed(4)}
+${LIGHT && LIGHT_CURVE ? `const float LIGHT_CURVE_LUT[256] = float[256](${curveLUT(LIGHT_CURVE).map(v => (v / 255).toFixed(6)).join(', ')});` : ''}
+#if LIGHT_CURVE_ON
+// light 색 곡선 — RGB: 8비트로 끊어 LUT를 읽는다(PNG에 Photoshop 곡선을 건 것과 같은 계단).
+// CMYK: 3D LUT를 칸 중심 기준으로 삼선형 보간(64³라 RGB 곡선처럼 8비트 계단을 따로 끊지 않음)
+vec3 lightCurve(vec3 c) {
+    if (u_curveMode > 0.5) return texture(u_cmykLut, clamp(c, 0.0, 1.0) * (63.0 / 64.0) + 0.5 / 64.0).rgb;
+    ivec3 ci = ivec3(clamp(floor(c * 255.0 + 0.5), 0.0, 255.0));
+    return vec3(LIGHT_CURVE_LUT[ci.r], LIGHT_CURVE_LUT[ci.g], LIGHT_CURVE_LUT[ci.b]);
+}
+#endif
+#define NAVY_RADIUS_RATIO ${NAVY_HALO_RADIUS_RATIO.toFixed(4)}
+#define NAVY_FALLOFF ${NAVY_HALO_FALLOFF.toFixed(4)}
 // 셀 내부 미세 radial gradient — JS 상단 CELL_GRADIENT_* 상수와 동일(단일 소스: JS)
 #define CELL_GRAD_SAT ${CELL_GRADIENT_SAT.toFixed(4)}
 #define CELL_GRAD_DEPTH ${CELL_GRADIENT_DEPTH.toFixed(4)}
 #define CELL_GRAD_RADIUS_RATIO ${CELL_GRADIENT_RADIUS_RATIO.toFixed(4)}
 #define CELL_GRAD_FALLOFF ${CELL_GRADIENT_FALLOFF.toFixed(4)}
+#if SIGNAL_LIGHT
+// light ASCII 글자 색 — 그 셀이 화면에 내는 색(셀 내부 gradient를 중심 → 가장자리로 훑고, 곡선까지 건 뒤) 중
+// 가장 어두운 것. 셀 가장자리 = 반대각선(√2/2 × 셀 크기)까지, 테두리 색은 뺌. BLANK는 LIGHT_ASCII_BLANK_GRAY.
+// 곡선은 main() 끝과 같은 8비트 LUT 읽기를 여기서도 한다(컬러 경로 코드는 안 건드림)
+vec3 lightCellDarkest(vec3 c, float st) {
+    if (st < 0.5) return vec3(LIGHT_ASCII_BLANK_GRAY);
+    float tMax = pow(min(1.0, 0.7071 / CELL_GRAD_RADIUS_RATIO), CELL_GRAD_FALLOFF);
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    vec3 best = vec3(1.0);
+    float bestL = 2.0;
+    for (int k = 0; k <= 12; k++) {
+        float t = tMax * float(k) / 12.0;
+        vec3 v = clamp(mix(vec3(luma), c, 1.0 + CELL_GRAD_SAT * t) * (1.0 - CELL_GRAD_DEPTH * t), 0.0, 1.0);
+#if LIGHT_CURVE_ON
+        v = lightCurve(v);
+#endif
+        float l = dot(v, vec3(0.2126, 0.7152, 0.0722));
+        if (l < bestL) { bestL = l; best = v; }
+    }
+    return best;
+}
+#endif
 
 // polynomial smooth-min — a,b가 비슷할수록 더 깊이 둥글게 파고듦(k=반경).
 // "여러 제약을 동시에 만족해야 하는" 교집합(intersection) 용도 — 여기서는
@@ -1102,6 +1214,14 @@ void main() {
 
     // 음절 센터 radial gradient — 셀 뒤에 깔리는 배경. 중심이 BG_GRAY보다 밝고
     // 바깥으로 페이드(격자를 그리기 전 단계). 셀 색은 아래에서 이 bg 위에 mix됨.
+#if SIGNAL_LIGHT
+    // light 변형 — 흰 glow 대신 음절 메인 컬러 계열 색. 불투명이면 BG_GRAY → 그 색으로, 투명이면 그 색이 gradT 알파로 얹힌다
+    vec3 haloCol = u_sylHalo[sylI];
+    float gradR = max(min(sylW_i, sylH_i) * NAVY_RADIUS_RATIO, 1.0);
+    float gradT = pow(clamp(1.0 - length(cL - sylCenter) / gradR, 0.0, 1.0), NAVY_FALLOFF);
+    vec3 bg = mix(vec3(BG_GRAY), haloCol, gradT);
+    vec3 bgCol = mix(haloCol, bg, u_bgAlpha);
+#else
     float gradR = max(min(sylW_i, sylH_i) * SYL_GRAD_RADIUS_RATIO, 1.0);
     float gradT = pow(clamp(1.0 - length(cL - sylCenter) / gradR, 0.0, 1.0), SYL_GRAD_FALLOFF);
     vec3 bg = vec3(BG_GRAY + SYL_GRAD_STRENGTH * gradT);
@@ -1109,6 +1229,7 @@ void main() {
     // "흰 glow가 뒤 배경 위에 얹히는" 합성이 되고, 멀리서는 알파가 0이라 배경이 그대로 비친다.
     // u_bgAlpha=1.0이면 bg 그대로 — 불투명 모드의 룩은 1비트도 안 바뀐다.
     vec3 bgCol = mix(vec3(1.0), bg, u_bgAlpha);
+#endif
 
     // 1st pass — power distance가 가장 작은 site(best) 찾기
     float best = 1e12;
@@ -1190,6 +1311,17 @@ void main() {
     float cellLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     vec3 cellShaded = mix(vec3(cellLuma), color, 1.0 + CELL_GRAD_SAT * cellT);
     cellShaded *= (1.0 - CELL_GRAD_DEPTH * cellT);
+#if SIGNAL_LIGHT
+    // light 변형 — 흰 BLANK 셀(row2.x = state 0)을 연회색 + 가장자리로 어두워지는 회색으로
+    // 얇은 테두리 — gap(edge 페이드)이 끝나는 자리부터 LIGHT_BORDER_PX 안쪽까지. fwidth로 1px 안티에일리어싱
+    float borderAA = max(fwidth(edgeDist), 1e-3);
+    float border = 1.0 - smoothstep(u_gapPx + LIGHT_BORDER_PX - borderAA, u_gapPx + LIGHT_BORDER_PX + borderAA, edgeDist);
+    // 테두리는 BLANK뿐 아니라 흰 셀 전부(밝기가 올라 하얗게 포화된 셀 등) — 판정은 site 색(셀마다 하나라 테두리가 끊기지 않게)
+    if (texelFetch(u_data, ivec2(bestIdx, 2), 0).x < 0.5)
+        cellShaded = vec3(mix(mix(LIGHT_BLANK_IN, LIGHT_BLANK_OUT, cellT), LIGHT_BLANK_IN * LIGHT_BORDER_DARKEN, border));
+    else if (min(color.r, min(color.g, color.b)) >= LIGHT_WHITE_MIN)
+        cellShaded = mix(cellShaded, color * LIGHT_BORDER_DARKEN, border);
+#endif
     cellShaded = clamp(cellShaded, 0.0, 1.0);
 
     vec3 finalColor = mix(bgCol, cellShaded, edge); // bgCol = 음절 센터 radial gradient (NORMAL/FREEZE 구간엔 이대로)
@@ -1221,6 +1353,7 @@ void main() {
     showMono = monoAt(sylIndexAt(asciiC.x));
 #endif
 
+    bool skipCurve = false; // light ASCII 글자는 이미 곡선을 건(또는 곡선 밖 회색) 색이라 마지막 곡선을 또 타지 않게
 #if MONO_ASCII
     if (showMono) {
         // ASCII 격자 — 칸 중심에서 power distance가 가장 작은 site를 다시 찾는다(위 1st pass와 같은 식,
@@ -1299,6 +1432,11 @@ void main() {
         // 바탕 = halo 없는 bgCol(불투명이면 BG_GRAY, 투명이면 색 무관), gradT = 0이라 아래 알파도 halo 없이
         gradT = 0.0;
         finalColor = mix(mix(vec3(1.0), vec3(BG_GRAY), u_bgAlpha), vec3(1.0), edge);
+#if SIGNAL_LIGHT
+        // light — 흰 글자 대신 그 셀의 가장 어두운 색. 바탕은 위 그대로(투명 모드면 알파 0이라 색 무관)
+        finalColor = mix(mix(vec3(1.0), vec3(BG_GRAY), u_bgAlpha), lightCellDarkest(a1.rgb, st), edge);
+        skipCurve = true;
+#endif
     }
 #else
     if (showMono) {
@@ -1342,6 +1480,10 @@ void main() {
     // (u_bgAlpha=1.0이면 alpha=1.0이라 곱해도 그대로 — 예전 출력과 동일).
     float bgA = max(u_bgAlpha, clamp(gradT * HALO_ALPHA, 0.0, 1.0));
     float alpha = mix(bgA, 1.0, edge);
+#if LIGHT_CURVE_ON
+    // light 색 곡선(lightCurve — RGB / CMYK) — 프리멀티플라이 전 색에
+    if (u_bgAlpha < 1.0 && !skipCurve) finalColor = lightCurve(finalColor);
+#endif
     outColor = vec4(finalColor * alpha, alpha);
 }
 `;
@@ -1530,6 +1672,22 @@ function uploadWordData(gl, wordState, flashPhase) {
     wordState._sylCount = sylCount;
 }
 
+// light 변형 — 음절마다 셀이 가장 많은 state(CHO/JUNG/JONG)의 halo 색. CA가 돌면 계열이 바뀔 수 있어 매 프레임 센다.
+// 동수면 지난 계열을 유지해 halo가 깜박이지 않게(sylMeta.haloState). 전부 BLANK면 지난 값(처음엔 JUNG)
+function sylHaloColors(wordState, nSyl) {
+    const counts = new Uint16Array(nSyl * 4);
+    for (const p of wordState.points) if (p.sylIndex < nSyl) counts[p.sylIndex * 4 + p.state]++;
+    const out = new Float32Array(MAX_SYL_UNIFORM * 3);
+    for (let i = 0; i < nSyl; i++) {
+        const meta = wordState.syllables[i];
+        let best = meta.haloState ?? JUNG;
+        for (const st of [CHO, JUNG, JONG]) if (counts[i * 4 + st] > counts[i * 4 + best]) best = st;
+        meta.haloState = best;
+        out.set(LIGHT_HALO_COLOR[best], i * 3);
+    }
+    return out;
+}
+
 // ── SignalReceiver ──────────────────────────────────────────────────
 export class SignalReceiver {
     // opts.transparentOutput: 배경(BG_GRAY)을 칠하지 않고 셀 + halo만 알파로 내보낸다.
@@ -1620,10 +1778,13 @@ export class SignalReceiver {
             cellSize: gl.getUniformLocation(this._prog, 'u_cellSize'),
             time: gl.getUniformLocation(this._prog, 'u_time'),
             sylPhaseStart: gl.getUniformLocation(this._prog, 'u_sylPhaseStart'),
+            sylHalo: gl.getUniformLocation(this._prog, 'u_sylHalo'),
             sylCount: gl.getUniformLocation(this._prog, 'u_sylCount'),
             bgAlpha: gl.getUniformLocation(this._prog, 'u_bgAlpha'),
             ascii: gl.getUniformLocation(this._prog, 'u_ascii'),
             grunge: gl.getUniformLocation(this._prog, 'u_grunge'),
+            cmykLut: gl.getUniformLocation(this._prog, 'u_cmykLut'),
+            curveMode: gl.getUniformLocation(this._prog, 'u_curveMode'),
             grungeTile: gl.getUniformLocation(this._prog, 'u_grungeTile'),
             grungeMid: gl.getUniformLocation(this._prog, 'u_grungeMid'),
         };
@@ -1643,6 +1804,14 @@ export class SignalReceiver {
                     im.naturalHeight * ASCII_DISPLACE.imgScale,
                 ]);
             im.src = `${import.meta.env.BASE_URL}${ASCII_DISPLACE.img}`;
+        }
+        // light CMYK 곡선 3D LUT — 읽히기 전엔 RGB 곡선으로 그린다(_cmykLutReady)
+        this._cmykLutTex = gl.createTexture();
+        this._cmykLutReady = false;
+        if (LIGHT && LIGHT_CURVE) {
+            const im = new Image();
+            im.onload = () => this._gl && this._uploadCmykLut(im);
+            im.src = `${import.meta.env.BASE_URL}${LIGHT_CMYK_LUT}`;
         }
         // document.fonts?.load(`${ASCII_TILE_H}px ${ASCII_FONT}`).then( // (Inconsolata 시절 — 페이지가 @font-face를 깔았다)
         loadAsciiFont().then(
@@ -1780,6 +1949,7 @@ export class SignalReceiver {
             if (this._quadBuf) gl.deleteBuffer(this._quadBuf);
             if (this._asciiTex) gl.deleteTexture(this._asciiTex);
             if (this._grungeTex) gl.deleteTexture(this._grungeTex);
+            if (this._cmykLutTex) gl.deleteTexture(this._cmykLutTex);
             if (this._prog) gl.deleteProgram(this._prog);
         }
         if (this._ownCanvas && this._canvas?.parentNode) this._canvas.parentNode.removeChild(this._canvas);
@@ -1946,6 +2116,33 @@ export class SignalReceiver {
         this._lastActivity = now;
     }
 
+    // light CMYK 곡선 LUT — 512² PNG(8×8 슬라이스) → 64³ 3D 텍스처(TEXTURE3), 삼선형 보간
+    _uploadCmykLut(im) {
+        const gl = this._gl;
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = 512;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(im, 0, 0);
+        const px = ctx.getImageData(0, 0, 512, 512).data;
+        const N = 64,
+            vol = new Uint8Array(N * N * N * 4);
+        for (let b = 0; b < N; b++)
+            for (let g = 0; g < N; g++)
+                for (let r = 0; r < N; r++) {
+                    const src = (((b >> 3) * N + g) * 512 + (b & 7) * N + r) * 4;
+                    vol.set(px.subarray(src, src + 4), ((b * N + g) * N + r) * 4);
+                }
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_3D, this._cmykLutTex);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, N, N, N, 0, gl.RGBA, gl.UNSIGNED_BYTE, vol);
+        for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.activeTexture(gl.TEXTURE0);
+        this._cmykLutReady = true;
+    }
+
     // 그런지 맵은 TEXTURE2 전용 — 거울 반복, mip. tile = 한 장이 덮는 화면 크기(CSS px).
     // 기준값(_grungeMid)은 맵 평균 — 64² 로 줄여 그려 잰다
     _uploadGrunge(src, tile) {
@@ -2023,6 +2220,10 @@ export class SignalReceiver {
         gl.uniform1i(this._uniforms.grunge, 2);
         gl.uniform2f(this._uniforms.grungeTile, ...(this._grungeTile ?? [256, 256]));
         gl.uniform2f(this._uniforms.grungeMid, ...(this._grungeMid ?? [0.5, 0.5]));
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_3D, this._cmykLutTex);
+        gl.uniform1i(this._uniforms.cmykLut, 3);
+        gl.uniform1f(this._uniforms.curveMode, _lightCurveMode === 'cmyk' && this._cmykLutReady ? 1 : 0);
         gl.activeTexture(gl.TEXTURE0);
         gl.uniform1i(this._uniforms.data, 0);
 
@@ -2069,6 +2270,7 @@ export class SignalReceiver {
         gl.uniform1fv(this._uniforms.sylHeight, hArr);
         // 신호등 플래싱 사이클 타이밍 — 음절 단위 배열(uploadWordData()에서 채워둔 캐시를 그대로 올림)
         gl.uniform1fv(this._uniforms.sylPhaseStart, wordState._sylPhaseStart);
+        if (LIGHT) gl.uniform3fv(this._uniforms.sylHalo, sylHaloColors(wordState, nSyl));
         gl.uniform1i(this._uniforms.sylCount, Math.max(wordState._sylCount, 1));
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
