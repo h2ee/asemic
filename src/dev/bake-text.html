@@ -3,7 +3,7 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>asemic — bake text (단어·문단 세로 긴 PNG)</title>
+        <title>asemic — bake text (단어·문단 세로/가로 긴 PNG)</title>
         <style>
             /* 단어·문단을 한 줄 N자로 접어 mycelium으로 키우고, 줄이 쌓이면 웹툰처럼 아래로 스크롤.
                저장 PNG는 가로 고정 · 세로는 줄 수만큼 늘어난다.
@@ -67,6 +67,15 @@
                 padding: 6px;
                 font: inherit;
             }
+            /* ?flow=h — 종이가 오른쪽으로 늘어나고 가로로 스크롤 */
+            html.flow-h,
+            html.flow-h body {
+                overflow-x: auto;
+                overflow-y: hidden;
+            }
+            html.flow-h #paper {
+                width: 100vw;
+            }
             #status {
                 white-space: pre-wrap;
             }
@@ -82,9 +91,11 @@
                 placeholder="줄바꿈 = 강제 줄바꿈&#10;--- 만 있는 줄 = 다음 이미지로 나눔"
             ></textarea>
             <label>receiver<select id="receiver"><option>mycelium</option><option>sora</option><option>signal</option><option>dandelion</option></select></label>
+            <label data-for="mycelium signal dandelion">방향<select id="flow"><option value="v">세로 (줄이 아래로)</option><option value="h">가로 (한 줄로 오른쪽)</option></select></label>
             <label data-for="mycelium signal dandelion">한 줄 최대 음절<input id="perLine" type="number" min="1" step="1" /></label>
             <label data-for="sora">한 줄 박스(문장) 수<input id="boxes" type="number" min="1" step="1" /></label>
-            <label>출력 가로(px, 0=원본)<input id="width" type="number" min="0" step="1" /></label>
+            <label><span id="width-label">출력 가로(px, 0=원본)</span><input id="width" type="number" min="0" step="1" /></label>
+            <label data-for="mycelium signal dandelion">자간(× 전시 음절 간격)<input id="ls" type="number" min="0.1" step="0.05" /></label>
             <label data-for="mycelium signal dandelion">줄 간격(× 글자 크기)<input id="lh" type="number" min="0.5" step="0.1" /></label>
             <label data-for="signal">sylSize(CSS px, 셀 수)<input id="sylsize" type="number" min="24" step="1" /></label>
             <label data-for="signal">슈퍼샘플(× 출력, 그린 뒤 줄임)<input id="ss" type="number" min="1" max="4" step="0.5" /></label>

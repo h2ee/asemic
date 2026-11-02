@@ -293,6 +293,8 @@ asemic 쪽에서 직접 고친다(첫 분기: `createTrail({ dprCap })`, bake �
 
 - **bake.html** (`bake.js`) — 음절 하나 = 정사각 PNG 하나. 기본 KS X 1001 2350자, `?text=`로 일부만
 - **bake-text.html** (`bake-text.js` + 다른 수신자는 `bake-text-others.js`) — 텍스트 = 세로로 긴 PNG. 한 줄 최대 `perLine`(7)음절로 접고(`breakLines`, 단어는 안 쪼갬), `---` 줄에서 이미지를 나눈다. 문장 끝 = 단어 끝 `.?!…。`(뒤 따옴표·괄호 허용) 또는 줄바꿈. 출력 가로 기본 2160(인쇄용)
+  - `?flow=h`(mycelium·dandelion·signal) — 가로로 긴 PNG. signal은 구간 없이 텍스트 전체를 한 줄로 놓고 캔버스를 가로로 나눠 그린다. 나머지 둘은 같은 줄 접기의 한 줄 = 한 구간을 화면 같은 자리에서 굽고 종이에 오른쪽으로 이어 붙인다(`flowStarts`). mycelium 연결 실은 구간 경계에서 거의 끊긴다(허브를 왼쪽으로 옮기면 화면 밖). 출력 칸은 세로 px(0 = 원본)
+  - 자간 `?ls`(mycelium·dandelion·signal, 1 = 전시 — signal은 전시 노브처럼 음절 사이 (ls − 1)·sylSize, `minSpacing` 아래로는 안 좁힘). mycelium 띠는 화면 전체를 읽어 잉크 범위로 자른다 — 종이 = 잉크 범위 합 + 여백
 
 ### 수신자 코드 안의 bake 전용 훅 (전시에선 늘 기본값)
 
@@ -300,6 +302,7 @@ asemic 쪽에서 직접 고친다(첫 분기: `createTrail({ dprCap })`, bake �
 | --- | --- | --- | --- |
 | `_gapPxOverride` | signal `_draw()` | null → `GAP_PX` 0.5 CSS px | bake-text `?edge`(출력 px로 고정) |
 | `dprCap` | dandelion 옵션 → trail `createTrail` | 없음 → `DPR_CAP` 2 | `?dpr`(bake 2, bake-text 3) — `devicePixelRatio`도 덮음 |
+| `wrapStep` | dandelion `buildPts` (획 안 음절 간격) | `WRAP_STEP` 100 | bake-text 자간 `?ls` 배 — 굽는 동안만 |
 | `maxWords` | sora 인스턴스 | `MAX_WORDS` 9 | bake-text가 `MAX_SYL` 32로 올림(한 행 한 캔버스) |
 | `wordBoxSizes` / `MERGE_WORDS` | sora.js export | 안 씀 | bake-text 문장 박스 나누기 |
 

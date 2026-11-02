@@ -473,7 +473,7 @@ export class DandelionReceiver {
         }
         const anchorKey = g => `${g.wordId}@${g.anchor[0].toFixed(5)},${g.anchor[1].toFixed(5)}`;
         const buildPts = (g, syls = g.syls, meta = null) =>
-            jamoWordTrail(this._JAMO, syls, g.anchor[0] * W, g.anchor[1] * H, WRAP_STEP, this._sampleStep, meta);
+            jamoWordTrail(this._JAMO, syls, g.anchor[0] * W, g.anchor[1] * H, this.wrapStep, this._sampleStep, meta); // wrapStep = WRAP_STEP — bake-text 자간만 바꾼다
         // 구간 계획 — 구간 = 음절, 시드 = 음절 내용만. 그래서 같은 음절은 어느 단어 어느 자리에
         // 있든, 어떤 순서로 타이핑했든(ㅇ→아→안 / 한 번에 '안') 같은 동반 곡선·장식이 나온다.
         const sylSeed = syl => this._trail.hashSeed('syl', syl.cho, syl.jung, syl.jong ?? '');
