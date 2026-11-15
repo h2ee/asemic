@@ -25,8 +25,13 @@
 //        응답한다 — 브라우저 페이지(?llm=web)는 자기가 Ollama를 부르므로(src/dev/llm.js).
 //        hint:string|null (2026-10-01) = 프리셋이 붙인 상황 설명(controls.js hints, 예: 안녕 hi/bye).
 //        LLM 시스템 프롬프트(페르소나) 뒤에 덧붙인다. 관람객이 직접 친 문장이면 null.
-//   { t:'receiver', name }                                  활성 receiver(로드/전환)
+//   { t:'receiver', name, from:'output' }                   활성 receiver(로드/전환). from 이 붙은 건 다른 output 이 안 따른다(2026-11-13, 핑퐁 방지)
+//   { t:'talking',  speaker:'visitor'|'receiver'|null }     말하는 쪽(프로필 LED)이 바뀔 때 + hello 답
+//        (2026-11-09) dial.html 의 파란 LED 가 'receiver' 일 때 켜진다
 //   { t:'mode',     joke, question, bye }                   패널 토글 상태(→ LLM 프롬프트용)
+//   { t:'knobs',    receiver, knobs:{id:{v,a,range}}, ranges } 상대 노브 상태(2026-11-09) — 노브가 움직일 때·
+//        기준점을 다시 잡을 때·receiver 전환·hello 답. control.html 숫자가 기준점(a)·receiver 범위를 반영하게.
+//        range/ranges = receiver.knobRange(없으면 null — controls.js 표 기본). 배율 = knobToMult(c, v, range, a)
 // TD → page
 //   { t:'param',    size?, lineHeight?, letterSpacing? }    하드웨어 노브/슬라이더
 //   { t:'text',     value, speaker?:'visitor'|'receiver' }  입력 텍스트 주입(원격 키보드 / LLM 응답)

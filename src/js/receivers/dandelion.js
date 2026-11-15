@@ -39,6 +39,20 @@ const WRAP_STEP = 100; // SYL_SIZE 보다 작게 두면 이웃 음절 궤적이 
 const LINE_HEIGHT_RATIO = 1.8;
 // glyphmode scroll 따라가기 — 그린 프레임(24fps 기준)마다 남은 거리의 이만큼. mycelium과 같은 값
 const SCROLL_EASE = 0.12;
+// 노브(크기·자간)를 돌리는 동안은 다시 굽지 않고 지금 그림을 CSS로 늘이고 줄여 보여 주다가, 마지막으로 돌린 뒤
+// 이만큼(ms) 지나면 한 번만 제대로 다시 굽는다(2026-11-10). 획 길이가 바뀌면 점선·고리·장식 위치와 블록 격자가
+// 전부 새로 정해져서, 값마다 다시 구우면 글자가 쉴 새 없이 떨렸다
+const KNOB_SETTLE_MS = 220;
+// 위 미리보기를 쓸지. 2026-11-10 자간 늘임을 장식까지 다 만든 뒤에 하게 바꾸면서(path.js applyStretch) 다시 구워도
+// 장식이 자리를 지켜 떨리지 않게 돼 끔 — 돌리는 동안에도 진짜로 다시 굽는다(문장 하나 ~20ms). 미리보기는 그림 전체를
+// 한 점 기준으로 늘여서 둘째 단어부터 자리가 어긋났고, 손을 떼는 순간 그만큼 튀었다
+const KNOB_PREVIEW = false;
+// 크기 노브는 다시 굽지 않는다 — 획은 늘 기본 크기로 굽고 캔버스를 CSS로 통째로 키우고 줄인다(2026-11-10, mycelium
+// displayScale과 같은 생각). 다시 구우면 점선·장식·블록이 전부 px 단위라 크기마다 모양이 새로 정해져, 손을 떼는 순간
+// 글자가 바뀌어 보였다. 줄이면(×0.8) 기본 크기 좌표가 화면 오른쪽 밖까지 가므로 캔버스를 그만큼 넓게 잡는다 —
+// controls.js 크기 노브 최소 0.8 → 1/0.8. 범위를 넓히면 같이 올릴 것
+const CANVAS_W_SCALE = 1.25;
+const SLIDE_MAX_DT = 1000 / 30; // 미끄러짐 한 프레임에 세는 최대 시간(ms) — 다시 굽느라 길어진 프레임에 튀지 않게
 
 // 스케치 기본값은 "화면을 가로지르는 긴 마우스 획"(1000px+) 기준이다.
 // 음절 하나 = 획 하나면 경로가 200~260px 밖에 안 되므로 길이 계열 파라미터를 줄여야
@@ -322,6 +336,9 @@ const CFG_OVERRIDE = {
 export class DandelionReceiver {
     constructor(opts = {}) {
         this._opts = opts;
+        // 소리는 비드 읽기 하나가 맡는다(2026-11-10) — 입력 중엔 머리가, 완결 뒤엔 왕복하는 비드가 읽는다(onBeadStep).
+        // 페이지는 이게 있으면 입력 순간 대체 소리(voiceFor)를 안 낸다. 단 `?read=0`이면 예전처럼 입력 소리로 돌아간다
+        this.soundByBead = true;
         this._trail = null;
         this._canvas = null;
         this._ownCanvas = false;
@@ -333,7 +350,10 @@ export class DandelionReceiver {
 
         // core.js 레이아웃 엔진이 읽는 값
         this.sylSize = SYL_SIZE;
-        this.wrapStep = WRAP_STEP;
+        // wrapStep(음절 보폭)은 getter — 자간 노브가 곱하는 _step × 크기 노브 배율(아래). 글자 모양이 보폭 하나로
+        // 정해지는 receiver라 크기 노브가 보폭까지 같이 키워야 배치(layoutFor)와 그린 획이 맞는다(2026-11-10)
+        this._step = WRAP_STEP;
+        this.knobFields = { spacing: '_step' }; // controls.js applyKnob — 자간 노브는 wrapStep 대신 _step에
         this.wrapMargin = SYL_SIZE * 0.6;
         this.lineHeightRatio = LINE_HEIGHT_RATIO;
 
@@ -344,9 +364,15 @@ export class DandelionReceiver {
 
         this._scrollAxis = 'y';
         this._scrollBase = 0;
+        this._scrollBaseRef = 0; // 기본 크기 좌표로 센 스크롤(크기 노브가 줄 높이를 바꿔도 미끄러지지 않게)
         this._slide = 0;
         this._slideRaf = 0;
         this._scrollJump = true;
+
+        this._drawnScale = null; // 지금 화면에 구워진 획 크기 { key, advance, stretch }
+        this._preview = null; // 노브 미리보기 { sx, sy, ox, oy } — 화면 px 원점
+        this._settleTimer = 0;
+        this._settleArgs = null;
     }
 
     async init(canvas) {
@@ -369,12 +395,30 @@ export class DandelionReceiver {
             bodyBg: !this._opts.transparentOutput,
             paperBg: !this._opts.transparentOutput,
             dprCap: this._opts.dprCap, // bake 고해상도용 — 없으면 엔진 기본(2)
+            widthScale: this._opts.transparentOutput ? CANVAS_W_SCALE : 1, // 전시(output.html)만 — 노브는 거기만 붙는다
+            onMainStep: (stroke, info) => this._readStep(stroke, info), // 비드 읽기 소리 (2026-11-10)
         });
         // 엔진은 오버레이(얇은 잉크·bead)를 body 끝에 붙인다 — 그러면 글자 창(#glyph-window)의 위쪽 페이드
         // mask·말풍선 clip이 안 걸린다. goo 캔버스 바로 뒤로 옮긴다(원래 trail/이 sketch 사본이라 여기서 했다)
         const { gl, overlay } = this._trail?.canvases ?? {};
         if (gl?.parentNode && overlay && overlay.parentNode !== gl.parentNode)
             gl.parentNode.insertBefore(overlay, gl.nextSibling);
+    }
+
+    // ── 노브 (2026-11-10) — 예전엔 크기 노브가 줄 간격만 바꾸고(획은 wrapStep으로만 커진다) 자간 노브가 글자를
+    // 통째로 키워서 둘 다 노브답지 않았다. 이제 크기 = 획을 통째로(_sizeMult), 자간 = 획을 가로로만 늘인다(_spacingMult)
+    _sizeMult() {
+        return this.sylSize / (this._ctlBase?.sylSize ?? this.sylSize);
+    }
+    _spacingMult() {
+        return this._step / (this._ctlBase?._step ?? this._step);
+    }
+    get wrapStep() {
+        return this._step * this._sizeMult();
+    }
+    // bake-text-others가 자간(ls)을 굽는 동안 직접 바꾼다 — 그땐 노브가 없어 예전처럼 획이 통째로 커진다
+    set wrapStep(v) {
+        this._step = v / this._sizeMult();
     }
 
     // ── glyphmode scroll — mycelium과 같은 인터페이스(scrollTo/scrollBase/shownScrollBase/setScrollAxis) ──
@@ -385,7 +429,10 @@ export class DandelionReceiver {
     }
     scrollTo(t) {
         t = Math.max(0, t);
-        const d = t - this._scrollBase;
+        // 크기 노브로 줄 높이가 바뀌어 목표가 같이 변한 건 미끄러짐이 아니다 — 기본 크기 좌표로 비교한다
+        const k = this._sizeMult();
+        const d = (t / k - this._scrollBaseRef) * k;
+        this._scrollBaseRef = t / k;
         // 비운 직후·되돌아가기(지우기)는 애니메이션 없이 그 자리로
         if (this._scrollJump || d < 0) this._slide = 0;
         else this._slide += d;
@@ -395,7 +442,9 @@ export class DandelionReceiver {
         if (this._slide && !this._slideRaf) {
             let last = performance.now();
             const step = now => {
-                this._slide *= Math.pow(1 - SCROLL_EASE, ((now - last) * 24) / 1000);
+                // 한 프레임 시간은 최대 SLIDE_MAX_DT까지만 친다 — 줄이 바뀌면 문장 전체를 다시 굽느라 첫 프레임이
+                // 100ms 넘게 걸리는데, 그걸 다 세면 미끄러짐이 첫 프레임에 절반쯤 끝나 윗줄이 툭 튀었다(2026-11-10)
+                this._slide *= Math.pow(1 - SCROLL_EASE, (Math.min(now - last, SLIDE_MAX_DT) * 24) / 1000);
                 last = now;
                 if (Math.abs(this._slide) < 0.3) this._slide = 0;
                 this._applySlide();
@@ -411,20 +460,60 @@ export class DandelionReceiver {
     // 아직 안 그린 음절은 null(페이지가 예전 TAG_Y로)
     sylDrop(i) {
         const d = this._sylDrop[i];
-        return Number.isFinite(d) ? d : null;
+        return Number.isFinite(d) ? d * this._sizeMult() : null; // 기본 크기로 잰 값 → 화면(크기 노브)
+    }
+    // 글자 영역 — 크기 노브의 고정점(왼쪽 아래)을 여기서 잡는다
+    setRect(rect) {
+        this._rect = rect;
+    }
+    // 크기 노브 고정점(화면 px) — rect 왼쪽·아래. layoutFor 배치가 여기서부터 sylSize에 비례하므로(PAD_X·줄 높이·
+    // 아래 여백 모두 sylSize 배수) 기본 크기 좌표 = 고정점 + (화면 좌표 − 고정점) / 배율이 정확히 성립한다
+    _sizeOrigin() {
+        const r = this._rect;
+        return r ? [r.x, r.y + r.h] : [0, window.innerHeight];
     }
     // 화면에 실제로 보이는 스크롤 양 — 음절 네모가 이걸 따라간다
     get shownScrollBase() {
         return this._scrollBase - this._slide;
     }
+    // 캔버스 transform = 미끄러짐(scroll) · 크기 노브(고정점 기준 통째로) · 노브 미리보기(자간). 오른쪽부터 적용된다 —
+    // 미리보기는 기본 크기 좌표(구운 그림)에서, 크기는 그 결과에, 미끄러짐은 화면에서
     _applySlide() {
         const v = this._slide ? `translate${this._scrollAxis === 'x' ? 'X' : 'Y'}(${this._slide.toFixed(1)}px)` : '';
-        for (const cv of Object.values(this._trail?.canvases ?? {})) if (cv.parentNode) cv.style.transform = v;
+        const k = this._sizeMult();
+        const pv = this._preview;
+        for (const cv of Object.values(this._trail?.canvases ?? {})) {
+            if (!cv.parentNode) continue;
+            if (k === 1 && !pv) {
+                cv.style.transform = v;
+                cv.style.transformOrigin = '';
+                continue;
+            }
+            // transform은 캔버스 자기 좌표(= 구울 때 쓴 px, 캔버스가 화면 0,0에 붙어 있으면 화면 px와 같다)로 건다.
+            // 크기 고정점만 화면 px라 캔버스 자리(transform 뺀)를 빼서 옮긴다
+            cv.style.transform = '';
+            const r = cv.getBoundingClientRect();
+            const about = (x, y, sx, sy) =>
+                `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${sx.toFixed(4)}, ${sy.toFixed(4)}) translate(${(-x).toFixed(1)}px, ${(-y).toFixed(1)}px)`;
+            const [ox, oy] = this._sizeOrigin();
+            cv.style.transformOrigin = '0 0';
+            cv.style.transform = [v, k !== 1 ? about(ox - r.left, oy - r.top, k, k) : '', pv ? about(pv.ox, pv.oy, pv.sx, pv.sy) : '']
+                .filter(Boolean)
+                .join(' ');
+        }
+    }
+    _endPreview() {
+        clearTimeout(this._settleTimer);
+        this._settleTimer = 0;
+        this._settleArgs = null;
+        if (!this._preview) return;
+        this._preview = null;
+        this._applySlide();
     }
     _resetScroll() {
         cancelAnimationFrame(this._slideRaf);
         this._slideRaf = 0;
-        this._scrollBase = this._slide = 0;
+        this._scrollBase = this._slide = this._scrollBaseRef = 0;
         this._scrollJump = true;
         this._applySlide();
     }
@@ -447,8 +536,15 @@ export class DandelionReceiver {
         // 스크롤로 다시 구울 때 칸이 글자에 대해 어긋나지 않는다
         const halo = this._trail.CFG.halo;
         if (halo) {
-            halo.ox = this._scrollAxis === 'x' ? -this._scrollBase : 0;
-            halo.oy = this._scrollAxis === 'y' ? -this._scrollBase : 0;
+            halo.ox = this._scrollAxis === 'x' ? -this._scrollBaseRef : 0;
+            halo.oy = this._scrollAxis === 'y' ? -this._scrollBaseRef : 0;
+        }
+
+        const sz = this._sizeMult();
+        const [ox, oy] = this._sizeOrigin();
+        if (sz !== this._shownSize) {
+            this._shownSize = sz;
+            this._applySlide(); // 크기만 바뀐 거면 아래에서 다시 굽지 않고 끝난다 — CSS 배율은 여기서
         }
 
         // ── 음절을 "단어 = 획" 단위로 묶는다.
@@ -456,7 +552,9 @@ export class DandelionReceiver {
         const groups = [];
         for (let i = 0; i < sylItems.length; i++) {
             const s = sylItems[i];
-            const p = positions?.[i] ?? [0.5, 0.5];
+            // 화면 좌표 → 기본 크기 좌표(크기 노브는 CSS가 곱한다)
+            const q = positions?.[i] ?? [0.5, 0.5];
+            const p = [(ox + (q[0] * W - ox) / sz) / W, (oy + (q[1] * H - oy) / sz) / H];
             const prev = groups[groups.length - 1];
             if (prev && prev.wordId === s.wordId && Math.abs(prev.anchor[1] - p[1]) < 1e-4) {
                 prev.syls.push(s);
@@ -471,9 +569,14 @@ export class DandelionReceiver {
                 });
             }
         }
-        const anchorKey = g => `${g.wordId}@${g.anchor[0].toFixed(5)},${g.anchor[1].toFixed(5)}`;
+        // 획 크기·가로 늘임(노브)도 키에 넣는다 — 안 넣으면 자간 노브는 첫 단어 시작점을 안 바꿔서 단어 하나짜리
+        // 문장(한 줄)에선 다시 그릴 계기가 없었다(2026-11-10)
+        const scaleKey = `${(this._step / this._spacingMult()).toFixed(4)}x${this._spacingMult().toFixed(4)}`;
+        const anchorKey = g => `${g.wordId}@${g.anchor[0].toFixed(5)},${g.anchor[1].toFixed(5)}@${scaleKey}`;
         const buildPts = (g, syls = g.syls, meta = null) =>
-            jamoWordTrail(this._JAMO, syls, g.anchor[0] * W, g.anchor[1] * H, this.wrapStep, this._sampleStep, meta); // wrapStep = WRAP_STEP — bake-text 자간만 바꾼다
+            // 획 크기 = 보폭 ÷ 자간 배율(= WRAP_STEP × 크기 배율), 가로로만 자간 배율만큼 늘인다 — 한 음절이 가로로
+            // 나아가는 거리는 그대로 wrapStep이라 layoutFor 배치와 맞는다. 노브 없으면 둘 다 1(bake-text 자간은 wrapStep을 직접)
+            jamoWordTrail(this._JAMO, syls, g.anchor[0] * W, g.anchor[1] * H, this._step / this._spacingMult(), this._sampleStep, meta);
         // 구간 계획 — 구간 = 음절, 시드 = 음절 내용만. 그래서 같은 음절은 어느 단어 어느 자리에
         // 있든, 어떤 순서로 타이핑했든(ㅇ→아→안 / 한 번에 '안') 같은 동반 곡선·장식이 나온다.
         const sylSeed = syl => this._trail.hashSeed('syl', syl.cho, syl.jung, syl.jong ?? '');
@@ -500,6 +603,7 @@ export class DandelionReceiver {
                 return {
                     px0: st.px0,
                     seed: sylSeed(st.syl),
+                    syl: st.syl, // 비드 읽기 소리가 밑에 있는 음절을 안다(_readStep)
                     orbs: this._sylOrbs(st.syl, segLen),
                     haloAngle: this._sylHaloAngle(st.syl),
                     haloTone: this._sylHaloTone(st.syl),
@@ -510,6 +614,39 @@ export class DandelionReceiver {
         };
         // 획 시드는 동반 곡선 개수·bead 배열만 정한다. 단어 내용만 쓴다(wordId 를 섞으면 같은 단어도 자리마다 달라진다)
         const seedOf = g => this._trail.hashSeed('word', ...g.keys);
+        // 자간 = 가로 늘임. 경로는 늘이지 않고 만들고 엔진이 장식까지 다 만든 뒤 단어 시작점 기준으로 늘인다
+        // (path.js applyStretch) — 장식이 늘이지 않은 경로 길이로 정해져서 자간을 바꿔도 같은 자리에 남는다(2026-11-10)
+        const stretchOf = g => (this._spacingMult() === 1 ? null : { x0: g.anchor[0] * W, sx: this._spacingMult() });
+
+        // 노브 미리보기 — 글자(그룹 구성)는 그대로고 획 크기·늘임만 바뀌었으면 다시 굽지 않고 구운 그림을
+        // 가로 sx·세로 sy로 늘인다. 원점 = 첫 단어 시작 x(왼쪽 정렬)·마지막 줄 y(stack은 마지막 줄이 rect 바닥에 고정).
+        // 손을 떼고 KNOB_SETTLE_MS 뒤에 그때 값으로 한 번 제대로 굽는다
+        const advance = this._step / this._spacingMult();
+        const stretch = this._spacingMult();
+        const prevGroups = this._groups;
+        const sameText =
+            prevGroups.length === groups.length && prevGroups.every((q, i) => q.keys.join('') === groups[i].keys.join(''));
+        const d = this._drawnScale;
+        if (KNOB_PREVIEW && d && scaleKey !== d.key && sameText) {
+            this._preview = {
+                sx: (advance * stretch) / (d.advance * d.stretch),
+                sy: advance / d.advance,
+                ox: groups[0].anchor[0] * W,
+                oy: groups[groups.length - 1].anchor[1] * H,
+            };
+            this._applySlide();
+            this._settleArgs = [sylItems, positions, JAMO];
+            clearTimeout(this._settleTimer);
+            this._settleTimer = setTimeout(() => {
+                const args = this._settleArgs;
+                this._endPreview();
+                this._drawnScale = null; // 이번엔 미리보기 없이 제대로 굽는다
+                if (args && this._trail) this.update(...args);
+            }, KNOB_SETTLE_MS);
+            return;
+        }
+        this._endPreview();
+        this._drawnScale = { key: scaleKey, advance, stretch };
 
         this._sylDrop.length = sylItems.length;
         const prev = this._groups;
@@ -561,11 +698,25 @@ export class DandelionReceiver {
         // ── 그 외에는 달라진 지점부터 다시 그린다. 획이 이미 밀도장에 구워졌으면
         // 개별로 뺄 수 없으므로 전면 재구성 (결정론 덕분에 같은 글자는 같은 모양).
         const rebuild = match < prev.length;
+        // 다시 굽기 전 마지막 단어가 얼마나 자라 있었나 — 자리만 바뀐 경우(노브·줄바꿈) 처음부터 다시 자라지 않고
+        // 거기서 이어 가게(2026-11-10). 예전엔 노브를 돌릴 때마다 마지막 단어가 0부터 다시 그려졌다.
+        // 단어 단위로 센다 — 줄을 넘는 단어는 획이 둘로 갈리고, 노브를 돌리면 그 경계 음절이 바뀐다.
+        // 마지막 획: 큐에 남아 있으면 아직 시작 전(0), 자라는 중이면 그 비율, 아무것도 없으면 다 자란 것.
+        // 같은 단어의 앞 획들은 다 자라 있다
+        let resume = null;
+        if (rebuild && prev.length) {
+            const pd = this._trail.pending();
+            const frac = pd.queued ? 0 : pd.growing != null ? (pd.total ? pd.walked / pd.total : 0) : 1;
+            const tail = prev[prev.length - 1];
+            const keys = prev.filter(q => q.wordId === tail.wordId).flatMap(q => q.keys);
+            resume = { wordId: tail.wordId, keys, drawn: keys.length - tail.keys.length * (1 - frac) };
+        }
         if (rebuild) {
             this._trail.clear();
             this._groups = [];
         }
         const from = rebuild ? 0 : match;
+        if (!rebuild) this._trail.releaseHold(); // 앞 단어들은 더 붙을 음절이 없다 — 새 마지막 단어만 hold
         this._holdingIdx = -1;
 
         for (let gi = from; gi < groups.length; gi++) {
@@ -580,11 +731,32 @@ export class DandelionReceiver {
                 const anim = this._trail.CFG.outline.anim;
                 const on = anim.on;
                 anim.on = false;
-                this._trail.addStroke(pts, seedOf(g), { plan });
+                this._trail.addStroke(pts, seedOf(g), { plan, stretch: stretchOf(g) });
                 anim.on = on;
-            } else this._trail.queueStroke(pts, seedOf(g), { hold: isLast, plan });
+            } else {
+                // 이어 갈 길이 — 같은 단어가 앞에서부터 같은 음절까지, 예전에 자라 있던 음절 수(소수)만큼.
+                // 이 획 앞에 같은 단어의 획이 있으면(줄을 넘은 단어) 그 음절 수를 빼고 센다
+                let at = 0;
+                if (rebuild && isLast && resume?.wordId === g.wordId && resume.drawn > 0) {
+                    const word = groups.filter(q => q.wordId === g.wordId);
+                    const keys = word.flatMap(q => q.keys);
+                    const before = keys.length - g.keys.length;
+                    let same = 0;
+                    while (same < keys.length && same < resume.keys.length && keys[same] === resume.keys[same]) same++;
+                    const drawn = Math.min(g.keys.length, Math.min(resume.drawn, same) - before);
+                    if (drawn > 0) {
+                        const whole = Math.ceil(drawn);
+                        const done = whole >= g.keys.length ? pts : buildPts(g, g.syls.slice(0, whole));
+                        let len = 0;
+                        for (let i = 1; i < done.length; i++) len += Math.hypot(done[i].x - done[i - 1].x, done[i].y - done[i - 1].y);
+                        at = len * (drawn / whole);
+                    }
+                }
+                this._trail.queueStroke(pts, seedOf(g), { hold: isLast, plan, at, stretch: stretchOf(g) });
+            }
             if (isLast) this._holdingIdx = gi;
             this._groups.push({
+                wordId: g.wordId,
                 sig: anchorKey(g) + '|' + g.keys.join(''),
                 anchorKey: anchorKey(g),
                 keys: g.keys.slice(),
@@ -615,6 +787,8 @@ export class DandelionReceiver {
 
     // submit 후 새 줄 시작 — 누적 궤적 비움 (히스토리 이미지는 core.js 흐름이 관리)
     clearAccum() {
+        this._endPreview();
+        this._drawnScale = null;
         this._trail?.clear();
         this._trail?.resetStamps();
         this._groups = [];
@@ -624,7 +798,12 @@ export class DandelionReceiver {
     }
 
     dispose() {
+        this._endPreview();
         this._resetScroll(); // 캔버스 transform을 남기면 ReceiverManager가 cssText째 다음 캔버스로 옮긴다
+        for (const cv of Object.values(this._trail?.canvases ?? {})) {
+            cv.style.transform = ''; // 크기 노브 배율도(_resetScroll은 그건 남긴다)
+            cv.style.transformOrigin = '';
+        }
         this._trail?.dispose(); // 리스너·오버레이 캔버스·body 배경 전부 되돌린다
         this._trail = null;
         if (this._ownCanvas && this._canvas?.parentNode) this._canvas.parentNode.removeChild(this._canvas);
@@ -637,6 +816,48 @@ export class DandelionReceiver {
         this._trail?.clear();
         this._groups = [];
         this._holdingIdx = -1;
+    }
+
+    // ── 비드 읽기 소리 (2026-11-10) — 메인 비드가 완결된 단어 위를 한 걸음 옮길 때마다(엔진 onMainStep) 그 자리의 그래픽을
+    // 악보처럼 읽어 페이지로 넘긴다(onBeadStep → core.beadStepVoice → sound). 읽는 것:
+    //   밑에 있는 음절(+ 한 걸음 전 음절) / 꺾인 각도 / 가장 가까운 부채까지 거리 → 펼침(화면 부채와 같은 near~far 식) /
+    //   이번 걸음에 지난 orb(가시 있으면 가시) / 끝에서 되돌았나 / 화면 가로 위치
+    _readStep(stroke, info) {
+        if (!this.onBeadStep) return;
+        const plan = stroke.plan ?? [];
+        const segAt = pos => {
+            let j = 0;
+            while (j + 1 < plan.length && plan[j + 1].px0 <= pos) j++;
+            return plan[j]?.syl ?? null;
+        };
+        const syl = segAt(info.pos);
+        if (!syl) return;
+        const F = this._trail.CFG.orb.fan;
+        let near = null;
+        let nearD = Infinity;
+        const crossed = [];
+        const lo = Math.min(info.pos, info.prevPos);
+        const hi = Math.max(info.pos, info.prevPos);
+        for (const o of stroke.orbs ?? []) {
+            const d = Math.hypot(o.x - info.x, o.y - info.y);
+            if (d < nearD) (nearD = d), (near = o);
+            if (o.px > lo && o.px <= hi) crossed.push({ rays: o.rays, spikes: o.spikes });
+        }
+        // 부채 펼침 — 엔진 부채와 같은 식(near 이하 다 펼침, far 이상 접힘)
+        const open = near ? Math.min(1, Math.max(0, (F.far - nearD) / (F.far - F.near))) : 0;
+        this.onBeadStep({
+            syl,
+            prevSyl: segAt(info.prevPos),
+            turn: Math.atan2(Math.sin(info.ang - info.prevAng), Math.cos(info.ang - info.prevAng)), // 꺾인 각(rad, 부호 = 도는 쪽)
+            fan: near ? { open, rays: near.rays, dist: nearD } : null, // dist = 비드 → 가장 가까운 부채 중심(px)
+            crossed,
+            turned: info.turned,
+            dir: info.dir, // +1 시작 → 끝 / -1 끝 → 시작 (처음엔 끝에서 출발해 거꾸로)
+            live: !!info.live, // 자라는 획의 머리 — 입력 중
+            x: info.x / info.width,
+            rank: info.rank,
+            walking: info.walking,
+        });
     }
 
     // 음절 하나의 orb — 종성 후크 자리에 하나(받침 없으면 없음). 반지름 = 중성 F1(입 벌림),

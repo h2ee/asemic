@@ -110,11 +110,7 @@ const SHAPES = {
         for (const c of TAIL.curves) {
             t += `C${f(cx + c[0] * s)} ${f(yr + c[1] * s)} ${f(cx + c[2] * s)} ${f(yr + c[3] * s)} ${f(cx + c[4] * s)} ${f(yr + c[5] * s)}`;
         }
-        const d =
-            `M${f(xl)} ${f(yl)}` +
-            `A${f(rx)} ${f(ry)} 0 1 1 ${f(xr)} ${f(yr)}` +
-            t +
-            `L${f(xl)} ${f(yl)}Z`;
+        const d = `M${f(xl)} ${f(yl)}` + `A${f(rx)} ${f(ry)} 0 1 1 ${f(xr)} ${f(yr)}` + t + `L${f(xl)} ${f(yl)}Z`;
         return { d };
     },
     // 4 — 작은 스무딩 모서리 + 생각 풍선 꼬리(반쯤 걸친 원 + 떨어진 작은 원)
@@ -143,9 +139,11 @@ export const BUBBLE_TYPES = Object.keys(SHAPES).map(Number);
 
 const NS = 'http://www.w3.org/2000/svg';
 // 줄이 늘 때 높이 — 트윈 대신 스프링이 목표를 따라간다. 도중에 목표가 또 바뀌어도(줄이 연달아 늘어도)
-// 끊기지 않고 이어서 휜다. 값은 초당 단위(프레임레이트 무관). 감쇠비 ≈ DAMP / (2√STIFF) ≈ 0.85 — 아주 살짝만 넘침
-const H_STIFF = 70;
-const H_DAMP = 14;
+// 끊기지 않고 이어서 휜다. 값은 초당 단위(프레임레이트 무관). 감쇠비 = DAMP / (2√STIFF).
+// 2026-11-09: 70/14(감쇠비 0.85, 살짝 넘침) → 45/13.4(감쇠비 1, 안 넘침 · 조금 느리게) — 1줄→2줄이 더 부드럽게.
+// 더 늦추면 위로 밀려 올라가는 윗줄 글자(SCROLL_EASE, ~0.33초)보다 처져 말풍선 윗변에 잘린다 — 여유는 --bubble-pad-top
+const H_STIFF = 60;
+const H_DAMP = 29.4;
 // 등장 — 꼬리 끝(가운데 아래, 모니터 밑의 수신자)을 축으로 아래에서 떠오르며 크기는 스프링으로 튀어 오른다.
 // 퇴장은 그 반대로 짧게
 const SHOW_MS = 900;
@@ -173,14 +171,15 @@ const TAIL_DEPTH = { 1: 28.2 / 245, 2: 28.2 / 245, 3: 28.2 / 298, 4: 28.2 / 387 
  *                    뒤가 TD 레이어라 이 페이지에선 비칠 배경을 모른다)
  * @param opts.glassAlt  receiver별 두 번째 배경(signal = BG_n). glass 위에 겹쳐 두고 setGlassAlt(on)로
  *                    투명도만 바꾼다 — body 배경 크로스페이드(output.html body::before)와 같은 시간
+ * @param opts.id  defs(필터·clipPath) id 앞머리. 말풍선을 한 페이지에 둘 이상 띄울 때(peek.js) 겹치지 않게
  */
-export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null, clip = [] } = {}) {
+export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null, clip = [], id = 'bubble' } = {}) {
     // clip — 말풍선이 떠 있는 동안 이 요소들을 말풍선 모양으로 잘라 글자가 말풍선 밖(둥근 모서리 바깥)에
     // 안 비치게 한다. 위쪽 페이드(mask)는 그대로 겹쳐 걸린다
     // 그림자 — 같은 모양을 불투명하게 한 벌 더 그려 흐리고 옮긴 뒤, 원래 모양 자리는 파낸다(바깥에만).
     // 말풍선 면이 반투명이어도 그림자가 안쪽까지 비쳐 탁해지지 않는다.
     const defs = document.createElementNS(NS, 'defs');
-    defs.innerHTML = `<filter id="bubble-shadow" x="-10%" y="-10%" width="120%" height="130%" color-interpolation-filters="sRGB">
+    defs.innerHTML = `<filter id="${id}-shadow" x="-10%" y="-10%" width="120%" height="130%" color-interpolation-filters="sRGB">
         <feGaussianBlur in="SourceAlpha" result="b"/>
         <feOffset in="b" result="o"/>
         <feFlood/>
@@ -192,22 +191,22 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
     // 인라인 style — output.html 의 `#bubble path { fill }`(말풍선 면 색)가 이 경로까지 덮지 않게
     shadow.style.fill = '#000';
     shadow.style.stroke = 'none';
-    shadow.setAttribute('filter', 'url(#bubble-shadow)');
+    shadow.setAttribute('filter', `url(#${id}-shadow)`);
     // 유리 — 배경 이미지 사본을 말풍선 모양으로 오려 강하게 일렁이게(난류 변위) + 살짝 흐리게.
     // backdrop-filter 는 Chrome에서 SVG 변위 필터를 못 받으므로, 배경이 정지 이미지인 걸 이용해 직접 그린다.
     // body 배경과 같은 '화면에 100%로 늘린' 배치라 말풍선이 없을 때와 같은 자리를 굴절시킨다
     defs.insertAdjacentHTML(
         'beforeend',
-        `<clipPath id="bubble-clip"><path/></clipPath>
-        <filter id="bubble-glass" filterUnits="userSpaceOnUse" x="0" y="0" color-interpolation-filters="sRGB">
+        `<clipPath id="${id}-clip"><path/></clipPath>
+        <filter id="${id}-glass" filterUnits="userSpaceOnUse" x="0" y="0" color-interpolation-filters="sRGB">
             <feTurbulence type="fractalNoise" numOctaves="2" seed="7" result="n"/>
             <feDisplacementMap in="SourceGraphic" in2="n" xChannelSelector="R" yChannelSelector="G" result="d"/>
             <feGaussianBlur in="d" result="b"/>
             <feComponentTransfer in="b"><feFuncR type="linear"/><feFuncG type="linear"/><feFuncB type="linear"/></feComponentTransfer>
         </filter>`,
     );
-    const clipPath = defs.querySelector('#bubble-clip path');
-    const gFilter = defs.querySelector('#bubble-glass');
+    const clipPath = defs.querySelector(`#${id}-clip path`);
+    const gFilter = defs.querySelector(`#${id}-glass`);
     const gTurb = gFilter.querySelector('feTurbulence');
     const gDisp = gFilter.querySelector('feDisplacementMap');
     const gBlur = gFilter.querySelector('feGaussianBlur');
@@ -216,8 +215,8 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
         const img = document.createElementNS(NS, 'image');
         img.setAttribute('href', href);
         img.setAttribute('preserveAspectRatio', 'none');
-        img.setAttribute('clip-path', 'url(#bubble-clip)');
-        img.setAttribute('filter', 'url(#bubble-glass)');
+        img.setAttribute('clip-path', `url(#${id}-clip)`);
+        img.setAttribute('filter', `url(#${id}-glass)`);
         return img;
     };
     // 2026-10-08: Figma Glass 효과를 따라 WebGL 한 장(glass.js)으로 — 굴절·분산·빛·frost.
@@ -270,7 +269,7 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
         const { d } = SHAPES[type](P);
         // 등장 애니메이션의 축 = 꼬리 끝
         tip = { x: P.x + P.w * P.tx, y: P.y + P.h + TAIL_DEPTH[type] * P.ref * P.ts };
-        applyClip(P);
+        applyClip(clipRect(P, num, H));
         const W = window.innerWidth;
         svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
         path.setAttribute('d', d);
@@ -315,6 +314,18 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
         svg.dataset.type = type;
     }
 
+    // clipAhead면 줄이 늘어 높이가 자라는 동안 글자를 목표 높이 모양으로 자른다(2026-11-09). mycelium은 줄이 바뀔 때
+    // 윗줄을 거의 한 번에 밀어 올려서(캔버스 아래 여유보다 늦으면 바로 민다 — mycelium scrollTo maxLag)
+    // 자라는 중인 말풍선으로 자르면 윗줄이 윗변에 납작하게 잘린다. 대신 그사이 윗줄이 윗변 위로 잠깐 비친다.
+    // 목표 윗변 = #bubble-box CSS top 식 그대로: max(--bubble-top-min, 86vh - --bubble-h)
+    // 글자가 부드럽게 올라가는 receiver(dandelion·signal)는 끈다 — 켜면 글자가 자라는 말풍선 윗변 밖으로 비친다
+    let clipAhead = false;
+    function clipRect(P, num, H) {
+        if (!clipAhead || hTarget == null || hNow == null || hTarget <= hNow) return P;
+        const ty = Math.max(num('--bubble-top-min', 11) * (H / 100), 0.86 * H - hTarget);
+        return ty < P.y ? { ...P, y: ty, h: P.h + (P.y - ty) } : P;
+    }
+
     let tip = { x: 0, y: 0 };
     let visible = true;
     let visAnim = null;
@@ -330,15 +341,17 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
         }
     }
 
+    // 세로 길이 상태 — draw(clipRect)가 읽으므로 첫 draw() 전에
+    let hNow = null;
+    let hTarget = null;
+
     new ResizeObserver(draw).observe(box);
     window.addEventListener('resize', draw);
     draw();
 
     // 세로 길이 — px를 주면 그 높이로 자란다(밑면 고정, CSS가 --bubble-top-min 에서 자른다). null = 최대.
     // 스프링이 목표를 따라가므로 줄이 연달아 늘어도 매끄럽게 이어진다
-    let hNow = null;
     let hVel = 0;
-    let hTarget = null;
     let hRaf = 0;
     let hLast = 0;
     const putH = px => box.style.setProperty('--bubble-h', `${px}px`);
@@ -432,6 +445,12 @@ export function mountBubble(svg, box, type = 1, { glass = null, glassAlt = null,
             draw();
         },
         setHeight,
+        // 자라는 동안 글자를 목표 높이로 자를지(clipRect) — output-main.js가 receiver마다 정한다
+        setClipAhead(on) {
+            clipAhead = !!on;
+        },
+        // 모양만 다시 — CSS 변수(--tail-scale 등)를 바꿨을 때. 크기 변화는 ResizeObserver가 알아서 부른다
+        redraw: draw,
         // 배경 B(BG_n)로 — body 배경 크로스페이드와 같은 시간(--bg-fade)
         setGlassAlt(on, { instant = false } = {}) {
             glassAltImg?.classList.toggle('on', !!on);

@@ -24,6 +24,13 @@ import myceliumPng from './chrome/img/mycelium.png';
 import signalPng from './chrome/img/signal.png';
 import dandelionPng from './chrome/img/dandelion.png';
 import soraPng from './chrome/img/sora.png';
+import myceliumBlack from './chrome/img/mycelium_black.png';
+import signalBlack from './chrome/img/signal_black.png';
+import dandelionBlack from './chrome/img/dandelion_black.png';
+import soraBlack from './chrome/img/sora_black.png';
+import ledOnPng from './chrome/img/bluLED.png';
+import ledOffPng from './chrome/img/bluLED_off.png';
+import { injectFonts } from './assets.js';
 
 // ── TD 에서 옮긴 값 ──────────────────────────────────────────────────────────
 const SCENE = {
@@ -32,10 +39,8 @@ const SCENE = {
     // cam_shadow worldTransform (행 우선). look_mat Shadowdir/Shadowdist 식이 만든 결과값이다
     shadowCam: {
         matrix: [
-            0.8864586, -0.1699591, 0.4304709, 4.52442,
-            -0.01407173, 0.9198004, 0.3921344, 11.19103,
-            -0.4625941, -0.3536683, 0.8129732, 6.221734,
-            0, 0, 0, 1,
+            0.8864586, -0.1699591, 0.4304709, 4.52442, -0.01407173, 0.9198004, 0.3921344, 11.19103, -0.4625941,
+            -0.3536683, 0.8129732, 6.221734, 0, 0, 0, 1,
         ],
         orthowidth: 9.59487, // 렌더용 (cam_shadow.orthowidth)
         lookupOrtho: 9.6, // 조회용 (uShadowOrtho = look_mat Shadowortho) — TD 도 둘이 미세하게 다르다
@@ -45,18 +50,34 @@ const SCENE = {
     },
     // look_mat (Style = toon)
     look: {
-        L0dir: [-1.6, -0.8, 1.0], L0color: [0.944, 1.0, 0.88],
-        L1dir: [1.4, 0.24, 0.21], L1color: [0.44, 0.6, 1.0],
-        amb: [0.06, 0.06, 0.08], key: 1.0, rim: 0.217, lightJitter: 0.163,
-        baseColor: [0.989, 1.0, 0.984], bands: 5, shininess: 3.2, specStep: 0.41,
-        rimStrength: -6.65, shadowStrength: 0.373,
-        enableShadow: 1, shadowBias: 0.09, shadowMapStrength: 0.771, shadowSoftness: 0.0,
+        L0dir: [-1.6, -0.8, 1.0],
+        L0color: [0.944, 1.0, 0.88],
+        L1dir: [1.4, 0.24, 0.21],
+        L1color: [0.44, 0.6, 1.0],
+        amb: [0.06, 0.06, 0.08],
+        key: 1.0,
+        rim: 0.217,
+        lightJitter: 0.163,
+        baseColor: [0.989, 1.0, 0.984],
+        bands: 5,
+        shininess: 3.2,
+        specStep: 0.41,
+        rimStrength: -6.65,
+        shadowStrength: 0.373,
+        enableShadow: 1,
+        shadowBias: 0.09,
+        shadowMapStrength: 0.771,
+        shadowSoftness: 0.0,
     },
     // light_dial — distant, 흰색, dimmer 1. phongMAT(멈추개·구멍 바닥)만 받는다. 표면 → 빛 방향
     phongLight: { toLight: [0.6552255, 0.4763353, 0.5863312], color: [1, 1, 1] },
     // phong1_v2 (dial_btn, 금색 멈추개)
     btn: {
-        diff: [1.0, 0.91, 0.597], spec: [0.9, 0.9, 0.9], emit: [0, 0, 0], constant: [0.048, 0.048, 0.048], shininess: 27,
+        diff: [1.0, 0.91, 0.597],
+        spec: [0.9, 0.9, 0.9],
+        emit: [0, 0, 0],
+        constant: [0.048, 0.048, 0.048],
+        shininess: 27,
         rim: [
             { color: [1, 1, 1], center: 311, width: 0.424, strength: 2.06 },
             { color: [1.5, 1.5, 1.5], center: 212, width: 1.0, strength: 5.29 },
@@ -64,12 +85,20 @@ const SCENE = {
     },
     // phong_dial_inner_v4 (구멍 바닥, 파랑) — emitmap = 아이콘 시트(icons/dial_sheet)
     inner: {
-        diff: [0.387, 0.581117, 1.0], spec: [0, 0, 1], emit: [1, 1, 1], constant: [0.06, 0.06, 0.06], shininess: 4,
+        diff: [0.387, 0.581117, 1.0],
+        spec: [0, 0, 1],
+        emit: [1, 1, 1],
+        constant: [0.06, 0.06, 0.06],
+        shininess: 4,
         rim: [{ color: [0, 0.184314, 1], center: 219, width: 1.0, strength: 70.24 }],
     },
     // icons — dial_inner 의 uv = (월드xy - Inner) / Innersize (geo4/uv_map), 아이콘은 구멍 중심에
     icons: {
-        innerX: 3.59, innerY: 7.704, innerSize: 2.087, iconScale: 0.55, sheet: 1024,
+        innerX: 3.59,
+        innerY: 7.704,
+        innerSize: 2.087,
+        iconScale: 0.55,
+        sheet: 1024,
         place: [
             { src: myceliumPng, x: 5.091, y: 9.336, k: 0.5 },
             { src: signalPng, x: 4.45, y: 9.327, k: 0.5 },
@@ -87,7 +116,21 @@ const DIAL = {
     hitScale: 1.1, // 구멍 판정 반경 배수 (1.3 이상이면 h4 판정이 중심까지 덮는다)
     dragLag: 0.05, // 드래그 중 랙(초)
     returnLag: 0.25, // 놓았을 때 되돌아가는 랙(초)
-    pressDepth: 0.035, // 멈추개에 닿았을 때 금색 쐐기가 밀려 들어가는 거리
+    pressDepth: 0.035, // (2026-11-09 전까지) 멈추개 전체가 평행이동하던 거리 — 지금은 안 씀, 아래 press 로 대체
+    // 멈추개가 눌릴 때: 바깥쪽(테두리) 끝을 축으로 고정하고 안쪽 끝만 시계 방향으로 휘었다가, 놓으면 튕겨 돌아온다.
+    // pivotR = 다이얼 중심에서 축까지(멈추개 방향, 메시는 r 0.44 끝 ~ 1.18 테두리 쪽), tiltDeg = 눌렸을 때 기울기,
+    // pressStiffness/pressDamping = 눌릴 때 스프링. 감쇠비 1 이상(과감쇠)이라 천천히 출발해 묵직하게 눌리고
+    //   튕기지 않고 그 자리에 멈춘다 — 둔탁한 느낌. 감쇠를 올릴수록 더 무겁다. (pressLag 는 예전 지수 추종, 안 씀)
+    // stiffness/damping = 놓았을 때만 쓰는 감쇠 스프링(ω = √stiffness, 감쇠비 = damping / (2ω) — 1 보다 작을수록 더 통통 튄다)
+    press: {
+        pivotR: 1.05,
+        tiltDeg: 12,
+        pressLag: 0.12,
+        pressStiffness: 300,
+        pressDamping: 40,
+        stiffness: 400,
+        damping: 12,
+    },
     // 순서는 전화기 규칙 — 멈추개에서 반시계로 가까운 순서. 배정은 receiver 칸만 고치면 된다
     holes: [
         { name: 'h1', x: 5.078, y: 9.336, r: 0.295, receiver: 'mycelium' },
@@ -95,6 +138,23 @@ const DIAL = {
         { name: 'h3', x: 4.149, y: 8.758, r: 0.3, receiver: 'dandelion' },
         { name: 'h4', x: 4.611, y: 8.362, r: 0.32, receiver: 'sora' },
     ],
+};
+
+// 사용법 시범(2026-11-11) — 아무도 안 만질 때 다이얼이 스스로 돌며 보여 준다(receiver 는 안 보낸다).
+// 문구 알약(#tip)도 같은 시계를 쓴다: 터치 중엔 숨고, 손을 뗀 뒤 아래 시간만큼 지나면 시범과 같이 돌아온다.
+// 알약 자리는 dial.html `#tip` 의 --tip-u / --tip-v, 손가락 원 크기는 `#coach-dot` 의 --w/--h
+const COACH = {
+    firstMs: 1500, // 페이지가 뜨고 첫 시범까지
+    afterFailMs: 600, // 못 고르고 손을 뗀 뒤(구멍 밖을 눌렀거나 멈추개까지 못 감) — 방금 잡은 구멍으로 바로 시범
+    warnAfter: 1, // 연달아 이만큼 틀리면 다음 시범의 손가락 원·화살표가 빨강(dial.html `.warn`). 고르면 다시 0
+    labelSec: 1.4, // 빨강 시범이 시작되고 "터치!" 딱지(#coach-label)가 떠 있는 시간(초)
+    afterPickMs: 40000, // 고른 뒤 — 방금 고른 사람에게 또 고르라고 하지 않게
+    down: 0.6, // 손가락이 구멍에 내려앉는 시간(초)
+    degPerSec: 150, // 돌리는 빠르기 — 구멍마다 갈 길(95°~308°)이 달라 시간 대신 속도로
+    hold: 0.8, // 멈추개를 누른 채 머무는 시간
+    rest: 3.0, // 손을 떼고 다음 시범까지(다이얼이 돌아오는 시간 포함)
+    lag: 0.06, // 시범 중 다이얼 추종 랙
+    arcEndGap: 14, // 호 화살표가 멈추개 몇 도 앞에서 끝나는지
 };
 
 // ── 셰이더 ───────────────────────────────────────────────────────────────────
@@ -316,7 +376,9 @@ function toonMaterial(shadowTex, shadowView) {
 
 function phongMaterial(m, emitMap = null, uvXform = null) {
     const rimColor = [0, 1].map(i => c3(m.rim[i]?.color ?? [0, 0, 0]));
-    const rimParams = [0, 1].map(i => (m.rim[i] ? v3([m.rim[i].center, m.rim[i].width, m.rim[i].strength]) : v3([0, 0, 0])));
+    const rimParams = [0, 1].map(i =>
+        m.rim[i] ? v3([m.rim[i].center, m.rim[i].width, m.rim[i].strength]) : v3([0, 0, 0]),
+    );
     return new THREE.ShaderMaterial({
         glslVersion: THREE.GLSL3,
         side: THREE.DoubleSide,
@@ -438,11 +500,10 @@ class Dial {
         this._lastAngle = null;
         if (picked) this.onPick(picked);
     }
-    // target CHOP 세 채널: rz(양수 = 반시계), 멈추개 밀림 btnx/btny
+    // target: rz(양수 = 반시계) + 멈추개 기울기 tilt(도, 양수 = 끝이 시계 방향으로 밀림).
+    // TD 원본은 btnx/btny 평행이동이었다(pressDepth) — 2026-11-09 축 고정 기울기로 바꿈
     target() {
-        const th = (DIAL.stopAngle * Math.PI) / 180;
-        const depth = this.reached ? DIAL.pressDepth : 0;
-        return { rz: -this.sweep, btnx: Math.sin(th) * depth, btny: -Math.cos(th) * depth };
+        return { rz: -this.sweep, tilt: this.reached ? DIAL.press.tiltDeg : 0 };
     }
 }
 
@@ -454,11 +515,25 @@ renderer.setClearColor(0x000000, 0);
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace; // TD 처럼 감마 변환 없이 그대로 낸다
 
 const C = SCENE.cam;
-const camera = new THREE.OrthographicCamera(-C.orthowidth / 2, C.orthowidth / 2, C.orthowidth / 2, -C.orthowidth / 2, C.near, C.far);
+const camera = new THREE.OrthographicCamera(
+    -C.orthowidth / 2,
+    C.orthowidth / 2,
+    C.orthowidth / 2,
+    -C.orthowidth / 2,
+    C.near,
+    C.far,
+);
 camera.position.set(...C.pos);
 
 const S = SCENE.shadowCam;
-const shadowCam = new THREE.OrthographicCamera(-S.orthowidth / 2, S.orthowidth / 2, S.orthowidth / 2, -S.orthowidth / 2, S.near, S.far);
+const shadowCam = new THREE.OrthographicCamera(
+    -S.orthowidth / 2,
+    S.orthowidth / 2,
+    S.orthowidth / 2,
+    -S.orthowidth / 2,
+    S.near,
+    S.far,
+);
 shadowCam.matrixAutoUpdate = false;
 shadowCam.matrix.set(...S.matrix);
 shadowCam.updateMatrixWorld(true);
@@ -500,8 +575,17 @@ spin.position.set(DIAL.centerX, DIAL.centerY, 0);
 outerObj.position.set(-DIAL.centerX, -DIAL.centerY, 0);
 spin.add(withMaterial(outerObj, toon));
 scene.add(spin);
-// geo2 = dial_btn (멈추개). tx/ty 가 btnx/btny 를 따라간다
-scene.add(withMaterial(btnObj, phongMaterial(SCENE.btn)));
+// geo2 = dial_btn (멈추개). 바깥쪽 끝(테두리)에 축을 둔 그룹 안에 넣어, 축 기준으로 기울인다
+const stopTh = (DIAL.stopAngle * Math.PI) / 180;
+const btnPivot = new THREE.Group();
+btnPivot.position.set(
+    DIAL.centerX + Math.cos(stopTh) * DIAL.press.pivotR,
+    DIAL.centerY + Math.sin(stopTh) * DIAL.press.pivotR,
+    0,
+);
+btnObj.position.set(-btnPivot.position.x, -btnPivot.position.y, 0);
+btnPivot.add(withMaterial(btnObj, phongMaterial(SCENE.btn)));
+scene.add(btnPivot);
 // geo4 = dial_inner (구멍 바닥). 그림자를 만들지도 받지도 않는다(TD render_shadow 목록에 없음)
 const innerUv = new THREE.Vector4(I.innerX, I.innerY, 1 / I.innerSize, 1);
 scene.add(withMaterial(innerObj, phongMaterial(SCENE.inner, sheet, innerUv)));
@@ -517,7 +601,32 @@ bridge.on('_close', () => {
     statusEl.textContent = 'bridge 연결 안 됨';
 });
 
+// ── 패널 창: 지금 receiver(아이콘 + 영어 이름) · 수신자 LED ─────────────────────
+// 둘 다 output 이 알려 주는 값을 그대로 보여 준다 — 다이얼이 고른 순간이 아니라 output 이 실제로 바꾼 뒤
+// ({t:'receiver'}), output 이 붙어 있지 않으면 바뀌지 않는다. 접속하면 hello 답으로 지금 상태가 온다.
+injectFonts(); // Inconsolata (output 의 라틴 글꼴과 같은 파일)
+const ICON_BLACK = { mycelium: myceliumBlack, signal: signalBlack, dandelion: dandelionBlack, sora: soraBlack };
+const plate = document.getElementById('plate');
+const led = document.getElementById('led');
+new Image().src = ledOnPng; // 처음 켤 때 깜빡이지 않게 미리 받아 둔다
+led.src = ledOffPng;
+let currentReceiver = null; // 시범이 지금 receiver 가 아닌 구멍을 고르는 데 쓴다
+bridge.on('receiver', m => {
+    if (!ICON_BLACK[m.name]) return;
+    currentReceiver = m.name;
+    plate.querySelector('img').src = ICON_BLACK[m.name];
+    plate.querySelector('span').textContent = m.name;
+    plate.classList.add('known');
+});
+bridge.on('talking', m => {
+    led.src = m.speaker === 'receiver' ? ledOnPng : ledOffPng;
+});
+bridge.on('_close', () => {
+    led.src = ledOffPng; // 끊기면 상태를 모른다 — LED 는 끄고 이름은 마지막 값 유지
+});
+
 const dial = new Dial(name => {
+    coach.picked = true;
     bridge.send({ t: 'receiver', name });
     console.log('[dial] receiver', name);
 });
@@ -544,10 +653,130 @@ canvas.addEventListener('pointermove', e => {
 const up = e => {
     if (e.pointerId !== activePointer) return;
     activePointer = null;
+    const grabbed = dial.hole;
+    coach.picked = false;
     dial.apply(...toWorld(e), false);
+    // 골랐으면 한동안 조용히, 못 골랐으면 방금 잡은 구멍으로 곧바로 시범
+    coach.quietUntil = performance.now() + (coach.picked ? COACH.afterPickMs : COACH.afterFailMs);
+    coach.forced = coach.picked ? -1 : grabbed;
+    coach.fails = coach.picked ? 0 : coach.fails + 1;
+    coach.afterFail = !coach.picked;
 };
 canvas.addEventListener('pointerup', up);
 canvas.addEventListener('pointercancel', up);
+
+// ── 사용법 시범 + 문구 알약 (COACH) ───────────────────────────────────────────
+const tipEl = document.getElementById('tip');
+const dotEl = document.getElementById('coach-dot');
+const arcEl = document.getElementById('coach-arc');
+const labelEl = document.getElementById('coach-label');
+const coach = { warn: false, fails: 0, afterFail: false, start: 0, hole: -1, next: 0, forced: -1, picked: false, quietUntil: performance.now() + COACH.firstMs };
+coach.dotSize = parseFloat(getComputedStyle(dotEl).getPropertyValue('--w')) || 0.13; // dial.html #coach-dot --w
+// 월드 → 다이얼 한 변 단위(u 가로, v 세로, 왼쪽 위 기준) — toWorld 의 역
+const toUV = (wx, wy) => [0.5 + (wx - C.pos[0]) / C.orthowidth, 0.5 - (wy - C.pos[1]) / C.orthowidth];
+function coachPickHole() {
+    if (coach.forced >= 0) {
+        const h = coach.forced;
+        coach.forced = -1;
+        return h;
+    }
+    for (let n = 0; n < DIAL.holes.length; n++) {
+        const i = (coach.next + n) % DIAL.holes.length;
+        if (DIAL.holes[i].receiver !== currentReceiver) {
+            coach.next = i + 1;
+            return i;
+        }
+    }
+    return 0;
+}
+// 구멍 자리에서 멈추개 앞까지 시계 방향 호 + 화살촉
+function coachDrawArc(i) {
+    const h = DIAL.holes[i];
+    const R = Math.hypot(h.x - DIAL.centerX, h.y - DIAL.centerY);
+    const a0 = (Math.atan2(h.y - DIAL.centerY, h.x - DIAL.centerX) * 180) / Math.PI;
+    const span = Math.max(0, dial.required(i) - COACH.arcEndGap);
+    const at = deg => {
+        const th = (deg * Math.PI) / 180;
+        return toUV(DIAL.centerX + Math.cos(th) * R, DIAL.centerY + Math.sin(th) * R);
+    };
+    const pts = [];
+    for (let d = 0; d <= span; d += 3) pts.push(at(a0 - d));
+    pts.push(at(a0 - span));
+    arcEl.querySelector('.line').setAttribute('d', 'M' + pts.map(p => p.map(n => n.toFixed(4)).join(' ')).join('L'));
+    const [ex, ey] = pts[pts.length - 1];
+    const [px, py] = at(a0 - span + 4);
+    const dir = Math.atan2(ey - py, ex - px);
+    const wing = s => [ex + Math.cos(dir + s * 2.6) * 0.03, ey + Math.sin(dir + s * 2.6) * 0.03];
+    const f = p => p.map(n => n.toFixed(4)).join(' ');
+    arcEl.querySelector('.head').setAttribute('d', `M${f(wing(1))}L${f([ex, ey])}L${f(wing(-1))}Z`);
+}
+function coachShow(on) {
+    dotEl.classList.toggle('on', on);
+    arcEl.classList.toggle('on', on);
+}
+// 매 프레임: 시범 중이면 다이얼 목표값({rz, tilt})을, 아니면 null 을 돌려준다. 알약 표시도 여기서
+function coachStep(now) {
+    const quiet = activePointer !== null || now < coach.quietUntil;
+    if (tipEl.hidden !== quiet) tipEl.hidden = quiet;
+    if (quiet) {
+        if (coach.start) coachShow(false);
+        labelEl.classList.remove('on');
+        coach.start = 0;
+        return null;
+    }
+    if (!coach.start) {
+        coach.start = now;
+        coach.hole = coachPickHole();
+        coachDrawArc(coach.hole);
+        // 틀린 직후 시범만 빨강 — 그냥 돌아가는 시범(관람객이 떠남)에선 횟수를 잊는다
+        if (!coach.afterFail) coach.fails = 0;
+        const warn = coach.afterFail && coach.fails >= COACH.warnAfter;
+        coach.afterFail = false;
+        dotEl.classList.toggle('warn', warn);
+        arcEl.classList.toggle('warn', warn);
+        coach.warn = warn;
+        // 딱지는 구멍이 쉬는 자리 위에 두고 따라 돌지 않는다
+        const [lu, lv] = toUV(DIAL.holes[coach.hole].x, DIAL.holes[coach.hole].y);
+        labelEl.style.setProperty('--u', lu.toFixed(4));
+        labelEl.style.setProperty('--v', lv.toFixed(4));
+    }
+    const req = dial.required(coach.hole);
+    const turn = req / COACH.degPerSec;
+    const t = (now - coach.start) / 1000;
+    let sweep = 0;
+    let tilt = 0;
+    let shown = true;
+    if (t < COACH.down) {
+        // 내려앉는 중
+    } else if (t < COACH.down + turn) {
+        const p = (t - COACH.down) / turn;
+        sweep = req * (p * p * (3 - 2 * p)); // 천천히 출발해 천천히 닿는다
+    } else if (t < COACH.down + turn + COACH.hold) {
+        sweep = req;
+        tilt = DIAL.press.tiltDeg;
+    } else if (t < COACH.down + turn + COACH.hold + COACH.rest) {
+        shown = false;
+    } else {
+        coach.start = 0; // 다음 프레임에 다음 구멍으로
+        shown = false;
+    }
+    coachShow(shown);
+    labelEl.classList.toggle('on', coach.warn && t < COACH.labelSec);
+    if (shown) {
+        // 손가락 원은 실제로 그려진 회전(cur.rz)을 따라 구멍에 붙어 있다. 사라지는 동안엔 그 자리에 둔다
+        const h = DIAL.holes[coach.hole];
+        const th = THREE.MathUtils.degToRad(cur.rz);
+        const dx = h.x - DIAL.centerX;
+        const dy = h.y - DIAL.centerY;
+        const [u, v] = toUV(
+            DIAL.centerX + dx * Math.cos(th) - dy * Math.sin(th),
+            DIAL.centerY + dx * Math.sin(th) + dy * Math.cos(th),
+        );
+        dotEl.style.setProperty('--u', (u - coach.dotSize / 2).toFixed(4));
+        dotEl.style.setProperty('--v', (v - coach.dotSize / 2).toFixed(4));
+    }
+    return { rz: -sweep, tilt, lag: shown ? COACH.lag : DIAL.returnLag };
+}
 
 // ── 루프 ─────────────────────────────────────────────────────────────────────
 function resize() {
@@ -559,17 +788,31 @@ addEventListener('resize', resize);
 resize();
 
 // spring(lagCHOP) — 지수 추종. 드래그 중엔 Draglag, 놓으면 Returnlag
-const cur = { rz: 0, btnx: 0, btny: 0 };
+// 멈추개 기울기는 따로 감쇠 스프링 — 지수 추종이면 튕김이 없다
+const cur = { rz: 0, tilt: 0, tiltVel: 0 };
 let last = performance.now();
 function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
-    const tgt = dial.target();
-    const k = 1 - Math.exp(-dt / Math.max(dial.lag, 1e-3));
-    for (const ch of ['rz', 'btnx', 'btny']) cur[ch] += (tgt[ch] - cur[ch]) * k;
+    const demo = coachStep(now); // 시범 중이면 손 대신 시범이 다이얼을 돌린다
+    const tgt = demo ?? dial.target();
+    const k = 1 - Math.exp(-dt / Math.max(demo ? demo.lag : dial.lag, 1e-3));
+    cur.rz += (tgt.rz - cur.rz) * k;
+
+    // 눌릴 때: 과감쇠 스프링(press*) — 묵직하게 눌려 그대로 멈춤. 놓으면: 감쇠 스프링으로 튕기며 돌아온다.
+    // 반-암시적 오일러, 큰 dt 에도 안 터지게 4ms 단위로 적분
+    const P = DIAL.press;
+    const pressing = tgt.tilt > 0;
+    const ks = pressing ? P.pressStiffness : P.stiffness;
+    const cs = pressing ? P.pressDamping : P.damping;
+    for (let left = dt; left > 0; left -= 0.004) {
+        const h = Math.min(0.004, left);
+        cur.tiltVel += (ks * (tgt.tilt - cur.tilt) - cs * cur.tiltVel) * h;
+        cur.tilt += cur.tiltVel * h;
+    }
 
     spin.rotation.z = THREE.MathUtils.degToRad(cur.rz);
-    btnObj.position.set(cur.btnx, cur.btny, 0);
+    btnPivot.rotation.z = THREE.MathUtils.degToRad(cur.tilt);
 
     // render_shadow: geo + geo2 만 (dial_inner 제외), cam_shadow 에서 선형 거리
     innerObj.visible = false;

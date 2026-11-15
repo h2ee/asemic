@@ -94,7 +94,7 @@ Communication = transmission(전달) + exchange(교환) + connection(연결)로 
 끝난 것(요약): receiver 4종 전부 제출 계약(`canSubmit`) · 고정 글자 영역 rect + sora/signal `setRect` · 투명 출력(signal `transparentOutput`, sora 프리멀티플라이드) · 한 화자·한 문장 · `glyphmode` 5종 · `LLM_MODE` · 큰 말풍선·프로필·웹캠·음절 네모(2026-10-07~08) · 영문 fallback · iPad 다이얼 웹 이식 · 폰트 로컬 등록.
 
 - [~] **사운드 — 사물 공명** (2026-10-01 1차 완성) — `jamo_data.csv` 숫자를 그대로 쓰되 **목소리가 아니라 사물로 해석**한다. 처음엔 F1/F2/F3를 밴드패스 필터로 거는 포먼트 합성이었는데 실제 모음처럼 들려 버렸다(CHANGELOG 폐기된 설계).
-    - 중성 F1/F2/F3 → 사물의 공명 모드(울리는 음 자체) / 초성 → 건드리는 방식(조음방법=치기·긁기·문지르기·누르기·휘기, 긴장도=세기·어택, 조음위치=접촉음 색) / 종성 → 끝맺기(막기·웅웅·휘기) / receiver → 재질(mycelium 젖은 나무, sora 조개 맥놀이, dandelion 바람 휘파람, signal 삑)
+    - 중성 F1/F2/F3 → 사물의 공명 모드(울리는 음 자체) / 초성 → 건드리는 방식(조음방법=치기·긁기·문지르기·누르기·휘기, 긴장도=세기·어택, 조음위치=접촉음 색) / 종성 → 끝맺기(막기·웅웅·휘기) / receiver → 재질(mycelium 젖은 나무, sora 조개 맥놀이, dandelion 바람 휘파람, signal 삑). 2026-11-10 signal 빼고 전자음 층 — mycelium FM 통나무 북·서브·번지는 핑퐁 메아리 / sora FM 종·콤 공명 파도·긴 잔향 / dandelion 떨리는 휘파람·씨앗 알갱이 흩날림 (`?soundfx=0` = 예전)
     - 코드: `core.voiceFor()`(무엇을) + `src/js/sound.js`(연주). 트리거는 mycelium=음절이 자라기 시작할 때, 나머지=음절이 생기는 입력 순간. 받침이 늦게 붙으면 울리는 소리에 그때 끝맺음을 건다
     - 남은 것: 실물 스피커 라우팅(C) · mycelium 외 3종을 "자라기 시작" 시점에 맞추기(dandelion은 `trail/` 엔진 수정 필요 — 2026-10-27부터 sketch와 안 맞춰도 됨) · 이중모음 미반영 · 실제 청취 튜닝
 - [ ] **말풍선 시안 확정** — 1~4번 중 하나(`?bubble=N`), 배경 BG_d / BG_day / BG_night 중 하나
@@ -113,7 +113,8 @@ Communication = transmission(전달) + exchange(교환) + connection(연결)로 
 
 ### C. 하드웨어 (제작)
 
-- [~] **피지컬 컨트롤 패널** — 2026-10-01부터 **Uno R4 WiFi + USB 시리얼**(`arduino/control_panel`, 2026-10-08부터 `output.html` 직결). 가변저항 3선(GND / 아날로그핀 / VCC), 버튼 2선(디지털핀 / GND, `INPUT_PULLUP`이라 저항 불필요). 원래 안이던 Pro Micro + USB-MIDI(`Control Surface`, TD `midiinCHOP`)는 쓰지 않음 — CHANGELOG 2026-10-01
+- [x] ~~**피지컬 컨트롤 패널**~~ (2026-11-09 알루미늄 판에 조립·배선, 전 기능 동작) — **Uno R4 WiFi + USB 시리얼**(`arduino/control_panel`, `output.html` 직결). 버튼 조명은 아두이노 DC 잭 12V를 VIN에서 받고, 농담·질문(래칭, 잠기면 NO에 12V)은 PC817 모듈로 읽고, 날씨·밥·안녕·보내기 조명은 ULN2003으로 "평소 켜짐 · 누르는 동안 꺼짐". 배선·점검은 **`arduino/control_panel/installation.md`**. 원래 안이던 Pro Micro + USB-MIDI(`Control Surface`, TD `midiinCHOP`)는 쓰지 않음 — CHANGELOG 2026-10-01
+    - 남은 것: 완성 배선도(`wiring.png`, 가변저항 포함) / 조명 색 변경은 검토만(RGB 버튼 교체 필요)
 - [~] **모터 턴테이블** (2026-10-06 프로토타입 동작, 2026-10-08 페이지 직결 — 교수님이 한 달 안에 가능한지 의문을 표해 **가진 부품으로 가능성 검증 중**). 코드 `arduino/turntable/turntable.ino`, 밑판 도안 `arduino/turntable/template.svg`
     - 구성: Uno R3 + 28BYJ-48(5V) + ULN2003 + `AccelStepper`(FULL4WIRE, 핀 8,10,9,11) / 모터 전원은 **5V 2A 어댑터를 드라이버에 직접**(GND는 아두이노와 공통) / 알루미늄 레이지수잔 200mm(구멍 145, 두께 8, 나사 구멍 없음 → 폼테이프) / 우드락 5mm(밑판 상자 + 윗판 2겹) / 병뚜껑 허브(축을 글루건으로 물림)
     - 0점 센서는 **TCRT5000**(흰 판 = 0, 검은 테이프 = 1, 1~2cm). 리드 스위치 모듈은 반응이 불안정하고 유리관이 상해서 버렸다

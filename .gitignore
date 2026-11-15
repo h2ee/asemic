@@ -4,6 +4,7 @@ dist
 CLAUDE.md
 .env
 bake/
+logs/
 desktop.ini
 
 .venv/

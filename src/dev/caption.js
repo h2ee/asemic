@@ -10,19 +10,55 @@
 
 import { getPatternType } from '../js/core.js';
 import { asset } from './assets.js';
+import sendIcon from './chrome/img/send_l.png';
+import questionIcon from './chrome/img/question.png';
+
+// 안내 문구 안의 {send} / {question} → 실물 패널 아이콘(보내기 버튼·질문 토글, 2026-11-10). 글자로 적으면
+// 관람객이 패널의 어느 것인지 찾아야 해서 패널에 붙은 그림 그대로 보여 준다. 크기는 output.html .inline-icon
+const INLINE_ICONS = { send: sendIcon, question: questionIcon };
+export function fillRich(el, text) {
+    el.replaceChildren(
+        ...text.split(/(\{\w+\})/).map(part => {
+            const name = part.match(/^\{(\w+)\}$/)?.[1];
+            if (!name || !INLINE_ICONS[name]) return document.createTextNode(part);
+            const img = document.createElement('img');
+            img.className = `inline-icon icon-${name}`;
+            img.src = INLINE_ICONS[name];
+            img.alt = name;
+            return img;
+        }),
+    );
+}
 
 /**
  * @param struct  수신자 구조 블록 상자 (#caption, 안에 .cap-struct)
  * @param tags    관람객 음절 네모들을 담는 화면 전체 레이어 (#syl-tags)
+ * @param guide   영문 입력 안내 유리 알약 (#latin-guide, 안에 .ko .en) — 없으면 안내 없이
  */
 const LATIN_MAX = 64; // 영문 상자에 보이는 최대 글자 수
+// 영문 입력 안내(2026-11-10) — 한/영 키가 영어로 돼 있었을 한국인에게 한글로 쳐 보라고(ko), 작게 영어는
+// 번역된다고(en). busy = 한국어로 옮기는 중엔 en만 이걸로 바꾸고 ko는 숨긴다(output.html #latin-guide.busy)
+const LATIN_GUIDE = {
+    ko: '한/영 키를 눌러 한글로 입력해 보세요',
+    en: 'Type what you want to say, then press Enter or {send} — it will be translated into Asemic Hangul',
+    busy: 'Translating into Asemic Hangul…',
+};
 // 수신자 음절 네모(구조 블록)는 뜬 지 이만큼 뒤 사라진다(2026-10-08). 네모 내용이 바뀌면(sora 단어에 음절이
-// 붙으면) 다시 센다. 관람객 네모는 안 사라진다. 흐려지는 시간은 output.html #syl-tags .tag.gone
+// 붙으면) 다시 센다. 관람객 네모는 안 사라진다. 흐려지는 시간은 output.html .tags-layer .tag.gone
 const RECEIVER_TAG_MS = 3000;
 
-export function buildCaption({ struct, tags }) {
+export function buildCaption({ struct, tags, guide = null }) {
     const structBox = struct.querySelector('.cap-struct');
     const latinBox = struct.querySelector('.cap-latin');
+    if (guide) guide.querySelector('.ko').textContent = LATIN_GUIDE.ko;
+
+    function showGuide(on, busy = false) {
+        if (!guide) return;
+        guide.hidden = !on;
+        if (!on) return;
+        guide.classList.toggle('busy', busy);
+        fillRich(guide.querySelector('.en'), busy ? LATIN_GUIDE.busy : LATIN_GUIDE.en);
+    }
     let shown = 0; // structBox에 그려 둔 항목 수 — 늘어난 만큼만 붙인다(새 블록만 등장 애니)
 
     function hideStruct() {
@@ -38,6 +74,7 @@ export function buildCaption({ struct, tags }) {
         hide() {
             hideStruct();
             hideTags();
+            showGuide(false);
         },
         // 음절 네모 — list: [{ ch | type | types, x, y }] 화면 px(네모 위쪽 가운데가 붙을 자리).
         // ch = 관람객(원문 한 음절, sora는 한 단어) / type = 수신자(구조 블록, getPatternType 값) /
@@ -82,6 +119,7 @@ export function buildCaption({ struct, tags }) {
             if (!text) {
                 if (struct.dataset.mode === 'latin') struct.dataset.mode = '';
                 latinBox.classList.remove('busy');
+                showGuide(false);
                 return;
             }
             if (struct.dataset.mode === 'receiver') hideStruct();
@@ -89,6 +127,7 @@ export function buildCaption({ struct, tags }) {
             // 길면 앞을 잘라 지금 치는 끝이 보이게
             latinBox.textContent = text.length > LATIN_MAX ? `…${text.slice(-LATIN_MAX)}` : text;
             latinBox.classList.toggle('busy', busy);
+            showGuide(true, busy);
         },
         // 수신자 — items: decomposeSyllables() 결과(띄어쓰기 포함)
         receiver(items) {

@@ -21,6 +21,28 @@ bridge.on('_close', () => {
 
 const setters = {}; // id → 값 직접 설정(노브/슬라이더/토글) — USB 패널이 화면을 따라 움직이게
 
+// 노브 숫자 — output이 보내 주는 상대 노브 상태({t:'knobs'}: 기준점 a, receiver 범위)로 계산한다(2026-11-09).
+// output은 새 문장마다 지금 자리를 기준점(= ×1.00)으로 다시 잡고, 움직일수록 기준점을 가운데로 돌린다(controls.js).
+// 받기 전(output 미접속)엔 표 그대로의 절대 눈금
+let knobRemote = {}; // id → { v, a, range }
+let knobRanges = {}; // id → [min, max] (지금 receiver.knobRange)
+const renders = {}; // id → 숫자 다시 그리기
+// 표시할 배율 — output이 마지막으로 알려 준 기준점으로. 위치는 이 화면의 값(드래그 중엔 output보다 앞선다)
+function multFor(c, v) {
+    const r = knobRemote[c.id];
+    return knobToMult(c, v, knobRanges[c.id] ?? null, r?.a ?? 0.5);
+}
+function multLabel(c, v) {
+    const r = knobRemote[c.id];
+    const a = r?.a;
+    return { text: `×${multFor(c, v).toFixed(2)}`, title: a == null ? '' : `기준점 ${a.toFixed(2)} (= ×1.00)` };
+}
+bridge.on('knobs', m => {
+    knobRemote = m.knobs ?? {};
+    knobRanges = m.ranges ?? {};
+    for (const f of Object.values(renders)) f();
+});
+
 function send(id, value) {
     const msg = { t: 'control', id, value };
     bridge.send(msg);
@@ -63,7 +85,9 @@ function buildKnob(c) {
         // 가운데(기본값)에서 현재 값까지 호를 칠한다
         val.setAttribute('d', v >= 0.5 ? arcPath(0, Math.max(deg, 0.01)) : arcPath(deg, 0));
         tick.setAttribute('transform', `rotate(${deg} 38 38)`);
-        num.textContent = `×${knobToMult(c, v).toFixed(2)}`;
+        const lb = multLabel(c, v);
+        num.textContent = lb.text;
+        num.title = lb.title;
     };
     const set = nv => {
         v = Math.max(0, Math.min(1, nv));
@@ -97,6 +121,7 @@ function buildKnob(c) {
     });
     render();
     setters[c.id] = set;
+    renders[c.id] = render;
     return el;
 }
 
@@ -111,7 +136,11 @@ function buildSlider(c) {
     const range = el.querySelector('input');
     const num = el.querySelector('.num');
     let pending = false;
-    const render = () => (num.textContent = `×${knobToMult(c, +range.value).toFixed(2)}`);
+    const render = () => {
+        const lb = multLabel(c, +range.value);
+        num.textContent = lb.text;
+        num.title = lb.title;
+    };
     const set = nv => {
         range.value = String(Math.max(0, Math.min(1, nv)));
         render();
@@ -127,6 +156,7 @@ function buildSlider(c) {
     range.addEventListener('dblclick', () => set(0.5));
     render();
     setters[c.id] = set;
+    renders[c.id] = render;
     return el;
 }
 

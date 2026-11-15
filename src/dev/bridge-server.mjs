@@ -6,6 +6,7 @@
 //
 //  기본은 localhost만 받는다(2026-10-08) — 허브는 받은 걸 확인 없이 output에 릴레이하므로,
 //  공용 와이파이에서 열려 있으면 아무나 화면에 text/receiver/clear를 보낼 수 있다.
+//  남과 같이 쓰는 망(학교 와이파이)에서 --lan 이면 ALLOW_IP=<iPad IP> 로 그 주소만 받는다(allow-ip.mjs).
 //
 //  - output.html 이 ws://localhost:9980 로 접속
 //  - 페이지가 보내는 메시지를 콘솔에 로그  (page → ...)
@@ -22,6 +23,7 @@ import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { networkInterfaces } from 'node:os';
+import { isAllowed, addrOf, describe as describeAllow } from './allow-ip.mjs';
 
 const PORT = Number(process.env.BRIDGE_PORT ?? 9980);
 const LAN = process.argv.includes('--lan');
@@ -34,6 +36,11 @@ const server = createServer((_req, res) => {
 });
 
 server.on('upgrade', (req, socket) => {
+    // LAN 일 때 ALLOW_IP 밖의 주소는 연결 자체를 끊는다 (allow-ip.mjs)
+    if (!isAllowed(socket.remoteAddress)) {
+        log(`× 거부 ${addrOf(socket.remoteAddress)} (ALLOW_IP 밖)`);
+        return socket.destroy();
+    }
     const key = req.headers['sec-websocket-key'];
     if (!key) return socket.destroy();
     const accept = createHash('sha1').update(key + WS_GUID).digest('base64');
@@ -163,6 +170,7 @@ server.listen(PORT, ...(LAN ? [] : ['::1']), () => {
     if (LAN)
         for (const a of Object.values(networkInterfaces()).flat())
             if (a.family === 'IPv4' && !a.internal) log(`           ws://${a.address}:${PORT}  (LAN)`);
+    if (LAN) log(`           ${describeAllow()}`);
     log('stdin: JSON 한 줄 → 접속된 모든 페이지로 전송  (예: {"t":"param","size":150})');
 });
 

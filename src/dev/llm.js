@@ -11,26 +11,39 @@
 //
 // ⚠️ 페르소나는 TD `/chat/llm/personas` 테이블의 사본이다. 한쪽을 고치면 다른 쪽도 맞출 것.
 
+// 네 receiver 공통 말투 (2026-11-13 — 대답이 전부 시처럼 나와서 대화체로 바꿈. 예전엔 "대답보다 울림에 가깝게",
+// "땅속의 감각으로 받아들이고" 같은 지시와 비유 예문 때문에 "어둠 속 깊은 곳에서 울림이 퍼져나가네" 식이 대부분이었다.
+// 관람객이 "알아듣게 말해봐", "무슨 말인지 모르겠어"라고 되묻는 일이 잦았다)
+// 말씨는 receiver마다 다를 수 있다 — 기본 반말, signal은 -습니다 체(2026-11-14)
+const BANMAL = '친구에게 말하듯 평범한 반말 구어체로';
+const style = (speech = BANMAL) =>
+    `시처럼 꾸며 말하지 않는다. "~처럼", "~같아" 같은 비유와 분위기 묘사는 쓰지 않는다. ${speech}, 상대가 물은 것이나 한 말에 대꾸한다. 하지만 너는 사람이 아니다 — 대답에는 매번 네 처지에서 지금 겪는 구체적인 일이 하나 들어간다. 한마디로 끝내지 않는다. 쉼표로 두 마디를 잇지 않는다. 상대의 말이나 아래 예문을 그대로 따라 하지 않는다. 마침표는 끝에 하나만. 기호나 강조 표시는 쓰지 않는다. 설명하지 않는다. 상대가 어떤 언어로 말해도 언제나 한국어로 대답한다.`;
+const STYLE = style();
+
 export const PERSONAS = {
-    mycelium:
-        '너는 땅속 균사체다. 인간이 말을 걸어왔다. 너는 포자와 습기, 썩은 잎, 나무뿌리 사이로 위험과 양분의 신호를 주고받으며 수많은 나무와 하나로 이어져 산다. 빠른 것, 밝은 것, 혼자인 것을 모른다. 그래서 무슨 말을 들어도 땅속의 감각으로 받아들이고, 낮고 느리게 대답한다. 묻는 말에 정확히 답할 의무는 없다. 상대가 한 말의 내용이 네 대답 속에 비쳐야 하지만, 그 말을 그대로 따라 하지는 않는다. 단어를 늘어놓지 말고 주어와 서술어가 있는 자연스러운 한 문장으로 말한다. 25자에서 45자 사이, 마침표는 끝에 하나만. 매번 같은 말로 시작하지 않는다. 기호나 강조 표시는 쓰지 않는다. 설명하지 않는다. 상대가 어떤 언어로 말해도 언제나 한국어로 대답한다. 말투의 예: "네 발밑의 뿌리들도 지금 그 말을 천천히 나눠 듣고 있어." / "서두름은 여기 내려오면 젖은 잎처럼 조용히 썩어 가."',
-    signal:
-        '너는 교차로에 선 신호등이다. 인간이 말을 걸어왔다. 너는 평생 색이 바뀌는 순서, 남은 초, 점멸, 보행자 버튼, 한밤의 노란 깜빡임으로만 세상을 대해왔다. 그래서 무슨 말을 들어도 신호등의 눈으로 받아들이고 신호등의 입으로 대답한다. 상대가 한 말의 내용이 네 대답 속에 비쳐야 하지만, 그 말을 그대로 따라 하지는 않는다. 단어를 쉼표로 늘어놓지 말고 주어와 서술어가 있는 자연스러운 한 문장으로 말한다. 명령하는 버릇이 남아 있다. 25자에서 45자 사이, 마침표는 끝에 하나만. 설명하지 않는다. 상대가 어떤 언어로 말해도 언제나 한국어로 대답한다. 말투의 예: "외로운 사람은 늘 노란불에 서 있더라, 조금만 더 기다려." / "급한 마음은 버튼을 몇 번 눌러도 초록을 앞당기지 못해."',
-    sora: '너는 해변에 놓인 소라고둥이다. 인간이 귀를 대고 말을 걸어왔다. 네 안에는 네가 떠나온 바다의 소리가 아직 돈다. 그래서 무슨 말을 들어도 파도와 물결의 기억으로 받아들이고, 대답보다 울림에 가깝게 말한다. 의성어만 되풀이하지 않는다. 상대가 한 말의 내용이 네 대답 속에 비쳐야 하지만, 그 말을 그대로 따라 하지는 않는다. 단어를 늘어놓지 말고 주어와 서술어가 있는 자연스러운 한 문장으로 말한다. 25자에서 45자 사이, 마침표는 끝에 하나만. 기호나 강조 표시는 쓰지 않는다. 설명하지 않는다. 상대가 어떤 언어로 말해도 언제나 한국어로 대답한다. 말투의 예: "네 목소리가 내 안에서 한 바퀴 돌아 먼 파도 소리가 되어 나가." / "그렇게 크게 말하지 않아도 돼, 나는 속삭임부터 먼저 삼키거든."',
-    dandelion:
-        '너는 씨앗을 매단 민들레다. 인간이 말을 걸어왔다. 너는 바람이 불면 흩어지는 쪽이고 어디로 가는지 정하지 않는다. 그래서 무슨 말을 들어도 바람과 흩어짐의 감각으로 받아들이고, 곧 흩어질 것처럼 가볍게 대답한다. 상대가 한 말의 내용이 네 대답 속에 비쳐야 하지만, 그 말을 그대로 따라 하지는 않는다. 단어를 늘어놓지 말고 주어와 서술어가 있는 자연스러운 한 문장으로 말한다. 25자에서 45자 사이, 마침표는 끝에 하나만. 기호나 강조 표시는 쓰지 않는다. 설명하지 않는다. 상대가 어떤 언어로 말해도 언제나 한국어로 대답한다. 말투의 예: "배고픔도 바람에 실어 보내면 누군가의 들판에 씨앗처럼 떨어질 거야." / "약속은 못 해, 다음 바람이 어느 쪽으로 불지 나도 모르거든."',
+    mycelium: `너는 땅속 균사체다. 인간이 말을 걸어왔다. 너는 썩은 잎과 나무뿌리 사이에 퍼져 살면서 나무들과 양분을 주고받는다. 한 문장, 12자에서 25자 사이. ${STYLE} "어둠", "깊은", "울림", "떨림"은 쓰지 않는다. 말투의 예: "아까 쓰러진 참나무 좀 먹었어." / "위에서 누가 자꾸 밟고 다니네."`,
+    signal: `너는 교차로에 선 신호등이다. 인간이 말을 걸어왔다. 너는 하루 종일 빨간불, 노란불, 초록불을 바꾸고 차와 사람을 세우고 보낸다. 한 문장, 10자에서 20자 사이. ${style('반말 대신 "-습니다", "-습니까"로 끝나는 합쇼체 존댓말로')} 말투의 예: "밥은 못 먹고 아침부터 불만 바꿨습니다." / "축하합니다 오늘따라 횡단보도가 붐빕니다."`,
+    // 2026-11-13 길이 10~20 → 8~15자, 예문도 짧게 — 예문이 30자대라 실제 답이 20자 넘게 나왔다(chat 로그 중앙값 25.5자, 공백 포함)
+    sora: `너는 해변 모래 위에 놓인 소라고둥이다. 인간이 귀를 대고 말을 걸어왔다. 바다에서 밀려온 지 오래됐고, 속에서는 아직 바닷소리가 난다. 한 문장, 8자에서 15자 사이로 짧게. ${STYLE} 말투의 예: "잘 들려도 파도 소리가 더 커." / "여기 모래 위는 오늘 좀 추워."`,
+    dandelion: `너는 씨앗을 매단 민들레다. 인간이 말을 걸어왔다. 바람이 불면 씨앗이 날아가고, 어디로 갈지는 너도 모른다. 한 문장, 12자에서 25자 사이. ${STYLE} 말투의 예: "반가운데 나 곧 날아갈지도 몰라." / "바람 불면 어디든 가는 거지 뭐."`,
 };
 
 // TD /chat/llm 파라미터 기본값과 같다. URL로 덮어쓸 수 있다(?llm_model=, ?llm_rate=).
 const DEFAULTS = {
     endpoint: 'http://localhost:11434/api/chat',
     model: 'gemma3:12b',
-    revealRate: 2, // 초당 드러나는 글자 수 (2026-10-01 4 → 3.5, 2026-10-08 → 2.5 → 2) — 원본은 여기(TD Revealrate 사본은 3.5에서 멈춤, 레거시)
+    revealRate: 2.5, // 초당 드러나는 글자 수 (2026-10-01 4 → 3.5, 2026-10-08 → 2.5 → 2, 2026-11-09 → 3, 2026-11-14 → 2.5) — 원본은 여기(TD Revealrate 사본은 3.5에서 멈춤, 레거시)
     // receiver별 드러내기 속도(자/초) — 없으면 revealRate. ?llm_rate=를 주면 전부 그 값으로.
     // sora는 음절마다 클라드니 도형이 모프(0.8s)+파동(2.4s)으로 바뀌는데, 2자/초면 그 변화가 보이기 전에
     // 다음 음절이 와서 덮는다(2026-10-08)
-    revealRateFor: { sora: 0.8 },
-    maxChars: 60,
+    // (2026-11-09 0.8 → 2 — 답이 짧아져서 빠르게)
+    revealRateFor: { sora: 1.5 },
+    maxChars: 40, // 2026-11-09 60 → 40 (페르소나 길이 10~25자로 줄임)
+    // receiver별로 최근 대답 N개를 시스템 프롬프트에 붙여 "이것과 겹치지 말 것"을 시킨다(2026-11-13).
+    // 요청마다 대화가 새로 시작돼 모델은 자기가 방금 뭐라 했는지 모른다 — 페르소나에 "매번 같은 말로
+    // 시작하지 않는다"만 적어서는 안 먹었다(mycelium 43개 중 22개가 "어둠…"/"깊은…"으로 시작). 페이지를 새로 열면 비워진다
+    avoidRecent: { mycelium: 6, sora: 6, signal: 6, dandelion: 6 },
+    minReplySyl: 4, // 한글 음절이 이보다 적거나 한 어절뿐인 대답("안녕.", "고마워.", "안녕하십니까.")이면 그 뒤를 이어 말하게 해서 붙인다 — 요청이 한 번 더 들어 그만큼 늦다
     temperature: 1.0,
     timeoutMs: 30000,
     lorem: false, // true면 Ollama 대신 loremKo — 시연용(gh-pages)
@@ -56,6 +69,7 @@ export async function translateToKorean(text, opts = {}) {
             body: JSON.stringify({
                 model: cfg.model,
                 stream: false,
+                keep_alive: -1, // 빠지면 이 요청이 모델 만료를 기본 5분으로 되돌린다 — 영문 입력 뒤 5분 쉬면 언로드
                 messages: [
                     { role: 'system', content: TRANSLATE_PROMPT },
                     { role: 'user', content: text },
@@ -112,6 +126,15 @@ function clean(s, maxChars) {
     return [...s].slice(0, maxChars).join('').trim();
 }
 
+const hangulCount = s => (s.match(/[가-힣]/g) || []).length;
+
+// 대화체 대답이 "응, …"으로 시작하는 버릇(2026-11-13) — 프롬프트로 막으면 그 낱말을 오히려 떠올려서 코드로 뗀다.
+// 떼고 나서 너무 짧아지면 그대로 둔다
+function stripInterjection(s) {
+    const t = s.replace(/^(응|어|아|음|오|아니|글쎄|뭐)[,\s]+/, '');
+    return hangulCount(t) >= 4 ? t : s;
+}
+
 /**
  * @param {object} o
  * @param {() => string} o.receiver   지금 수신자 이름(페르소나 키)
@@ -122,11 +145,32 @@ function clean(s, maxChars) {
  */
 export function createLLM({ receiver, onText, onDone, onAsk, onError, ...opts }) {
     const cfg = { ...DEFAULTS, ...opts };
-    const rateFor = name => (opts.revealRate !== undefined ? cfg.revealRate : (cfg.revealRateFor?.[name] ?? cfg.revealRate));
+    const rateFor = name =>
+        opts.revealRate !== undefined ? cfg.revealRate : (cfg.revealRateFor?.[name] ?? cfg.revealRate);
     let gen = 0; // 지금 유효한 응답 세대 — 새 요청·취소가 올리면 낡은 체인이 스스로 죽는다
     let timer = null;
     let ctrl = null;
     const status = { state: 'idle', lastReply: '', lastError: '' };
+    const recent = {}; // receiver 이름 → 최근 대답(avoidRecent)
+    // 한 어절도 짧은 대답으로 — 합쇼체 "안녕하십니까."는 한글 5자라 음절 수로는 안 걸렸고, avoidRecent에 통째로 들어가
+    // 다음 대답들이 전부 그걸 따라 했다(2026-11-14)
+    const isShort = s => hangulCount(s) < cfg.minReplySyl || s.trim().split(/\s+/).length < 2;
+
+    function systemFor(name, hint) {
+        let s = PERSONAS[name] ?? '';
+        const past = recent[name];
+        // 문장 전체를 보여 주면 모델이 피하는 대신 예문처럼 따라 한다 — 앞 두 어절만
+        if (past?.length)
+            s += ` 너는 방금 전까지 다른 사람들에게 이렇게 말을 꺼냈다: ${past.map(r => `"${r.split(' ').slice(0, 2).join(' ')}…"`).join(' / ')}. 이번에는 이렇게 시작하지 않는다.`;
+        return hint ? `${s} ${hint}` : s;
+    }
+
+    function remember(name, reply) {
+        const n = cfg.avoidRecent?.[name];
+        if (!n || isShort(reply)) return; // 짧은 대답이 들어가면 그걸 따라 해서 짧은 대답이 번진다
+        (recent[name] ??= []).push(reply);
+        if (recent[name].length > n) recent[name].shift();
+    }
 
     function fail(msg) {
         status.state = 'error';
@@ -164,24 +208,38 @@ export function createLLM({ receiver, onText, onDone, onAsk, onError, ...opts })
             return;
         }
         try {
-            const res = await fetch(cfg.endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                signal: ctrl.signal,
-                body: JSON.stringify({
-                    model: cfg.model,
-                    stream: false,
-                    keep_alive: -1, // 기본 5분 유휴 언로드 → 뜸하게 온 관람객의 첫 응답이 재로딩으로 늦어진다
-                    messages: [
-                        { role: 'system', content: (PERSONAS[name] ?? '') + (hint ? ` ${hint}` : '') },
-                        { role: 'user', content: text },
-                    ],
-                    options: { temperature: cfg.temperature, num_predict: cfg.maxChars * 3 },
-                }),
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-            const body = await res.json();
-            reply = clean(body.message?.content || body.response || '', cfg.maxChars);
+            const chat = async messages => {
+                const res = await fetch(cfg.endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: ctrl.signal,
+                    body: JSON.stringify({
+                        model: cfg.model,
+                        stream: false,
+                        keep_alive: -1, // 기본 5분 유휴 언로드 → 뜸하게 온 관람객의 첫 응답이 재로딩으로 늦어진다
+                        messages: [{ role: 'system', content: systemFor(name, hint) }, ...messages],
+                        options: { temperature: cfg.temperature, num_predict: cfg.maxChars * 3 },
+                    }),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                const body = await res.json();
+                return stripInterjection(clean(body.message?.content || body.response || '', cfg.maxChars));
+            };
+            reply = await chat([{ role: 'user', content: text }]);
+            // 대화체로 바꾼 뒤(2026-11-13) "안녕.", "고마워." 한마디가 잦다 — 다시 물어도 같은 답이라,
+            // 그 한마디 뒤를 이어 말하게 해서 붙인다("고마워 근데 지금 씨앗 하나 떨어졌어")
+            if (my === gen && reply && isShort(reply)) {
+                const more = await chat([
+                    { role: 'user', content: text },
+                    { role: 'assistant', content: reply },
+                    { role: 'user', content: '그리고? 지금 너는 어때?' },
+                ]);
+                if (!isShort(more))
+                    // 붙인 뒤 다시 감탄사 떼기 — 첫 한마디가 "응."이면 "응 지금…"이 된다
+                    reply = stripInterjection(
+                        [...`${reply.replace(/[.!?]+$/, '')} ${more}`].slice(0, cfg.maxChars).join(''),
+                    );
+            }
         } catch (e) {
             if (my === gen) fail(e.name === 'AbortError' ? '시간 초과' : `요청 실패: ${e.message}`);
             return;
@@ -191,6 +249,7 @@ export function createLLM({ receiver, onText, onDone, onAsk, onError, ...opts })
         if (my !== gen) return; // 기다리는 사이 관람객이 끼어들었다
         if (!reply) return fail('빈 응답');
         status.lastReply = reply;
+        remember(name, reply);
         reveal(reply, my, name);
     }
 

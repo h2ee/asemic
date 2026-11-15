@@ -38,6 +38,7 @@ import { createField, FLOATS_PER_SEG } from './field.js';
 import { createGrowth } from './growth.js';
 import { createParticles } from './particles.js';
 import { makeQuadBuffer } from './glutil.js';
+import { renderDpr } from '../../renderRes.js';
 import { wordOutline, wordCells, densityGrid, densitySampler, addCapsules, capsuleDensity, contourGrid } from './marchingSquares.js';
 
 const BIRTH_SCALE = 60; // birth 를 "분" 단위로 저장 (16F 누적 레인지 보호)
@@ -61,6 +62,8 @@ export function start() {
 //   global   window.TRAIL 노출 (기본 false)
 //   bodyBg   document.body 배경을 종이색으로 (기본 true)
 //   paperBg  맨 아래 캔버스(underlay)에 종이색 CSS 배경 (기본 true). 투명 합성이면 false
+//   onMainStep(stroke, info)  bead.main(waitLive)이 완결된 단어 위에서 한 걸음 옮길 때마다 (2026-11-10, dandelion 비드 읽기 소리)
+//            info = { pos, prevPos, x, y, ang, prevAng, dir, turned, len, rank(0 = 최근 단어), walking, width }. pos 는 plan px0·orb.px 와 같은 호길이
 //   cfg      CFG 위에 얕게 덮어쓸 값. goo/grow/part 는 한 단계 더 머지된다.
 export function createTrail(opts = {}) {
     // ─────────────────────────── 설정 ───────────────────────────
@@ -429,11 +432,14 @@ export function createTrail(opts = {}) {
         dpr = 1;
 
     function resize() {
-        dpr = Math.min(window.devicePixelRatio || 1, opts.dprCap ?? DPR_CAP);
         // 0 으로 떨어지지 않게 — 창이 0 크기인 채로 로드되면(숨겨진 패널 등) 캔버스 width 가 0 이
         // 되고, drawImage 가 매 프레임 InvalidStateError 를 던져 프레임 루프가 영구히 죽는다.
-        W = Math.max(1, window.innerWidth);
+        // opts.widthScale — 캔버스를 화면보다 오른쪽으로 넓게(dandelion 크기 노브: 기본 크기로 그리고 CSS로 줄이면
+        // 오른쪽 끝이 화면 밖에 그려진다, 2026-11-10). 왼쪽 위 원점은 그대로라 좌표계는 안 바뀐다
+        W = Math.max(1, Math.round(window.innerWidth * (opts.widthScale ?? 1)));
         H = Math.max(1, window.innerHeight);
+        // dprCap을 직접 주면(bake 고해상도) 그대로, 아니면 전시 4K 픽셀 상한(renderRes.js)까지 — 이 엔진은 화면 크기 캔버스가 8장이다
+        dpr = opts.dprCap ? Math.min(window.devicePixelRatio || 1, opts.dprCap) : renderDpr(DPR_CAP, W, H);
         for (const cv of [glCanvas, overlay, ink2d, underlay, halo2d, haloTmp, glow2d, edge2d]) {
             cv.width = Math.round(W * dpr);
             cv.height = Math.round(H * dpr);
@@ -852,6 +858,8 @@ export function createTrail(opts = {}) {
     // 같은 프레임 안에서 orb 와 bead 그리기가 같이 쓰므로 프레임마다 한 번만 계산해 둔다.
     let frameNo = 0;
     const mainEpochs = new Map(); // bead.main.waitLive — 단어 키 → 완결된 시각(초)
+    const mainSteps = new Map(); // opts.onMainStep — 단어 키 → 마지막으로 알린 걸음 { step, pos, ang, dir }
+    const STEP_HZ = 4; // bead.main.fps 0(매끈)일 때 걸음을 세는 빈도
     function mainBead(stroke, time) {
         if (stroke._mainFrame === frameNo) return stroke._main;
         stroke._mainFrame = frameNo;
@@ -876,10 +884,46 @@ export function createTrail(opts = {}) {
                 const dt = M.fps > 0 ? Math.floor((time - t0) * M.fps) / M.fps : time - t0;
                 const u = (M.speed * dt + len) % (2 * len); // 끝(len)에서 출발해 되돌아온다
                 pos = u < len ? u : 2 * len - u;
+                const p = sample(pos / sp, line);
+                if (!p) return null;
+                stroke._main = { x: p.x, y: p.y, ang: p.angle };
+                // 걸음 알림 (2026-11-10, dandelion 비드 읽기 소리) — 위치가 바뀐 걸음마다 한 번. fps 0(매끈)이면 STEP_HZ로 끊어 센다.
+                // 단어 키로 기억해 전면 재구성(스크롤 다시 굽기)으로 stroke 객체가 바뀌어도 같은 걸음을 두 번 알리지 않는다
+                if (opts.onMainStep) {
+                    const step = Math.floor((time - t0) * (M.fps > 0 ? M.fps : STEP_HZ));
+                    const last = mainSteps.get(key);
+                    if (!last || last.step !== step) {
+                        const dir = u < len ? 1 : -1; // +1 = 시작 → 끝, -1 = 끝 → 시작
+                        mainSteps.set(key, { step, pos, ang: p.angle, dir });
+                        if (mainSteps.size > 600) mainSteps.delete(mainSteps.keys().next().value);
+                        if (last) {
+                            const walking = strokes.length + (liveStroke && !strokes.includes(liveStroke) ? 1 : 0);
+                            const rank = strokes.length - 1 - idx - (liveStroke && strokes.indexOf(liveStroke) > idx ? 1 : 0); // 0 = 가장 최근 단어
+                            opts.onMainStep(stroke, { pos, prevPos: last.pos, x: p.x, y: p.y, ang: p.angle, prevAng: last.ang, dir, turned: dir !== last.dir, len, rank, walking, width: W });
+                        }
+                    }
+                }
+                return stroke._main;
             }
             const p = sample(pos / sp, line);
             if (!p) return null;
             stroke._main = { x: p.x, y: p.y, ang: p.angle };
+            // 자라는 획 — 비드는 머리에 붙어 있다. 같은 박자(fps)로 세되 머리가 앞으로 자랐을 때만 알린다(멈춰 있으면 조용).
+            // 입력 중에도 완결 뒤와 같은 읽기 소리가 이어진다(2026-11-10 — dandelion은 따로 울리던 입력 소리를 끄고 이것 하나로)
+            if (opts.onMainStep) {
+                const key = 'live#' + stroke.id;
+                const step = Math.floor(time * (M.fps > 0 ? M.fps : STEP_HZ));
+                const last = mainSteps.get(key);
+                if (!last || last.step !== step) {
+                    const grew = last && pos > last.pos + 0.5;
+                    // 안 자랐으면 자리는 그대로 두고 박자만 넘긴다 — 다음에 자란 만큼을 한 번에 읽게. 줄었으면(조합 교체) 그 자리로
+                    mainSteps.set(key, { step, pos: last && !grew && pos >= last.pos ? last.pos : pos, ang: last && !grew ? last.ang : p.angle, dir: 1 });
+                    if (grew) {
+                        const walking = strokes.length + (strokes.includes(stroke) ? 0 : 1);
+                        opts.onMainStep(stroke, { pos, prevPos: last.pos, x: p.x, y: p.y, ang: p.angle, prevAng: last.ang, dir: 1, turned: false, len, rank: 0, walking, width: W, live: true });
+                    }
+                }
+            }
             return stroke._main;
         }
         // 출발 위치를 획마다 다르게 — 여러 단어의 main bead 가 줄 맞춰 움직이지 않게
@@ -1779,9 +1823,13 @@ export function createTrail(opts = {}) {
     // hold: true 면 점을 다 써도 완성하지 않고 대기한다 — extendGrowing 으로 뒤가
     // 계속 붙는 경우("단어 = 획"에서 타이핑 중인 단어)용. finishGrowing 이 풀어준다.
     // plan: [{ px0, seed }] 구간 계획 (path.js). 없으면 획 시드 한 구간
-    function queueStroke(pts, seed, { hold = false, plan = null } = {}) {
+    // at: 이미 자라 있던 호길이(px) — 다시 구울 때(노브·줄바꿈으로 자리만 바뀜) 처음부터 다시 자라지 않고
+    // 거기서 이어 간다. 자라는 획이 없으면 바로 시작해 빈 프레임이 끼지 않게 한다(2026-11-10)
+    // stretch: { x0, sx } — 다 만든 뒤 가로로 늘인다(path.js applyStretch). pts 는 늘이지 않은 경로
+    function queueStroke(pts, seed, { hold = false, plan = null, at = 0, stretch = null } = {}) {
         if (!pts || pts.length < 2) return;
-        queue.push({ pts, cum: cumLength(pts), seed, hold, plan });
+        queue.push({ pts, cum: cumLength(pts), seed, hold, plan, at, stretch });
+        if (at > 0 && !growing && queue.length === 1) startNext();
     }
 
     // 자라는 중인 획에 점을 이어붙인다 — "단어 = 획" 으로 갈 때 음절이 하나씩
@@ -1804,7 +1852,16 @@ export function createTrail(opts = {}) {
         const q = queue.shift();
         if (!q) return false;
         liveStroke = createStroke(CFG, nextId++, nowBirth(), q.seed, q.plan);
+        liveStroke.stretch = q.stretch;
         growing = { pts: q.pts, cum: q.cum, i: 0, walked: 0, hold: !!q.hold, plan: q.plan };
+        if (q.at > 0) {
+            const g = growing;
+            g.walked = Math.min(q.at, g.cum[g.cum.length - 1]);
+            while (g.i < g.pts.length && g.cum[g.i] <= g.walked) {
+                pushPoint(liveStroke, CFG, g.pts[g.i].x, g.pts[g.i].y);
+                g.i++;
+            }
+        }
         return true;
     }
 
@@ -1867,6 +1924,7 @@ export function createTrail(opts = {}) {
         const was = liveStroke;
         const { id, birth, seed } = was;
         liveStroke = createStroke(CFG, id, birth, seed, g.plan);
+        liveStroke.stretch = was.stretch;
         // 다음 갱신 전까지 예전 윤곽선·블록을 그대로 — 안 넘기면 타건마다 한 프레임씩 깜박인다
         liveStroke.outline = was.outline;
         liveStroke.halo = was.halo;
@@ -1890,6 +1948,14 @@ export function createTrail(opts = {}) {
         finalizeGrowing();
     }
 
+    // 자라는 획·큐의 hold를 전부 푼다 — 뒤에 새 획(다음 단어)이 붙으면 앞 단어는 더 기다릴 게 없다.
+    // 빠르게 치면 앞 단어가 아직 큐에 있는 채로 띄어쓰기(finishGrowing)가 지나가 hold가 안 풀리고,
+    // 그 뒤 획들이 영영 시작되지 않았다(2026-11-10). 즉시 완성하지 않고 자라던 대로 마저 자란다
+    function releaseHold() {
+        if (growing) growing.hold = false;
+        for (const q of queue) q.hold = false;
+    }
+
     // 큐에 남은 것까지 전부 완성. 제출(캡처) 직전에 호출되는 계약.
     // 스탬프가 동기라서 프레임을 기다릴 필요가 없다.
     async function flushQueue() {
@@ -1906,8 +1972,9 @@ export function createTrail(opts = {}) {
     //   seed  이 획의 모든 난수를 결정. 같은 seed + 같은 pts → 항상 같은 그림
     //   step  한 번에 밀어넣는 점 개수. Infinity = 즉시 완성, 작은 값 = 점진 생성.
     //         난수 소비가 경로 길이에만 의존하므로 step 이 얼마든 결과는 동일하다.
-    function addStroke(pts, seed, { step = Infinity, plan = null } = {}) {
+    function addStroke(pts, seed, { step = Infinity, plan = null, stretch = null } = {}) {
         const s = createStroke(CFG, nextId++, nowBirth(), seed, plan);
+        s.stretch = stretch;
         for (let i = 0; i < pts.length; i++) {
             pushPoint(s, CFG, pts[i].x, pts[i].y);
             if ((i + 1) % step === 0) growStroke(s, CFG);
@@ -2242,7 +2309,7 @@ export function createTrail(opts = {}) {
         replay: replayAll,
         rebuild: resize,
         clear: () => (dropPending(), (strokes.length = 0), replayAll(), particles.reset()),
-        resetStamps: () => (stampEpochs.clear(), mainEpochs.clear()), // 도장 bead 발자국을 잊는다 (clear 는 전면 재구성에도 쓰여서 따로)
+        resetStamps: () => (stampEpochs.clear(), mainEpochs.clear(), mainSteps.clear()), // 도장 bead 발자국을 잊는다 (clear 는 전면 재구성에도 쓰여서 따로)
         save: savePNG,
         probe: (x, y) => field.probe(x, y),
         pstats: () => particles.stats(),
@@ -2254,12 +2321,15 @@ export function createTrail(opts = {}) {
         extendGrowing, // 자라는 중인 획에 점 이어붙이기 ("단어 = 획" 용)
         replaceTail, // 자라는 획의 뒤쪽 교체 (조합/연음으로 바뀐 음절 갈아끼우기)
         finishGrowing, // 자라는 중인 획 즉시 완성 (main.js 계약)
+        releaseHold, // 자라는 획·큐의 hold 풀기 (다음 단어가 붙을 때)
         flushQueue, // 큐까지 전부 완성 (제출/캡처 직전 계약)
         pending: () => ({
             queued: queue.length,
             growing: growing ? growing.i : null,
             points: growing ? growing.pts.length : 0,
             hold: growing ? !!growing.hold : false,
+            walked: growing ? growing.walked : 0, // 자라는 획이 자란 호길이(px) / 전체
+            total: growing ? growing.cum[growing.cum.length - 1] : 0,
         }),
         // 프레임 루프가 매 프레임 호출하는 것과 같은 것. n 프레임만큼 수동 전진.
         // 프레임 단위로 들여다볼 때, 그리고 rAF 없이(헤드리스) 검증할 때 쓴다.

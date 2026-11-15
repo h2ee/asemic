@@ -572,4 +572,23 @@ export function growStroke(stroke, CFG) {
         const poly = buildCompanion(spine, stroke, i, planEvents(stroke, i, headPx, CFG), CFG);
         if (poly.length >= 2) stroke.compPolys.push(poly);
     }
+    if (stroke.stretch) applyStretch(stroke);
+}
+
+// 가로 늘임 (2026-11-10, dandelion 자간 노브) — stroke.stretch = { x0, sx }.
+// 위 전부(동반 곡선·루프·장식·orb·선 효과·reach)는 늘이지 않은 경로의 호길이(px)로 정해진다. 늘인 경로로 계산하면
+// 길이가 달라져 장식이 전부 새 자리에 놓이고(자간을 바꿀 때마다 글자가 딴 모양이 됐다), 그래서 다 만든 **뒤에**
+// 결과 좌표만 x0 기준으로 가로 sx배 한다. 장식·orb 는 자리만 옮기고 크기는 그대로. 방향(각도·법선)은 다시 잰다
+function applyStretch(stroke) {
+    const { x0, sx } = stroke.stretch;
+    if (sx === 1) return;
+    const X = x => x0 + (x - x0) * sx;
+    const poly = pts => computeFrames(pts.map(p => ({ x: X(p.x), y: p.y })));
+    stroke.spine = poly(stroke.spine);
+    if (stroke.spineInk) stroke.spineInk = poly(stroke.spineInk);
+    stroke.compPolys = stroke.compPolys.map(pts => pts.map(p => ({ x: X(p.x), y: p.y })));
+    for (const d of [...stroke.decor, ...stroke.orbs]) {
+        d.x = X(d.x);
+        if (d.ang != null) d.ang = Math.atan2(Math.sin(d.ang), Math.cos(d.ang) * sx);
+    }
 }

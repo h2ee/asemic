@@ -14,6 +14,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { jongEntry } from './trail/jamoTrail.js';
+import { renderDpr } from '../renderRes.js';
+import { seededRng } from '../seed.js';
 
 // 셰이더 슬롯(원) 수 상한. 화면에 띄우는 단어 수는 따로 maxWords(기본 MAX_WORDS) — bake-text가 한 행의
 // 문장들을 한 캔버스에 그릴 때만 늘린다(2026-10-28). 셰이더 루프는 u_sylCount에서 끊겨서 상한이 커도 비용은 같다
@@ -409,6 +411,27 @@ export class SoraReceiver {
         this._sminK = 0.06;
         this.lineHeightRatio = 1.5;
         this.maxWords = MAX_WORDS; // 화면에 띄우는 단어(원) 수 — MAX_SYL 이하
+
+        // 패널 노브 (2026-11-10) — 소라는 줄·글자 간격이 없어(단어마다 원 하나, 무작위 자리) 예전엔 크기 노브가
+        // 다음 단어부터만 먹고 자간·행간은 아무 데도 안 붙었다. 이제 크기 = 떠 있는 원 전부의 반지름,
+        // 자간 = 원들이 글자 영역 가운데 기준 좌우로 퍼짐(spreadX), 행간 = 위아래로 퍼짐(spreadY). 무작위 자리는 그대로
+        this.spreadX = 1;
+        this.spreadY = 1;
+        this.knobFields = { spacing: 'spreadX', leading: 'spreadY' }; // controls.js applyKnob
+        // 행간도 자간과 같은 폭으로 — 표 기본(최대 1.8)이면 위아래 끝 원이 글자 영역 밖으로 반쯤 나간다
+        this.knobRange = { leading: [0.8, 1.3] };
+    }
+
+    // 크기 노브 배율 — 노브 안 댄 sylSize 대비
+    _sizeMult() {
+        return this.sylSize / (this._ctlBase?.sylSize ?? this.sylSize);
+    }
+    // 배정받은 자리(뷰포트 uv) → 퍼짐을 건 자리. 기준 = 글자 영역 가운데
+    _spread([u, v]) {
+        const r = this._rect;
+        const cu = r ? (r.x + r.w / 2) / window.innerWidth : 0.5;
+        const cv = r ? (r.y + r.h / 2) / window.innerHeight : 0.5;
+        return [cu + (u - cu) * this.spreadX, cv + (v - cv) * this.spreadY];
     }
 
     async init(canvas) {
@@ -491,6 +514,30 @@ export class SoraReceiver {
         }));
     }
 
+    // 아직 원이 없는 단어(초성만 친 낱자 — 페이지 addPendingTag)의 네모 자리(2026-11-15). update가 그 단어에
+    // 원을 놓을 때와 같은 난수라, 음절이 되어 원이 뜨면 바로 그 자리다. 상태는 건드리지 않는다
+    pendingAnchor(wordId) {
+        const [u, v] = this._spread(this._wordPositions.get(wordId) ?? this._wordPos(wordId));
+        const r = (this._wordRadii.get(wordId) ?? this._wordRadius(wordId)) * this._sizeMult();
+        return { wordId, x: u * window.innerWidth, y: v * window.innerHeight, r: r * window.innerHeight };
+    }
+
+    // 단어 원의 배정 자리(뷰포트 uv)와 반경(y-uv, 노브 안 댄 크기) — 난수는 문장 시드 + 단어 번호에서
+    // (seed.js, 2026-11-13) — 대화 기록의 시드로 같은 자리·크기를 다시 낸다
+    _wordPos(wid) {
+        const MARGIN = 0.22;
+        const rnd = seededRng('sora-pos', wid);
+        return this._toRect(MARGIN + rnd() * (1 - MARGIN * 2), MARGIN + rnd() * (1 - MARGIN * 2));
+    }
+    _wordRadius(wid) {
+        // 반경은 y-uv 단위다(셰이더가 delta.x에만 aspect를 곱한다). 글자 영역이 좁아지면
+        // 같이 줄어야 rect 밖으로 새지 않는다.
+        const rectScale = this._rect ? this._rect.h / window.innerHeight : 1;
+        // 노브 안 댄 크기로 배정한다 — 크기 노브는 슬롯에 쓸 때 곱한다(이미 떠 있는 원도 같이 커지게)
+        const baseRadius = ((this._ctlBase?.sylSize ?? this.sylSize) / 550) * rectScale;
+        return baseRadius * (seededRng('sora-r', wid)() * 0.75 + 0.25);
+    }
+
     // 캔버스 전체 기준 uv(0~1)를 rect 안쪽 uv로 접는다. rect가 없으면 그대로.
     _toRect(u, v) {
         const r = this._rect;
@@ -518,21 +565,9 @@ export class SoraReceiver {
         const slotCount = Math.min(wordIds.length, this.maxWords, MAX_SYL);
 
         // 단어 슬롯 위치 + 반경: wordId별로 한 번만 배정, 이후 유지
-        const MARGIN = 0.22;
-        // 반경은 y-uv 단위다(셰이더가 delta.x에만 aspect를 곱한다). 글자 영역이 좁아지면
-        // 같이 줄어야 rect 밖으로 새지 않는다.
-        const rectScale = this._rect ? this._rect.h / window.innerHeight : 1;
-        const baseRadius = (this.sylSize / 550) * rectScale;
         for (const wid of wordIds) {
-            if (!this._wordPositions.has(wid)) {
-                this._wordPositions.set(
-                    wid,
-                    this._toRect(MARGIN + Math.random() * (1 - MARGIN * 2), MARGIN + Math.random() * (1 - MARGIN * 2)),
-                );
-            }
-            if (!this._wordRadii.has(wid)) {
-                this._wordRadii.set(wid, baseRadius * (Math.random() * 0.75 + 0.25));
-            }
+            if (!this._wordPositions.has(wid)) this._wordPositions.set(wid, this._wordPos(wid));
+            if (!this._wordRadii.has(wid)) this._wordRadii.set(wid, this._wordRadius(wid));
         }
         // 사라진 wordId 정리 (텍스트 삭제 시)
         for (const wid of this._wordPositions.keys()) {
@@ -550,8 +585,8 @@ export class SoraReceiver {
 
             const isComplete = wordIds.some(w => w > wid);
             this._frozen[slotIdx] = isComplete;
-            this._positions[slotIdx] = this._wordPositions.get(wid);
-            this._radii[slotIdx] = this._wordRadii.get(wid);
+            this._positions[slotIdx] = this._spread(this._wordPositions.get(wid));
+            this._radii[slotIdx] = this._wordRadii.get(wid) * this._sizeMult();
 
             if (isComplete) continue;
 
@@ -697,7 +732,7 @@ export class SoraReceiver {
 
     _resize() {
         if (!this._canvas) return;
-        const dpr = Math.min(window.devicePixelRatio, 2);
+        const dpr = renderDpr(2); // 전시 4K 상한 — renderRes.js
         this._canvas.width = window.innerWidth * dpr;
         this._canvas.height = window.innerHeight * dpr;
     }

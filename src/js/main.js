@@ -3,8 +3,9 @@
 // core.js로 옮김 — dev 페이지(dev/translator, dev/analyzer)와 공유하기 위함.
 // 이 파일엔 전시용 페이지의 DOM/UI 구성(buildUI, buildInput, buildHistory, Init)만 남음.
 import { ReceiverManager } from './receivers/ReceiverManager.js';
-import { MAX_SYL, decomposeSyllables, layoutFor, canSubmit, dispatchToReceiver, voiceFor, TIMBRE, addedSyllable, lateEnding } from './core.js';
+import { MAX_SYL, decomposeSyllables, layoutFor, canSubmit, dispatchToReceiver, voiceFor, beadStepVoice, TIMBRE, SOUND_FX, addedSyllable, lateEnding } from './core.js';
 import { createSound } from './sound.js';
+import { nextSeed } from './seed.js';
 
 // ── 제출된 줄 히스토리 (캡처 이미지 누적) ────────────────────────────────────
 function buildHistory() {
@@ -179,8 +180,14 @@ async function Init() {
 
     const rm = new ReceiverManager();
     // 사운드 — output-main.js와 같은 배선. 첫 키 입력/클릭에서 오디오가 풀린다
+    SOUND_FX.on = new URLSearchParams(location.search).get('soundfx') !== '0';
+    SOUND_FX.variant.mycelium = new URLSearchParams(location.search).get('myc') || undefined;
+    SOUND_FX.variant.sora = new URLSearchParams(location.search).get('sora') || undefined;
+    SOUND_FX.variant.dandelion = new URLSearchParams(location.search).get('dand') || undefined;
+    SOUND_FX.read = SOUND_FX.variant.dandelion !== 'wind' ? false : { 0: false, soft: 'soft' }[new URLSearchParams(location.search).get('read')] ?? true;
     const sound = createSound({ enabled: new URLSearchParams(location.search).get('sound') !== '0' });
     rm.onSyllableStart = (syl, name) => sound.play(voiceFor(syl, name), syl);
+    rm.onBeadStep = (step, name) => sound.playAux(beadStepVoice(step, name)); // dandelion 비드 읽기 소리
     for (const ev of ['keydown', 'pointerdown']) window.addEventListener(ev, sound.unlock, { capture: true });
     window.sound = sound;
     window.TIMBRE = TIMBRE; // 콘솔 튜닝용 — 예: TIMBRE.sora.tau = 1.2
@@ -237,6 +244,7 @@ async function Init() {
         history.addCapture(dataUrl, capHeight);
 
         receiver.clearAccum();
+        nextSeed(); // 다음 문장은 새 난수(sora 원 자리 등, seed.js)
     }
 
     buildInput(
@@ -244,7 +252,7 @@ async function Init() {
             _allItems = decomposeSyllables(text);
             const { count, added } = addedSyllable(_allItems, _prevSylTotal);
             _prevSylTotal = count;
-            if (added && !rm.current?.emitsSyllableStart) rm.onSyllableStart?.(added, rm.name);
+            if (added && !rm.current?.emitsSyllableStart && !(rm.current?.soundByBead && SOUND_FX.read !== false)) rm.onSyllableStart?.(added, rm.name);
             sound.endLast(lateEnding(sound.lastSyl, _allItems));
             // 띄어쓰기(단어 경계)가 새로 생기면 다음 음절 입력과 동일하게
             // 현재 자라는 중인 음절을 즉시 완성시킴

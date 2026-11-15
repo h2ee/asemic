@@ -37,6 +37,8 @@
 
 import { Delaunay } from 'd3-delaunay';
 import { getPatternType } from '../core.js';
+import { renderDpr } from '../renderRes.js';
+import { seededRng } from '../seed.js';
 
 const BLANK = 0,
     CHO = 1,
@@ -566,7 +568,7 @@ function jamoEntryFor(p) {
 // 조절하는 구조라, jitter가 낮을수록(예 0.1~0.3) 사각 격자에 가까운 Voronoi가
 // 뚜렷하게 나타난다. jitter=0: 완벽한 격자, jitter=1: 셀 폭 전체 범위에서
 // 무작위(옆 셀 경계까지 흔들림 가능).
-function jitteredGridSample(w, h, cellSize, jitter) {
+function jitteredGridSample(w, h, cellSize, jitter, rand = Math.random) {
     const cols = Math.max(1, Math.round(w / cellSize));
     const rows = Math.max(1, Math.round(h / cellSize));
     const cw = w / cols,
@@ -576,8 +578,8 @@ function jitteredGridSample(w, h, cellSize, jitter) {
         for (let i = 0; i < cols; i++) {
             const cx = (i + 0.5) * cw;
             const cy = (j + 0.5) * ch;
-            const ox = (Math.random() - 0.5) * jitter * cw;
-            const oy = (Math.random() - 0.5) * jitter * ch;
+            const ox = (rand() - 0.5) * jitter * cw;
+            const oy = (rand() - 0.5) * jitter * ch;
             points.push([cx + ox, cy + oy]);
         }
     }
@@ -641,7 +643,10 @@ function appendSyllable(wordState, syl, sylIndex, JAMO, sylSize, sylW, sylH, syl
     sylMeta.x = offsetX;
     wordState.syllables.push(sylMeta);
 
-    const raw = jitteredGridSample(sylW, sylH, MIN_DIST, JITTER);
+    // 난수는 문장 시드 + 단어·음절 번호·자모에서 (seed.js, 2026-11-13) — 대화 기록의 시드로 같은 격자·신호등 셀을
+    // 다시 낸다. 그래서 단어를 통째로 다시 만들어도(받침이 늦게 옴·노브) 안 바뀐 음절은 흔들림이 그대로다
+    const rand = seededRng('signal', wordState.seedKey ?? 0, sylIndex, syl.cho, syl.jung, syl.jong ?? '');
+    const raw = jitteredGridSample(sylW, sylH, MIN_DIST, JITTER, rand);
 
     // 기존 점(특히 이웃 음절 경계 근처)과 너무 가까운 신규 점 제거
     const newLocal = [];
@@ -662,9 +667,9 @@ function appendSyllable(wordState, syl, sylIndex, JAMO, sylSize, sylW, sylH, syl
 
     // 신호등 랜덤 셀: 음절당 SIGNAL_DENSITY_MIN~MAX개
     const densityRange = SIGNAL_DENSITY_MAX - SIGNAL_DENSITY_MIN + 1;
-    const signalCount = Math.min(SIGNAL_DENSITY_MIN + Math.floor(Math.random() * densityRange), newLocal.length);
+    const signalCount = Math.min(SIGNAL_DENSITY_MIN + Math.floor(rand() * densityRange), newLocal.length);
     const signalIdx = new Set();
-    while (signalIdx.size < signalCount) signalIdx.add(Math.floor(Math.random() * newLocal.length));
+    while (signalIdx.size < signalCount) signalIdx.add(Math.floor(rand() * newLocal.length));
 
     newLocal.forEach(([x, y], i) => {
         const nx = (x - offsetX) / sylW;
@@ -679,7 +684,7 @@ function appendSyllable(wordState, syl, sylIndex, JAMO, sylSize, sylW, sylH, syl
         let state = originalState;
         let signalColor = null;
         if (isSignal) {
-            const colorIdx = Math.floor(Math.random() * SIGNAL_COLORS.length);
+            const colorIdx = Math.floor(rand() * SIGNAL_COLORS.length);
             signalColor = SIGNAL_COLORS[colorIdx];
             state = SIGNAL_STATE_FOR_COLOR[colorIdx];
         }
@@ -805,6 +810,7 @@ function syncWord(cache, wordId, wordItems, JAMO, sylSize) {
     // 텍스처는 이어 쓴다(uploadWordData가 크기째 다시 올린다) — 노브를 돌릴 때마다 새로 만들면 샌다
     const tex = entry?._glTex ?? null;
     entry = createWordState();
+    entry.seedKey = wordId; // appendSyllable 난수 이름
     entry._glTex = tex;
     for (let i = 0; i < newCount; i++) {
         appendSyllable(entry, wordItems[i].syl, i, JAMO, sylSize, wordItems[i].w, wordItems[i].h, wordItems[i].x);
@@ -1694,7 +1700,9 @@ export class SignalReceiver {
     // TD Web Render TOP 합성용 — 안 주면 예전처럼 자기 배경을 칠한다(스탠드얼론 페이지).
     constructor(opts = {}) {
         this._transparent = !!opts.transparentOutput;
-        this.lineHeightRatio = 1.0;
+        // 1.0 = 줄끼리 맞닿음(calcShelfLayout은 1 아래를 0으로 자른다). 2026-11-09 1.0 → 1.4 — 행간 슬라이더
+        // 전체를 signal에 쓰려고(하한 1.0이 기본값이면 기준점 왼쪽이 안 먹는다) 기본을 1.0~1.8 가운데로
+        this.lineHeightRatio = 1.4;
         this._canvas = null;
         this._gl = null;
         this._prog = null;
@@ -1731,6 +1739,9 @@ export class SignalReceiver {
         this.wrapStep = DEFAULT_SYL_SIZE;
         // 자간 노브 하한(기본 자간의 배율) — 이보다 더 겹치면 음절 형태가 무너진다. core.js layoutFor가 읽는다
         this.minSpacing = 0.96;
+        // 패널 노브 양 끝(기본값 대비 배율, controls.js applyKnob) — 슬라이더 전체가 signal이 버티는 범위에 들게(2026-11-09).
+        // 자간 왼쪽 끝 = minSpacing, 행간 = 실제 1.0~1.8(기본 1.4 대비)
+        this.knobRange = { spacing: [this.minSpacing, 1.3], leading: [1.0 / 1.4, 1.8 / 1.4] };
         this.wrapMargin = 0;
     }
 
@@ -1961,7 +1972,8 @@ export class SignalReceiver {
     _resize() {
         if (!this._canvas) return;
         // mycelium.js와 동일하게 DPR 2로 캡 — 그 이상은 체감 선명도 대비 비용만 커짐.
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        // 전시 4K에선 픽셀 상한이 더 낮출 수 있다 — renderRes.js
+        const dpr = renderDpr(2);
         // "논리적"(CSS px) 크기는 따로 저장해둠 — sylSize/PAD_X/MIN_DIST 등 이
         // 파일의 모든 픽셀 단위 계산이 CSS px 기준이라, u_resolution도 반드시
         // 이 값을 써야 함(캔버스의 실제 backing store 해상도인 this._canvas.width

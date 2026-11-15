@@ -12,7 +12,8 @@ import { calcSignalLatticeSize } from '../js/core.js';
 // 백그라운드 탭은 rAF가 멈추지만 MessageChannel은 안 멈춘다. 성장은 렌더 프레임당 전진이라
 // (growT += (1-growT)·0.08) 24fps 스로틀·실제 시간과 무관하게 모양은 같다 — 속도만 빨라진다
 export async function makeBakeReceiver() {
-    const r = new MyceliumReceiver({ transparentOutput: true });
+    // fastBake:false — 굽기 도구는 예전 경로(프레임당 한 음절) 그대로. 프레임을 직접 세며 도는 코드라 건드리지 않는다
+    const r = new MyceliumReceiver({ transparentOutput: true, fastBake: false });
     await r.init();
     const animate = r._animate;
     cancelAnimationFrame(r._raf);

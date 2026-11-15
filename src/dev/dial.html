@@ -1,48 +1,361 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<title>asemic — dial</title>
-<style>
-    /* iPad 로터리 다이얼 (TD /controller 의 three.js 이식). 보내는 건 {t:'receiver', name} 뿐.
+    <head>
+        <meta charset="UTF-8" />
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+        />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <!-- 홈 화면에서 열면 상태 막대(시계·배터리) 밑까지 그림을 깐다 -->
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="dial" />
+        <meta name="theme-color" content="#c4c4c6" />
+        <title>asemic — dial</title>
+        <style>
+            /* iPad 로터리 다이얼 (TD /controller 의 three.js 이식). 보내는 건 {t:'receiver', name} 뿐.
        장면 값(카메라·조명·재질·구멍 좌표)은 전부 dial.js 상단 SCENE — TD 에서 그대로 옮겨 적었다. */
-    html, body {
-        margin: 0;
-        height: 100%;
-        background: #000;
-        overflow: hidden;
-        /* iPad: 끌기가 스크롤·확대·되돌리기 제스처로 새지 않게 */
-        touch-action: none;
-        overscroll-behavior: none;
-        -webkit-user-select: none;
-        user-select: none;
-        -webkit-touch-callout: none;
-    }
-    #dial {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        transform: translate(-50%, -50%);
-        width: min(100vw, 100vh);
-        height: min(100vw, 100vh);
-        display: block;
-        touch-action: none;
-    }
-    #status {
-        position: fixed;
-        right: 12px;
-        bottom: 10px;
-        font: 11px ui-monospace, Menlo, monospace;
-        color: #555;
-    }
-    #status.ok { color: #3cb371; }
-</style>
-</head>
-<body>
-<canvas id="dial"></canvas>
-<div id="status">bridge …</div>
-<script type="module" src="./dial.js"></script>
-</body>
+            html,
+            body {
+                margin: 0;
+                height: 100%;
+                /* 원래 #000. iPad 가 화면 맨 위(상태 막대 밑)를 페이지 배경색으로 물들여서,
+                   검정이면 다이얼 위쪽에 화면에 붙은 어두운 그라데이션이 생긴다 — 밝은 색으로 */
+                background: #ffffff;
+                overflow: hidden;
+                /* iPad: 끌기가 스크롤·확대·되돌리기 제스처로 새지 않게 */
+                touch-action: none;
+                overscroll-behavior: none;
+                -webkit-user-select: none;
+                user-select: none;
+                -webkit-touch-callout: none;
+            }
+            /* 패널 구멍에 맞추는 값 (2026-11-09 사진 IMG_1610 기준 첫 추정).
+       x/y = 다이얼 한 변 대비 비율(− 왼쪽/위), scale = 크기 배율. 터치 판정은 getBoundingClientRect 라 같이 따라간다 */
+            :root {
+                --dial-x: -0.25;
+                --dial-y: -0.03;
+                --dial-scale: 1.05;
+            }
+            #dial {
+                position: absolute;
+                left: 50%;
+                top: 50%;
+                transform: translate(calc((-0.5 + var(--dial-x)) * 100%), calc((-0.5 + var(--dial-y)) * 100%));
+                width: min(100vw, 100vh);
+                height: min(100vw, 100vh);
+                /* iPad Safari: 100vh 는 툴바 뒤까지 쳐서 위아래가 잘린다 — 보이는 높이(dvh)로 */
+                width: calc(min(100dvw, 100dvh) * var(--dial-scale));
+                height: calc(min(100dvw, 100dvh) * var(--dial-scale));
+                display: block;
+                touch-action: none;
+            }
+            /* 패널 스피커 구멍(오른쪽 위 27구멍) 뒤를 검정으로 — 구멍으로 보이는 게 흰 배경이 아니라 검정이게.
+       단위는 다이얼 한 변: u = 다이얼 왼쪽 끝 기준 가로, v = 위 끝 기준 세로(0~1 이 다이얼, 1 넘으면 오른쪽 바깥).
+       2026-11-09 사진 IMG_1612 에서 다이얼 구멍 3개로 축척을 맞춰 잰 값(구멍 묶음 u 1.278~1.494, v 0.420~0.688)에
+       여유를 약간 더했다. --dial-* 를 따라 같이 움직인다 */
+            #grille {
+                --g-u0: 1.25;
+                --g-u1: 1.52;
+                --g-v0: 0.39;
+                --g-v1: 0.72;
+                --side: calc(min(100dvw, 100dvh) * var(--dial-scale));
+                position: absolute;
+                left: calc(50% + (var(--dial-x) - 0.5 + var(--g-u0)) * var(--side));
+                top: calc(50% + (var(--dial-y) - 0.5 + var(--g-v0)) * var(--side));
+                width: calc((var(--g-u1) - var(--g-u0)) * var(--side));
+                height: calc((var(--g-v1) - var(--g-v0)) * var(--side));
+                background: #000;
+                pointer-events: none;
+            }
+            /* 패널 창에 맞춰 띄우는 것들 — #grille 과 같은 단위(다이얼 한 변, u 가로 / v 세로, 다이얼 왼쪽 위 기준).
+       2026-11-09 사진 IMG_1612(빨간 표시)에서 잰 값 */
+            .on-panel {
+                --side: calc(min(100dvw, 100dvh) * var(--dial-scale));
+                position: absolute;
+                left: calc(50% + (var(--dial-x) - 0.5 + var(--u)) * var(--side));
+                top: calc(50% + (var(--dial-y) - 0.5 + var(--v)) * var(--side));
+                width: calc(var(--w) * var(--side));
+                height: calc(var(--h) * var(--side));
+                pointer-events: none;
+            }
+            /* 아래 가로로 긴 창 — 지금 receiver 아이콘 + 영어 이름 */
+            #plate {
+                --u: 0.6;
+                --v: 0.956;
+                --w: 0.265;
+                --h: 0.058;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: calc(0.012 * var(--side));
+                color: #000;
+                font-family: 'Inconsolata', monospace;
+                font-size: calc(0.03 * var(--side));
+                line-height: 1;
+                white-space: nowrap;
+            }
+            #plate img {
+                height: 62%;
+                aspect-ratio: 1;
+                object-fit: contain;
+            }
+            #plate:not(.known) {
+                visibility: hidden; /* output 이 receiver 를 알려 주기 전엔 비워 둔다 */
+            }
+            /* 창 오른쪽 위 작은 구멍 — 수신자가 대답하는 동안(프로필 수신자 LED 와 같이) 켜진다 */
+            #led {
+                --u: calc(0.8926 - 0.028);
+                --v: calc(0.9258 - 0.031);
+                --w: 0.045;
+                --h: 0.045;
+            }
+            /* ── 사용법 안내 (2026-11-11) ─────────────────────────────────────────────
+       #tip   = 유리 알약 문구(output.html #notice 룩 그대로, vh 대신 다이얼 한 변 단위). 터치 중엔 숨는다.
+       #coach-dot / #coach-arc = 시범(다이얼이 스스로 도는 동안 구멍 위 손가락 + 시계 방향 호). 타이밍은 dial.js COACH.
+       자리 조정: --tip-u = 알약 가운데(가로), --tip-v = 알약 위 끝(세로). 단위는 #grille 과 같다(다이얼 한 변, 왼쪽 위 기준).
+       소라 구멍은 가운데 u 0.494 · 아래 끝 v 0.731 — --tip-v 를 그보다 작게 주면 구멍이 알약 위에 그만큼 걸친다 */
+            #tip {
+                --tip-u: 0.494;
+                --tip-v: 0.7;
+                --side: calc(min(100dvw, 100dvh) * var(--dial-scale));
+                position: absolute;
+                left: calc(50% + (var(--dial-x) - 0.5 + var(--tip-u)) * var(--side));
+                top: calc(50% + (var(--dial-y) - 0.5 + var(--tip-v)) * var(--side));
+                transform: translate(-50%, 0);
+                z-index: 3;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: calc(0.005 * var(--side));
+                padding: calc(0.016 * var(--side)) calc(0.034 * var(--side));
+                border-radius: calc(0.1 * var(--side));
+                /* 룩 = Figma 시안(2026-11-11): Fill 흰색 10% · Glass(Light −45° 100 / Refraction 100 / Depth 56 /
+                   Dispersion 100 / Frost 4) · Inner shadow(10, 10, blur 20.3, #A3DDFF 38%).
+                   Figma px 는 알약 높이(약 65px) 대비 비율로 다이얼 한 변 단위에 옮겼다.
+                   굴절·분산은 CSS 로 진짜는 못 낸다(iPad Safari 는 뒤 캔버스를 변위시킬 길이 없다) —
+                   가장자리 띠(::after)를 더 흐리고 진하게 + 무지개 번짐으로 흉내 낸다 */
+                --tip-fill: 0.1; /* Fill 불투명도 */
+                --tip-frost: calc(0.008 * var(--side)); /* Frost 4 — 뒤가 거의 그대로 비친다 */
+                --tip-depth: calc(0.001 * var(--side)); /* Depth 56 — 가장자리 굴절 띠 폭 */
+                --tip-fringe: 1; /* Dispersion — 가장자리 무지개 번짐 세기 0~1 */
+                --tip-light: 0.95; /* Light — 왼쪽 위·오른쪽 아래 테 빛 0~1 */
+                --tip-shadow-off: calc(0.014 * var(--side)); /* Inner shadow X·Y 10 */
+                --tip-shadow-blur: calc(0.028 * var(--side)); /* Inner shadow Blur 20.3 */
+                --tip-shadow: rgba(163, 221, 255, 0.28); /* #A3DDFF 38% */
+                background: rgba(255, 255, 255, var(--tip-fill));
+                -webkit-backdrop-filter: blur(var(--tip-frost)) saturate(1.15);
+                backdrop-filter: blur(var(--tip-frost)) saturate(1.15);
+                box-shadow: inset var(--tip-shadow-off) var(--tip-shadow-off) var(--tip-shadow-blur) var(--tip-shadow);
+                color: #13456d; /* output.html --ink */
+                font-family: 'MonoplexKR', 'Apple SD Gothic Neo', sans-serif;
+                letter-spacing: 0.02em;
+                white-space: nowrap;
+                pointer-events: none;
+                transition:
+                    opacity 0.5s,
+                    transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+            }
+            #tip::before {
+                content: '';
+                position: absolute;
+                inset: -1px;
+                padding: 1.5px;
+                border-radius: inherit;
+                background: linear-gradient(
+                    to bottom right,
+                    rgba(255, 255, 255, var(--tip-light)) 0%,
+                    rgba(255, 255, 255, 0) 32%,
+                    rgba(255, 255, 255, 0) 68%,
+                    rgba(255, 255, 255, var(--tip-light)) 100%
+                );
+                -webkit-mask:
+                    linear-gradient(#000 0 0) content-box,
+                    linear-gradient(#000 0 0);
+                mask:
+                    linear-gradient(#000 0 0) content-box,
+                    linear-gradient(#000 0 0);
+                -webkit-mask-composite: xor;
+                mask-composite: exclude;
+                pointer-events: none;
+            }
+            /* 가장자리 굴절 띠 — 띠 폭(--tip-depth)만 남기고 파낸 고리. 뒤를 더 흐리고 진하게 비추고,
+       양 끝에 분산(분홍·하늘·노랑)을 얹는다 */
+            #tip::after {
+                content: '';
+                position: absolute;
+                inset: 0;
+                padding: var(--tip-depth);
+                border-radius: inherit;
+                -webkit-backdrop-filter: blur(calc(var(--tip-depth) * 0.9)) saturate(2.2) brightness(1.08);
+                backdrop-filter: blur(calc(var(--tip-depth) * 0.9)) saturate(2.2) brightness(1.08);
+                background: linear-gradient(
+                    100deg,
+                    rgba(255, 120, 225, calc(0.4 * var(--tip-fringe))) 0%,
+                    rgba(110, 200, 255, calc(0.35 * var(--tip-fringe))) 5%,
+                    rgba(255, 255, 255, 0) 16%,
+                    rgba(255, 255, 255, 0) 84%,
+                    rgba(255, 236, 120, calc(0.35 * var(--tip-fringe))) 95%,
+                    rgba(110, 200, 255, calc(0.4 * var(--tip-fringe))) 100%
+                );
+                -webkit-mask:
+                    linear-gradient(#000 0 0) content-box,
+                    linear-gradient(#000 0 0);
+                mask:
+                    linear-gradient(#000 0 0) content-box,
+                    linear-gradient(#000 0 0);
+                -webkit-mask-composite: xor;
+                mask-composite: exclude;
+                pointer-events: none;
+            }
+            #tip .ko {
+                font-size: calc(0.024 * var(--side));
+                text-align: center;
+                line-height: 1.45;
+            }
+            #tip .en {
+                font-family: 'Inconsolata', ui-monospace, monospace;
+                font-size: calc(0.019 * var(--side));
+                letter-spacing: 0.04em;
+                opacity: 0.6;
+                text-align: center;
+            }
+            #tip[hidden] {
+                display: flex;
+                opacity: 0;
+                transform: translate(-50%, calc(0.012 * var(--side)));
+                transition-duration: 0.25s;
+            }
+            /* 시범 손가락 — 구멍 위 유리 원. 자리(--u/--v)는 dial.js 가 매 프레임 넣는다 */
+            #coach-dot {
+                --w: 0.11; /* 지름 (다이얼 한 변 대비) */
+                --h: 0.11;
+                z-index: 2;
+                border-radius: 50%;
+                background: radial-gradient(
+                    circle at 35% 30%,
+                    rgba(255, 255, 255, 0.75),
+                    rgba(255, 255, 255, 0.28) 70%
+                );
+                border: 1px solid rgba(255, 255, 255, 0.8);
+                box-shadow:
+                    inset 0 0 calc(0.012 * var(--side)) rgba(255, 255, 255, 0.6),
+                    0 calc(0.006 * var(--side)) calc(0.02 * var(--side)) rgba(20, 50, 90, 0.3);
+                opacity: 0;
+                transform: scale(1.45); /* 떠 있다가 내려앉는다 */
+                transition:
+                    opacity 0.3s,
+                    transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+            }
+            #coach-dot.on {
+                opacity: 1;
+                transform: scale(1);
+            }
+            /* 틀린 뒤 시범(dial.js COACH.warnAfter) — 손가락 원과 화살표를 빨강~주황으로 */
+            #coach-dot.warn {
+                background: radial-gradient(circle at 35% 30%, rgba(255, 150, 30, 0.9), rgba(255, 30, 0, 0.55) 70%);
+                border-color: rgba(255, 90, 40, 0.95);
+                box-shadow:
+                    inset 0 0 calc(0.012 * var(--side)) rgba(255, 190, 120, 0.7),
+                    0 0 calc(0.03 * var(--side)) rgba(255, 40, 0, 0.6);
+            }
+            #coach-arc.warn {
+                filter: drop-shadow(0 0 0.6vmin rgba(255, 40, 0, 0.7));
+            }
+            #coach-arc.warn path {
+                stroke: #ff3a14;
+            }
+            #coach-arc.warn .head {
+                fill: #ff3a14;
+            }
+            /* 틀린 뒤 시범 때 손가락 원 위에 잠깐 뜨는 딱지 "터치!" — 자리(--u/--v = 원 가운데)는 dial.js,
+               떠 있는 시간은 COACH.labelSec. --gap = 원 가운데에서 딱지 아래 끝까지 */
+            #coach-label {
+                --u: 0;
+                --v: 0;
+                --gap: 0.07;
+                width: auto;
+                height: auto;
+                z-index: 3;
+                padding: calc(0.005 * var(--side)) calc(0.015 * var(--side));
+                background: #fff;
+                border: calc(0.002 * var(--side)) solid #000;
+                color: #101614;
+                font-family: 'MonoplexKR', 'Apple SD Gothic Neo', sans-serif;
+                font-weight: 700;
+                font-size: calc(0.028 * var(--side));
+                letter-spacing: 0.08em;
+                white-space: nowrap;
+                opacity: 0;
+                /* 사라질 땐 제자리에서 흐려지기만 한다(튀어나오는 건 뜰 때만 — coach-label-in) */
+                transform: translate(-50%, calc(-100% - var(--gap) * var(--side)));
+                transition: opacity 0.6s;
+            }
+            #coach-label.on {
+                opacity: 1;
+                transition-duration: 0.2s;
+                animation: coach-label-in 0.35s cubic-bezier(0.22, 1.4, 0.36, 1);
+            }
+            @keyframes coach-label-in {
+                from {
+                    transform: translate(-50%, calc(-100% - var(--gap) * var(--side) + 0.012 * var(--side))) scale(0.85);
+                }
+            }
+            /* 시범 호 — 구멍에서 멈추개까지 시계 방향. viewBox 0~1 = 다이얼 한 변 */
+            #coach-arc {
+                --u: 0;
+                --v: 0;
+                --w: 1;
+                --h: 1;
+                z-index: 1;
+                opacity: 0;
+                transition: opacity 0.4s;
+                filter: drop-shadow(0 0 0.4vmin rgba(20, 50, 90, 0.45));
+            }
+            #coach-arc.on {
+                opacity: 0.9;
+            }
+            #coach-arc path {
+                fill: none;
+                stroke: #fff;
+                stroke-width: 0.006;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+
+            #coach-arc .head {
+                fill: #fff;
+            }
+            #status {
+                position: fixed;
+                right: 12px;
+                bottom: 10px;
+                font:
+                    11px ui-monospace,
+                    Menlo,
+                    monospace;
+                color: #555;
+            }
+            #status.ok {
+                color: #3cb371;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="grille"></div>
+        <div id="plate" class="on-panel"><img alt="" /><span></span></div>
+        <img id="led" class="on-panel" alt="" /> <canvas id="dial"></canvas>
+        <svg id="coach-arc" class="on-panel" viewBox="0 0 1 1">
+            <path class="line" />
+            <path class="head" />
+        </svg>
+        <div id="coach-dot" class="on-panel"></div>
+        <div id="coach-label" class="on-panel">터치!</div>
+        <div id="tip" hidden>
+            <span class="ko">대화하고 싶은 수신자 구멍에 손을 놓은 채<br />시계방향으로 돌려 걸림쇠를 눌러주세요</span>
+        </div>
+        <div id="status">bridge …</div>
+        <script type="module" src="./dial.js"></script>
+    </body>
 </html>

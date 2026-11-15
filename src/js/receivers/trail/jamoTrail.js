@@ -346,7 +346,9 @@ const wrapPi = a => Math.atan2(Math.sin(a), Math.cos(a));
 // advancePx : 음절 하나가 가로로 전진하는 거리 — 레이아웃의 wrapStep 을 그대로 넣는다
 // meta      : 주면 meta.starts 에 [{ px0, syl }] — 각 음절이 출력 경로의 몇 px 에서 시작하는지
 //             (엔진 plan 의 구간 경계. 획이 그려지지 않은 음절은 빠진다)
-export function jamoWordTrail(JAMO, syls, ax, ay, advancePx, stepPx = 5, meta = null) {
+// stretchX: 가로로만 늘이는 배율(2026-11-10). 처음엔 dandelion 자간 노브가 썼지만 늘인 경로로 장식을 만들면 자간마다
+// 장식이 새 자리에 놓여서, 지금은 엔진이 다 만든 뒤 늘인다(path.js applyStretch) — 여기 값은 안 쓴다(기본 1)
+export function jamoWordTrail(JAMO, syls, ax, ay, advancePx, stepPx = 5, meta = null, stretchX = 1) {
     let theta = null;
     let penX = 0,
         penY = 0; // walk 단위. 음절마다 순 전진 1
@@ -403,7 +405,7 @@ export function jamoWordTrail(JAMO, syls, ax, ay, advancePx, stepPx = 5, meta = 
     // walk 단위 → px. 첫 점이 첫 음절 앵커에 오도록 평행이동만 한다 (refit 없음)
     const kept = [];
     const out = decimate(
-        walk.map(p => ({ x: ax + p.x * advancePx, y: ay + p.y * advancePx })),
+        walk.map(p => ({ x: ax + p.x * advancePx * stretchX, y: ay + p.y * advancePx })),
         stepPx,
         kept,
     );

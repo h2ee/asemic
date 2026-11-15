@@ -23,6 +23,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as THREE from 'three';
+import { renderDpr } from '../renderRes.js';
+import { seededRng } from '../seed.js';
 
 // ── 파라미터 ─────────────────────────────────────────────────────────────────
 // d3(고주파 노이즈) 디테일 처리 방식
@@ -55,6 +57,34 @@ vec3 syllablePath(vec3 start, vec3 center, vec3 cho, float f1, float f2, float f
     return center + ep1 + ep2 + ep3 - ep4*1.3; //임의 조정
 }
 `;
+
+// pathSrc의 JS 사본 — 광학 자간·행간(pathBox → core.layoutFor)이 글자가 자라기 전에 끝을 재려고.
+// **셰이더 식(orbitalPoint/syllablePath)을 바꾸면 여기도 같이 고칠 것** (2026-11-09)
+function orbitalPointJS(r, freq, angle, theta, phi, e) {
+    const axis = new THREE.Vector3(Math.sin(phi) * Math.cos(theta), Math.sin(phi) * Math.sin(theta), Math.cos(phi));
+    const up = Math.abs(axis.z) < 0.99 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+    const u = new THREE.Vector3().crossVectors(axis, up).normalize();
+    const v = new THREE.Vector3().crossVectors(axis, u).multiplyScalar(1.2);
+    const a = freq * (1 / 3200) * angle;
+    return u.multiplyScalar(r * Math.cos(a)).addScaledVector(v, r * (1 - e) * Math.sin(a));
+}
+function syllablePathJS(center, cho, f1, f2, f3, amp, t, yang, diph) {
+    const PI = 3.14159;
+    const TWO_PI = 6.28318;
+    const angle = t * TWO_PI * 5.0;
+    const r1 = amp * (1 / 1.75);
+    const r2 = r1 * 0.5;
+    const r3 = r1 * 0.25;
+    const ep1 = orbitalPointJS(r1, f1, angle, cho.x * TWO_PI, cho.y * PI, 0.03);
+    const ep2 = orbitalPointJS(r2, f2, angle, cho.y * TWO_PI + yang * PI, cho.z * PI, 0.25);
+    const ep3 = orbitalPointJS(r3, f3, angle, cho.z * TWO_PI + diph * PI, yang * PI, 0.65);
+    const ep4 = orbitalPointJS(r3 * 0.4, f1 * 1.7, angle * 1.3, cho.x * PI, cho.z * TWO_PI, 0.99);
+    return center.clone().add(ep1).add(ep2).add(ep3).addScaledVector(ep4, -1.3);
+}
+// pathBox가 경로 끝에 더하는 굵기(월드) — 몸통(smooth union 덩어리)·혹이 경로 밖으로 나온 만큼.
+// 실측 보정값(2026-11-09, 헤드리스 크롬 1280×720에서 음절 30개의 실제 픽셀 끝과 비교 — 경로 끝보다 네 방향 모두
+// 평균 ~12px(glyphScale 1.2) 바깥, 월드로 ≈ 0.08 = smooth union k와 같다). 혹이 튀어나온 음절은 몇 px 더 나간다
+const GLYPH_BOX_PAD = 0.08;
 
 // ── 셰이더 ────────────────────────────────────────────────────────────────────
 
@@ -167,16 +197,30 @@ ${pathSrc}
 
 // ── 경로 사전계산 텍스처 (2026-09-26) ──────────────────────────────────────────
 // 경로 점/테이퍼 노이즈/혹 위치는 음절 uniform만의 함수라 픽셀·스텝마다 다시 계산할
-// 이유가 없다. 음절이 바뀔 때 pathFrag가 151×3 float 텍스처에 한 번 구워 두고 map()은
+// 이유가 없다. 음절이 바뀔 때 pathFrag가 151×5 float 텍스처에 한 번 구워 두고 map()은
 // 읽기만 한다(같은 GPU·같은 GLSL 식). u_usePathTex=0 이면 예전처럼 직접 계산.
 //   row0: i=0..150 → (syllablePath(i/150), taperNoise(i/150))
 //   row1: j=0..53  → (lumpPos, lumpR)      row2: j → (lt, 0, 0, 0)
 uniform sampler2D u_pathTex;
 uniform float     u_usePathTex;
+//   row3: c=0..29  → 구간 묶음 c(구간 5개 = 경로 점 6개)를 감싸는 구 (중심, 반경)   row4: (경로 점 |P| 최댓값)
 #define PATH_TEX_W 151.0
+#define PATH_TEX_H 5.0
 vec4 pathTexel(float i, float row) {
-  return texture2D(u_pathTex, vec2((i + 0.5) / PATH_TEX_W, (row + 0.5) / 3.0));
+  return texture2D(u_pathTex, vec2((i + 0.5) / PATH_TEX_W, (row + 0.5) / PATH_TEX_H));
 }
+
+// ── 먼 구간 묶음 건너뛰기 (2026-11-10, 최적화) ─────────────────────────────────
+// **CHUNK_CULL 0 이면 끔**(구간 150개를 전부 계산 — 예전 그대로). 결과는 켜나 끄나 같아야 한다:
+// 구간 하나가 d에 하는 일은 opSmoothUnion(d, displaced, k)와 min(d, thinD)뿐이고, smooth union은 상대가
+// 폭(k)보다 멀면 d를 그대로 돌려준다. 그래서 묶음을 감싸는 구까지의 거리로 "이 묶음의 어떤 구간도
+// d를 못 바꾼다"가 증명되면 묶음째 건너뛴다. 다 자란 음절(growT = 1 — 재굽기·확정 음절)에만 건다.
+// 마지막 묶음은 끝점을 u_center + u_end로 당기는 구간이 있어 늘 계산한다.
+// ⚠ map()의 구간 식(rad·taper 범위, thinD의 45·0.8·0.008, k)을 바꾸면 아래 건너뛰는 조건도 같이 고칠 것 —
+//   헷갈리면 CHUNK_CULL 0. 조건이 틀리면 글자 일부가 얇아지거나 빠져 보인다
+#define CHUNK_CULL 1
+#define CHUNK_N    5      // 묶음 하나의 구간 수 (150 / 5 = 30묶음 — pathFrag row3와 맞출 것)
+#define CULL_EPS   1e-4
 
 float taperNoiseAt(float t0) {
   return 0.8 + 0.6 * noise(vec3(t0 * 18.0, u_cho.x * 7.0, u_cho.z * 3.0));
@@ -232,7 +276,38 @@ float map(vec3 p) {
   float rad  = 0.007; // 0.02
   float d    = MAX_DIST;
 
-  for (int i = 0; i < int(num); i++) {
+  // ── 구간과 무관한 값은 루프 밖에서 한 번만 (2026-11-10, 최적화 — 식·더하는 순서는 그대로라 결과 동일) ──
+  // map()은 픽셀당 최대 27번, 그 안에서 구간 150개를 돈다. 아래 값들은 p만의 함수인데 구간마다 다시 계산하고 있었다
+  // (특히 d3 noise = 해시 8번). 되돌려 비교하려면 이 블록을 루프 안 원래 자리로 옮기면 된다
+  float d2 = sin(p.y * 10.0) * 0.1 * 0.175-0.0155; //for 태양 material
+  float d3 = u_d3Displace > 0.5 ? 0.008 * noise(p * 95.0) : 0.0; //진폭(돌출), 주파수(촘촘함)
+  // 납작한 캡슐 트릭 (불안정) 지금 사용 안하는 중 - 적용 시 필기체 같은 비주얼 나옴.
+  vec3 twistedP = opTwistPoint(p);
+  twistedP *= 0.85;
+  twistedP.y = twistedP.y + 4.0; //4
+  twistedP.xz = twistedP.xz * 1.1;
+  // 경로 텍스처: 구간 i의 끝점 = 구간 i+1의 시작점 → 읽은 걸 다음 구간으로 넘긴다(구간당 읽기 2번 → 1번)
+  vec4 pathA = pathTexel(0.0, 0.0);
+
+#if CHUNK_CULL
+  bool  cull  = u_growT >= 1.0 && u_usePathTex > 0.5;
+  // thinD 캡슐은 a·b를 좌표 원점 기준으로 쓴다 → 그 길이의 상한(경로 점 전체 + 당겨 붙는 끝점)
+  float cullM = max(pathTexel(0.0, 4.0).x, length(u_center + u_end));
+#endif
+  for (int c = 0; c < int(num) / CHUNK_N; c++) {
+    if (float(c * CHUNK_N) / num > u_growT) break;
+#if CHUNK_CULL
+    if (cull && c < int(num) / CHUNK_N - 1) {
+      vec4  S  = pathTexel(float(c), 3.0);
+      float dc = length(p - S.xyz) - S.w; // 이 묶음의 어느 구간까지든 거리는 이보다 크다
+      // ① displaced = d1 + d2 + d3 ≥ (dc − rad·taper 최대 1.4) + d2 + d3 가 d + k 이상이면 smooth union이 d 그대로
+      // ② thinD: sdCapsule((p − a)·45, a, b, 0.8) ≥ 45·dc − |a,b| − 0.8 가 d + 0.008 이상이면 d 그대로
+      if (dc - rad * 1.4 + d2 + d3 >= d + k + CULL_EPS && 45.0 * dc - cullM - 0.8 >= d + 0.008 + CULL_EPS) continue;
+    }
+#endif
+    pathA = pathTexel(float(c * CHUNK_N), 0.0); // 앞 묶음을 건너뛰었을 수 있으니 묶음 첫 점은 다시 읽는다
+  for (int j = 0; j < CHUNK_N; j++) {
+    int i = c * CHUNK_N + j;
     float t0  = float(i)     / num;
     float t1  = float(i + 1) / num;
     if (t0 > u_growT) break;
@@ -240,12 +315,16 @@ float map(vec3 p) {
     vec3 a, b;
     float taperNoise;
     if (u_usePathTex > 0.5) {
-      vec4 ta = pathTexel(float(i), 0.0);
-      a = ta.xyz;
-      taperNoise = ta.w;
+      a = pathA.xyz;
+      taperNoise = pathA.w;
       // t1 <= growT 이면 t1c == t1 → 다음 점 그대로. 자라는 끝 구간 하나만 직접 계산
-      b = (t1 <= u_growT) ? pathTexel(float(i + 1), 0.0).xyz
-                          : syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t1c, yang, diph);
+      // (그 구간이 마지막이다 — 다음 구간은 t0 > growT로 끊긴다)
+      if (t1 <= u_growT) {
+        pathA = pathTexel(float(i + 1), 0.0);
+        b = pathA.xyz;
+      } else {
+        b = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t1c, yang, diph);
+      }
     } else {
       a = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t0,  yang, diph);
       b = syllablePath(u_start, u_center, u_cho, f1, f2, f3, amp, t1c, yang, diph);
@@ -254,11 +333,7 @@ float map(vec3 p) {
     float pull = step(0.99, u_growT);
     b = mix(b, u_center + u_end, pull * step(u_growT - 0.001, t1));
 
-    // 납작한 캡슐 트릭 (불안정) 지금 사용 안하는 중 - 적용 시 필기체 같은 비주얼 나옴.
-    vec3 twistedP = opTwistPoint(p);
-    twistedP *= 0.85;
-    twistedP.y = twistedP.y + 4.0; //4
-    twistedP.xz = twistedP.xz * 1.1;
+    // (twistedP는 루프 밖으로 옮김)
     float twistedCapsule = sdCapsule(twistedP, a, b, rad);
     //d = opSmoothUnion(d, twistedCapsule, k);
     
@@ -275,18 +350,19 @@ float map(vec3 p) {
     float taper = taperBase * taperNoise;
     float d1 = sdCapsule(p, a, b, rad * taper);
 
-    float d2 = sin(p.y * 10.0) * 0.1 * 0.175-0.0155; //for 태양 material
+    // d2 = sin(p.y * 10.0) * 0.1 * 0.175-0.0155 — 루프 밖으로 옮김
     // d3(고주파 노이즈): 기본은 실루엣/거리장에서 제외하고 bump map으로만 사용(가벼움).
     //   u_d3Displace > 0.5 이면 예전처럼 거리장에 직접 더해 실루엣까지 우글거리게 함(무거움, 디테일 look용).
     //   이땐 이중 적용 방지를 위해 growFrag의 applyBump를 끔.
     float displaced = d1 + d2;
-    if (u_d3Displace > 0.5) displaced += 0.008 * noise(p * 95.0); //진폭(돌출), 주파수(촘촘함)
+    if (u_d3Displace > 0.5) displaced += d3; // d3 = 0.008 * noise(p * 95.0) — 루프 밖으로 옮김
 
     d = opSmoothUnion(d, displaced, k);
     //d = opSmoothUnion(d, sdCapsule(p, a, b, rad), k); //displacement 없는 기본 캡슐
     
     d = min(d, thinD); //얇은 부분 추가
     
+  }
   }
 
   // ── lump (혹) — 경로 위 임의 위치에 작은 구를 붙여 포자/혹 같은 질감 추가 ──
@@ -447,7 +523,7 @@ float rand(vec3 p){
 }
 `;
 
-// ── Pass 0: 경로 사전계산 (음절이 바뀔 때 한 번, 151×3 float) ─────────────────
+// ── Pass 0: 경로 사전계산 (음절이 바뀔 때 한 번, 151×5 float) ─────────────────
 const pathFrag = `
 #ifdef GL_ES
 precision highp float;
@@ -462,11 +538,32 @@ void main() {
         float t0 = i / 150.0;
         vec3 P = syllablePath(u_start, u_center, u_cho, u_jung.x, u_jung.y, u_jung.z, u_amp, t0, u_yangseong, u_diphthong);
         gl_FragColor = vec4(P, taperNoiseAt(t0));
-    } else {
+    } else if (row < 2.5) {
         float lt, lumpR;
         vec3 lumpPos;
         lumpAt(int(i), lt, lumpPos, lumpR);
         gl_FragColor = row < 1.5 ? vec4(lumpPos, lumpR) : vec4(lt, 0.0, 0.0, 0.0);
+    } else if (row < 3.5) {
+        // row3 — 구간 묶음 i(구간 CHUNK_N개 = 경로 점 CHUNK_N+1개)를 감싸는 구. map()의 CHUNK_CULL이 읽는다
+        vec3 lo = vec3(1e9), hi = vec3(-1e9);
+        vec3 P[CHUNK_N + 1];
+        for (int n = 0; n <= CHUNK_N; n++) {
+            float t0 = min((i * float(CHUNK_N) + float(n)) / 150.0, 1.0);
+            P[n] = syllablePath(u_start, u_center, u_cho, u_jung.x, u_jung.y, u_jung.z, u_amp, t0, u_yangseong, u_diphthong);
+            lo = min(lo, P[n]);
+            hi = max(hi, P[n]);
+        }
+        vec3 C = (lo + hi) * 0.5;
+        float R = 0.0;
+        for (int n = 0; n <= CHUNK_N; n++) R = max(R, length(P[n] - C));
+        gl_FragColor = vec4(C, R + 0.002); // 여유 — row0에 구운 점과의 float 오차
+    } else {
+        // row4 — 경로 점 전체의 |P| 최댓값(thinD 조건용)
+        float M = 0.0;
+        for (int n = 0; n <= 150; n++) {
+            M = max(M, length(syllablePath(u_start, u_center, u_cho, u_jung.x, u_jung.y, u_jung.z, u_amp, float(n) / 150.0, u_yangseong, u_diphthong)));
+        }
+        gl_FragColor = vec4(M + 0.002);
     }
 }
 `;
@@ -633,9 +730,11 @@ const makeDispFrag = transparent => `
 precision highp float;
 #endif
 ${composeGlsl}
+// 버퍼를 화면보다 먼저 민 양(디바이스 px) — 그만큼 되돌려 보여 주며 따라간다(scrollTo 뒤처짐 보정, 2026-11-10)
+uniform vec2 u_view;
 void main() {
-    vec2 uv  = gl_FragCoord.xy / u_resolution;
-    vec4 acc = compose(uv);
+    vec2 uv  = (gl_FragCoord.xy + u_view) / u_resolution;
+    vec4 acc = uv.x >= 0.0 && uv.x < 1.0 && uv.y >= 0.0 && uv.y < 1.0 ? compose(uv) : vec4(0.0);
 
     ${transparent
         ? 'gl_FragColor = vec4(acc.rgb, acc.a);'
@@ -663,6 +762,16 @@ void main() {
 }
 `;
 
+// ── 빠른 재굽기 (2026-11-10) ──────────────────────────────────────────────────
+// 기본 켬. **`?bake=old`면 예전 경로 그대로.** 셰이더·합성은 안 건드리고 굽는 순서만 바꾼다(픽셀 결과 동일):
+//   ① 재굽기 도중에 온 update는 미뤄 두고 가장 최근 것만 기억한다(_pendingUpdate) → 굽던 걸 끝까지 구워 화면에
+//      내보낸 뒤 그 값으로 다시 굽는다. 예전엔 노브 값이 올 때마다 큐를 0번 음절부터 다시 채워서, 재굽기가
+//      끝나기 전에 다음 값이 오는 동안(= 노브를 돌리는 내내) 화면이 안 바뀌었다
+//   ② instant bake는 24fps 스로틀 밖에서, 프레임 시간(INSTANT_BUDGET_MS)이 남는 만큼 여러 음절(_flushInstant)
+// 음절 하나 굽는 GPU 시간(수십 ms)은 그대로라, 노브를 돌리는 동안 화면은 "문장 전체를 한 번 굽는 시간"마다 갱신된다
+const FAST_BAKE = !(typeof location !== 'undefined' && new URLSearchParams(location.search).get('bake') === 'old');
+const INSTANT_BUDGET_MS = 10;
+
 // 목표 스크롤 위치로 다가가는 비율(프레임당, 24fps 기준). 한 음절 폭이 ~1초에 걸쳐 흘러간다
 const SCROLL_EASE = 0.12;
 
@@ -676,6 +785,10 @@ export class MyceliumReceiver {
         // 사운드 — 음절이 자라기 시작할 때 onSyllableStart를 직접 부른다(_dequeue). 페이지 대체 트리거는 끈다
         this.emitsSyllableStart = true;
         this._transparent = !!opts.transparentOutput;
+        // 빠른 재굽기(FAST_BAKE 주석 참고). bake 페이지는 opts.fastBake:false로 예전 경로를 쓴다
+        this._fastBake = opts.fastBake ?? FAST_BAKE;
+        this._pendingUpdate = null; // 재굽기 도중에 온 가장 최근 update 인자 [uniformData, count, sylItems]
+        this._syncPx = new Uint8Array(4);
         this._renderer = null;
         this._clock = null;
         this._raf = null;
@@ -728,6 +841,13 @@ export class MyceliumReceiver {
         // 넘침(→ 단계 축소) 판정에 쓴다. 에피사이클 이론상 최대는 ~1.84(r1+r2+r3 전부
         // 한 방향), 실측 대부분 1.2~1.5. 글자가 rect 끝에서 잘리면 올릴 것
         this.glyphExtent = 1.5;
+        // 광학 배치(core.layoutFor, 2026-11-09) — 음절 끝(pathBox) 사이 간격. sylSize 배수.
+        // 자간·행간 노브는 이 위에 기본값에서 늘린/줄인 만큼을 더한다. 0이면 글자 끝이 맞닿는다
+        this.opticalGap = 0.05; // 가로 — 앞 글자 오른쪽 끝 ↔ 다음 글자 왼쪽 끝
+        this.opticalLineGap = 0; // 세로 — 윗줄 가장 아래 끝 ↔ 다음 줄의 위 끝(opticalTop)
+        // 다음 줄 음절들의 위 끝을 이걸로 친다(실측 중앙값 ~0.9). 실제 위 끝을 쓰면 줄에 키 큰 글자가 올 때마다
+        // 그 줄이 통째로 내려가 이미 놓인 글자가 움직인다 → 재굽기
+        this.opticalTop = 0.9;
         // 위 px 값들이 기준으로 삼는 뷰포트 높이(CSS px). core.js layoutFor가 H/refHeight 배로
         // 스케일해서, 어느 해상도에서든 이 높이에서 보던 글자 모양이 그대로 나온다.
         // 859 = 맥북 브라우저(1512×859)에서 룩을 잡던 때의 innerHeight
@@ -762,7 +882,7 @@ export class MyceliumReceiver {
     async init(canvas) {
         const W = window.innerWidth;
         const H = window.innerHeight;
-        const dpr = Math.min(window.devicePixelRatio, 2.0); // # pixel density DPR
+        const dpr = renderDpr(2.0); // # pixel density DPR — 전시 4K 상한은 renderRes.js
 
         this._renderer = new THREE.WebGLRenderer({
             antialias: true,
@@ -794,8 +914,8 @@ export class MyceliumReceiver {
         this._growTarget = new THREE.WebGLRenderTarget(rW, rH, rtOpts);
         this._accumTarget = new THREE.WebGLRenderTarget(rW, rH, rtOpts);
         this._prevTarget = new THREE.WebGLRenderTarget(rW, rH, rtOpts);
-        // 경로 사전계산(pathFrag) — 해상도와 무관한 151×3 float. 음절마다 _dequeue에서 한 번 굽는다
-        this._pathTarget = new THREE.WebGLRenderTarget(151, 3, {
+        // 경로 사전계산(pathFrag) — 해상도와 무관한 151×5 float. 음절마다 _dequeue에서 한 번 굽는다
+        this._pathTarget = new THREE.WebGLRenderTarget(151, 5, {
             minFilter: THREE.NearestFilter,
             magFilter: THREE.NearestFilter,
             format: THREE.RGBAFormat,
@@ -850,6 +970,7 @@ export class MyceliumReceiver {
             u_ghostTex: { value: this._ghostTarget.texture },
             u_ghostT: { value: 1.0 }, // 1 = 흩어짐 없음
             u_resolution: { value: new THREE.Vector2(rW, rH) },
+            u_view: { value: new THREE.Vector2() },
         };
         this._dispScene = this._makeQuadScene(vertSrc, makeDispFrag(this._transparent), this._dispUniforms);
 
@@ -902,6 +1023,12 @@ export class MyceliumReceiver {
 
     update(uniformData, newSylCount = 0, sylItems = null) {
         if (!uniformData) return;
+        // 빠른 재굽기 ① — 재굽기가 아직 돌고 있으면 이번 건 미룬다. 페이지는 매번 문장 전체를 보내므로
+        // 가장 최근 것 하나만 있으면 된다. 재굽기가 화면에 나가는 순간(_renderDisplay) 꺼내 적용한다
+        if (this._fastBake && this._rebaking && (this._growing || this._queue.length > 0)) {
+            this._pendingUpdate = [uniformData, newSylCount, sylItems];
+            return;
+        }
         const { starts, centers, chos, ends, jungs, amps, yangseong, diphthong, confirmed } = uniformData;
         const prevCount = this._prevSylCount;
         this._curScale = uniformData.scale ?? 1;
@@ -958,7 +1085,7 @@ export class MyceliumReceiver {
                     const desired = triggerCount >= 2 ? 2 : triggerCount >= 1 ? 1 : 0;
 
                     if (desired > 0) {
-                        const targets = this._pickHubTargets(desired);
+                        const targets = this._pickHubTargets(desired, i);
                         hubCenters = targets.map(t => t.center);
                         this._sylHubIds[i] = targets.map(t => t.id);
                     }
@@ -1044,7 +1171,9 @@ export class MyceliumReceiver {
     }
 
     // mother tree: 가중치(연결 많은 허브일수록 잘 뽑힘)로 최대 count개의 허브를 중복 없이 선택
-    _pickHubTargets(count) {
+    // 난수는 문장 시드 + 음절 번호에서 (seed.js, 2026-11-13) — 대화 기록의 시드로 같은 허브를 다시 고른다
+    _pickHubTargets(count, sylIndex = 0) {
+        const rnd = seededRng('myc-hub', sylIndex);
         const picks = [];
         const used = new Set();
         for (let n = 0; n < count; n++) {
@@ -1052,7 +1181,7 @@ export class MyceliumReceiver {
             if (entries.length === 0) break;
             const weights = entries.map(([, h]) => h.connections + 1);
             const total = weights.reduce((a, b) => a + b, 0);
-            let r = Math.random() * total;
+            let r = rnd() * total;
             let chosen = entries[entries.length - 1];
             for (let idx = 0; idx < entries.length; idx++) {
                 r -= weights[idx];
@@ -1096,6 +1225,37 @@ export class MyceliumReceiver {
         const { ro, camMat, fov } = this._calcCamera();
         const rd = new THREE.Vector3((u * 2 - 1) * (W / H), 1 - v * 2, -fov).applyMatrix3(camMat).normalize();
         return ro.clone().addScaledVector(rd, -ro.z / rd.z);
+    }
+
+    // 광학 자간·행간(core.layoutFor, 2026-11-09) — 음절 하나가 중심에서 왼쪽·오른쪽·위·아래로 얼마나
+    // 뻗나(화면 CSS px, 모두 양수, glyphScale 1 기준). u = core.syllablesToUniforms의 한 음절 값
+    // {center, cho, jung, amp, yang, diph, end}. 경로(syllablePathJS) 151점 + 다 자랄 때 끝을 당겨 붙이는
+    // 점(center + end — ㅣ·ㅜ처럼 이게 경로 밖으로 멀리 나가는 모음이 있다)을 화면에 투영해 잰다(원근 포함).
+    // 연결 실은 뺀다 — 이웃 글자로 뻗는 선이라 넣으면 간격이 엉뚱하게 벌어진다
+    pathBox(u) {
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        const c = this._toScreen(u.center);
+        let l = 0,
+            r = 0,
+            t = 0,
+            b = 0;
+        for (let i = 0; i <= 151; i++) {
+            const p =
+                i <= 150
+                    ? syllablePathJS(u.center, u.cho, u.jung.x, u.jung.y, u.jung.z, u.amp, i / 150, u.yang, u.diph)
+                    : u.center.clone().add(u.end);
+            const s = this._toScreen(p);
+            const dx = (s.u - c.u) * W;
+            const dy = (s.v - c.v) * H;
+            l = Math.max(l, -dx);
+            r = Math.max(r, dx);
+            t = Math.max(t, -dy);
+            b = Math.max(b, dy);
+        }
+        // 굵기 — 월드 GLYPH_BOX_PAD를 그 자리 화면 px로
+        const pad = (this._toScreen(u.center.clone().add(new THREE.Vector3(GLYPH_BOX_PAD, 0, 0))).u - c.u) * W;
+        return { l: l + pad, r: r + pad, t: t + pad, b: b + pad };
     }
 
     // screenToWorld의 역 — 월드 점 → 뷰포트 uv + 카메라 깊이. 스크롤로 민 만큼 월드 좌표를 옮길 때 쓴다
@@ -1153,11 +1313,10 @@ export class MyceliumReceiver {
                   ? W - (this._rect.x + this._rect.w)
                   : W * 0.1;
         const maxLag = Math.max(1, slackCss * 0.8 * this._renderer.getPixelRatio());
+        // 버퍼만 먼저 밀고 화면은 _scrollPos를 따라 부드럽게 — 표시 패스가 앞선 만큼(_scrollBase − _scrollPos)
+        // 되돌려 보여 준다. 예전엔 _scrollPos도 같이 당겨서 새 줄이 생길 때 윗줄이 한 프레임에 툭 튀었다(2026-11-10)
         const k = Math.round(t - maxLag) - this._scrollBase;
-        if (k > 0) {
-            this._shiftAccum(k);
-            this._scrollPos = Math.max(this._scrollPos, this._scrollBase);
-        }
+        if (k > 0) this._shiftAccum(k);
     }
 
     // glyphmode disperse: 지우기(clearAccum) **직전에** 부른다. 지금 보이는 그대로를 ghost로 떠 두고
@@ -1208,7 +1367,7 @@ export class MyceliumReceiver {
 
     // 자라는 음절도, 큐에 남은 음절도 없다 — page 모드가 "이 페이지 다 그려졌나"를 볼 때 쓴다
     isIdle() {
-        return !this._growing && this._queue.length === 0;
+        return !this._growing && this._queue.length === 0 && !this._pendingUpdate;
     }
 
     // 진행 중 + 큐에 남은 모든 음절을 growT=1로 즉시 완성(bake). bake 버튼처럼
@@ -1260,6 +1419,7 @@ export class MyceliumReceiver {
 
     // accumTarget 초기화 (제출 후 새 줄 시작)
     clearAccum() {
+        this._pendingUpdate = null;
         this._queue = [];
         this._growing = false;
         this._forceFinish = false;
@@ -1302,7 +1462,7 @@ export class MyceliumReceiver {
         };
     }
 
-    // 현재 음절 uniform으로 경로 텍스처를 굽는다(151×3 픽셀 — 사실상 공짜)
+    // 현재 음절 uniform으로 경로 텍스처를 굽는다(151×5 픽셀 — 사실상 공짜)
     _bakePath() {
         const prev = this._renderer.getRenderTarget();
         this._renderer.setRenderTarget(this._pathTarget);
@@ -1387,10 +1547,15 @@ export class MyceliumReceiver {
         this._bakedCenters = this._bakedCenters.map(onPlane);
         for (const hub of this._hubs.values()) hub.center = this._shiftAtDepth(hub.center, du, dv);
         for (const it of this._queue) moveItem(it.start, it.center, it.hubCenters);
+        // 미뤄 둔 update도 민다 — 안 밀면 적용될 때 스크롤만큼 어긋난 자리에 다시 굽는다(허브는 _rebake가 중심에서 다시 계산)
+        if (this._pendingUpdate) {
+            const [ud, n] = this._pendingUpdate;
+            for (let i = 0; i < n; i++) moveItem(ud.starts[i], ud.centers[i], []);
+        }
         if (this._growing) {
             const u = this._growUniforms;
             moveItem(u.u_start.value, u.u_center.value, u.u_hubCenters.value.slice(0, u.u_connCount.value));
-            this._bakePath(); // 경로 텍스처는 절대 좌표라 다시 굽는다(151×3 — 사실상 공짜)
+            this._bakePath(); // 경로 텍스처는 절대 좌표라 다시 굽는다(151×5 — 사실상 공짜)
         }
     }
 
@@ -1407,8 +1572,30 @@ export class MyceliumReceiver {
         this._renderer.render(this._accumScene, this._quadCam);
     }
 
+    // 빠른 재굽기 ② — 큐 앞쪽의 instant 음절을 스로틀 없이, 이번 프레임 시간이 남는 만큼 굽는다.
+    // 굽는 일 자체는 예전 instant 분기와 같다(grow 패스 growT=1 → 누적). 다 구웠으면 바로 화면에 낸다
+    _flushInstant() {
+        if (!(this._growing && this._instantBake)) return;
+        const t0 = performance.now();
+        while (this._growing && this._instantBake) {
+            this._growUniforms.u_growT.value = 1.0;
+            this._renderer.setRenderTarget(this._growTarget);
+            this._renderer.render(this._growScene, this._quadCam);
+            this._swapAndAccum(this._isFirstGlyph);
+            this._isFirstGlyph = false;
+            this._growing = false;
+            this._dequeue();
+            if (!(this._growing && this._instantBake)) break;
+            // GPU가 실제로 끝낼 때까지 기다려 시간을 잰다(ANGLE에선 gl.finish가 안 기다린다 — 1px 읽기로 동기화)
+            this._renderer.readRenderTargetPixels(this._accumTarget, 0, 0, 1, 1, this._syncPx);
+            if (performance.now() - t0 > INSTANT_BUDGET_MS) return; // 나머지는 다음 프레임에
+        }
+        if (!this._growing && this._queue.length === 0) this._renderDisplay();
+    }
+
     _animate = timestamp => {
         this._raf = requestAnimationFrame(this._animate);
+        if (this._fastBake) this._flushInstant();
         // 허용오차 4ms — webrenderTOP(maxrenderrate=24) 안에서는 rAF 자체가 41.6~41.8ms
         // 간격으로 오는데, 딱 41.67ms로 비교하면 그 중 ~40%가 "아직 이르다"로 버려져
         // 실효 ~16fps + 불규칙하게 끊겼다(2026-09-26 TD 실측: 4초간 rAF 97번 중 66번만 그림).
@@ -1423,6 +1610,9 @@ export class MyceliumReceiver {
             this._dispUniforms.u_ghostT.value = Math.min(1, p);
             if (p >= 1) this._ghostStart = null;
         }
+
+        // 빠른 재굽기 — instant 음절은 _flushInstant가 맡는다(아래 예전 instant 분기는 ?bake=old 전용)
+        if (this._fastBake && this._growing && this._instantBake) return;
 
         if (!this._growing) {
             // 재굽기 instant bake 사이(다음 음절 dequeue 대기) — 반쯤 다시 구운 accum을 내보내지 않는다
@@ -1473,10 +1663,19 @@ export class MyceliumReceiver {
 
     // 표시 패스 — 이 순간의 스크롤 양과 "재굽기 끝남"을 같이 기록한다(화면과 DOM을 맞추는 기준)
     _renderDisplay() {
+        // 버퍼가 화면보다 앞서 밀려 있으면(scrollTo 뒤처짐 보정) 그만큼 되돌려 보여 준다 — 정수 px로(흐려지지 않게)
+        const lag = Math.max(0, Math.round(this._scrollBase - this._scrollPos));
+        this._dispUniforms.u_view.value.set(this._scrollAxis === 'y' ? 0 : -lag, this._scrollAxis === 'y' ? lag : 0);
         this._renderer.setRenderTarget(null);
         this._renderer.render(this._dispScene, this._quadCam);
-        this._shownScrollBase = this._scrollBase;
+        this._shownScrollBase = this._scrollBase - lag;
         this._rebaking = false; // 자라는 음절이 보인다 = 그 앞의 instant 재굽기는 끝났다
+        // 재굽기 도중에 미뤄 둔 update — 방금 구운 게 화면에 나갔으니 이제 가장 최근 값으로
+        if (this._pendingUpdate) {
+            const p = this._pendingUpdate;
+            this._pendingUpdate = null;
+            this.update(...p);
+        }
     }
 
     _calcCamera() {
@@ -1539,6 +1738,7 @@ export class MyceliumReceiver {
         this._growUniforms.u_camMat.value.copy(camMat);
         this._growUniforms.u_fov.value = fov;
 
+        this._pendingUpdate = null; // 옛 화면 크기 기준이다 — 페이지가 곧 새로 보낸다
         this._queue = [];
         this._growing = false;
         this._isFirstGlyph = true;

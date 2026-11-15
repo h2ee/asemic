@@ -1,0 +1,319 @@
+<!doctype html>
+<!--
+  chatview.html — 대화 기록 보기 (2026-11-13, 작가용. 전시 화면 아님)
+  logs/chat-<날짜>.jsonl(chatlog.js)을 dev 서버 GET /__chat/<날짜> 로 읽어
+  관람객 말 ↔ 수신자 대답을 한 줄로 묶어 보여 준다. `npm run dev` 전용.
+
+  정리 규칙:
+  - 관람객 문장이 3초 안에 같은 글로 두 번 → 한 줄(×2 표시). 조합 중 Enter 두 번 보내짐(2026-11-13 수정 전 기록)
+  - 수신자 문장이 다음 수신자 문장의 앞부분이면 → 끊긴 조각이라 뒤 것만 남김
+  - 관람객 문장 바로 뒤(90초 안) 수신자 문장 = 그 대답. 사이에 다음 관람객 문장이 오면 대답 없음
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>대화 기록</title>
+<style>
+    :root {
+        --bg: #f6f6f4;
+        --card: #fff;
+        --ink: #1d1d1b;
+        --mute: #8a8a85;
+        --line: #e4e4e0;
+        --hl: #fff6d6;
+        --mycelium: #8a6a3c;
+        --sora: #2f7fa8;
+        --signal: #c0392b;
+        --dandelion: #c79a00;
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #161615;
+            --card: #1f1f1e;
+            --ink: #e8e8e4;
+            --mute: #85857f;
+            --line: #2e2e2c;
+            --hl: #3a3420;
+            --mycelium: #c4a273;
+            --sora: #6cb6dc;
+            --signal: #ec7a6d;
+            --dandelion: #e8c547;
+        }
+    }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.5 -apple-system, 'Apple SD Gothic Neo', system-ui, sans-serif;
+    }
+    header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: var(--bg);
+        border-bottom: 1px solid var(--line);
+        padding: 12px 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 14px;
+        align-items: center;
+    }
+    header h1 { font-size: 15px; margin: 0 6px 0 0; }
+    select, input[type='search'] {
+        font: inherit;
+        padding: 4px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--card);
+        color: var(--ink);
+    }
+    input[type='search'] { width: 180px; }
+    label { color: var(--mute); display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+    #stats { color: var(--mute); font-size: 12px; width: 100%; }
+    #stats b { color: var(--ink); font-weight: 600; }
+    main { padding: 8px 16px 40px; max-width: 1100px; margin: 0 auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+        text-align: left;
+        font-weight: 500;
+        color: var(--mute);
+        font-size: 12px;
+        padding: 8px 8px 4px;
+    }
+    td { padding: 8px; vertical-align: top; border-top: 1px solid var(--line); background: var(--card); }
+    tr.gap td { border-top: 10px solid var(--bg); }
+    td.time { white-space: nowrap; color: var(--mute); font-variant-numeric: tabular-nums; width: 1%; }
+    td.rc { white-space: nowrap; width: 1%; }
+    td.via { white-space: nowrap; width: 1%; color: var(--mute); font-size: 12px; }
+    td.lat { white-space: nowrap; width: 1%; color: var(--mute); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+    td.say, td.reply { width: 40%; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--c); }
+    .rc-name { color: var(--c); font-weight: 600; }
+    .none { color: var(--mute); }
+    .x2 { color: var(--mute); font-size: 11px; margin-left: 4px; }
+    .tag {
+        display: inline-block;
+        font-size: 11px;
+        color: var(--mute);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 0 4px;
+        margin-left: 4px;
+    }
+    .typed { color: var(--ink); font-weight: 600; }
+    .session td {
+        background: transparent;
+        color: var(--mute);
+        font-size: 12px;
+        border-top: none;
+        padding: 18px 8px 4px;
+    }
+    mark { background: var(--hl); color: inherit; }
+    #empty { color: var(--mute); padding: 40px 0; text-align: center; }
+    @media (max-width: 700px) {
+        thead { display: none; }
+        tr:not(.session) { display: grid; grid-template-columns: auto auto 1fr auto; background: var(--card); border-top: 1px solid var(--line); }
+        td { border: none; background: none; padding: 6px 8px; }
+        td.say, td.reply { grid-column: 1 / -1; width: auto; padding-top: 0; }
+        td.say::before { content: '관람객  '; color: var(--mute); font-size: 12px; }
+        td.reply::before { content: '대답  '; color: var(--mute); font-size: 12px; }
+        tr.gap { margin-top: 10px; }
+    }
+</style>
+</head>
+<body>
+<header>
+    <h1>대화 기록</h1>
+    <select id="day"></select>
+    <select id="rc">
+        <option value="">수신자 전부</option>
+        <option value="mycelium">mycelium</option>
+        <option value="sora">sora</option>
+        <option value="signal">signal</option>
+        <option value="dandelion">dandelion</option>
+    </select>
+    <select id="via">
+        <option value="">입력 전부</option>
+        <option value="typed">직접 입력</option>
+        <option value="preset">버튼</option>
+        <option value="translated">영문 번역</option>
+    </select>
+    <input id="q" type="search" placeholder="말 검색" />
+    <label><input id="noreply" type="checkbox" /> 대답 없는 것만</label>
+    <label><input id="live" type="checkbox" checked /> 5초마다 새로</label>
+    <div id="stats"></div>
+</header>
+<main>
+    <table>
+        <thead>
+            <tr><th>시각</th><th>수신자</th><th>입력</th><th>관람객</th><th>대답</th><th>걸린 시간</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" hidden>기록이 없습니다.</div>
+</main>
+<script type="module">
+    const $ = id => document.getElementById(id);
+    const API = '/__chat'; // base(/asemic/) 밖 — chatlog.js가 쓰는 길과 같다
+    const VIA = { typed: '직접', preset: '버튼', translated: '번역' };
+    const MODES = { joke: '농담', question: '질문', bye: '안녕' };
+    const GAP_MS = 2 * 60 * 1000; // 이만큼 비면 다른 방문으로 보고 띄운다
+    const REPLY_MS = 90 * 1000;
+
+    const store = (k, v) => {
+        try {
+            if (v === undefined) return localStorage.getItem('chatview.' + k);
+            localStorage.setItem('chatview.' + k, v);
+        } catch {}
+    };
+
+    let raw = ''; // 마지막으로 받은 jsonl — 같으면 다시 안 그린다
+
+    async function loadDays() {
+        const days = await fetch(`${API}/list`).then(r => r.json()).catch(() => []);
+        $('day').innerHTML = days.map(d => `<option>${d}</option>`).join('');
+        if (!days.length) $('day').innerHTML = '<option value="">기록 없음</option>';
+    }
+
+    async function load(force) {
+        const d = $('day').value;
+        if (!d) return render([]);
+        const text = await fetch(`${API}/${d}`, { cache: 'no-store' }).then(r => (r.ok ? r.text() : ''));
+        if (!force && text === raw) return;
+        raw = text;
+        const rows = [];
+        for (const l of text.split('\n')) {
+            if (!l.trim()) continue;
+            try {
+                const r = JSON.parse(l);
+                r.t = new Date(r.at).getTime();
+                rows.push(r);
+            } catch {}
+        }
+        render(pair(clean(rows)));
+    }
+
+    // 중복·끊긴 조각 정리
+    function clean(rows) {
+        const out = [];
+        for (const r of rows) {
+            const p = out[out.length - 1];
+            if (p && p.speaker === 'visitor' && r.speaker === 'visitor' && p.text === r.text && r.t - p.t < 3000) {
+                p.dup = (p.dup || 1) + 1;
+                continue;
+            }
+            if (p && p.speaker === 'receiver' && r.speaker === 'receiver' && r.text.startsWith(p.text) && r.t - p.t < 30000) {
+                out[out.length - 1] = r;
+                continue;
+            }
+            out.push({ ...r });
+        }
+        return out;
+    }
+
+    // 관람객 말 + 그 대답 = 한 줄
+    function pair(rows) {
+        const turns = [];
+        for (let i = 0; i < rows.length; i++) {
+            const r = rows[i];
+            if (r.speaker === 'visitor') {
+                const n = rows[i + 1];
+                const reply = n && n.speaker === 'receiver' && n.t - r.t < REPLY_MS ? n : null;
+                if (reply) i++;
+                turns.push({ v: r, a: reply });
+            } else turns.push({ v: null, a: r });
+        }
+        return turns;
+    }
+
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const hl = (s, q) => {
+        s = esc(s);
+        if (!q) return s;
+        const qe = esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return s.replace(new RegExp(qe, 'gi'), m => `<mark>${m}</mark>`);
+    };
+    const hhmm = t => new Date(t).toTimeString().slice(0, 8); // 10:32:50 (로컬 시각)
+
+    let turns = [];
+    function render(next) {
+        if (next) turns = next;
+        const rc = $('rc').value,
+            via = $('via').value,
+            q = $('q').value.trim(),
+            noreply = $('noreply').checked;
+        const shown = turns.filter(({ v, a }) => {
+            const any = v || a;
+            if (rc && any.receiver !== rc) return false;
+            if (via && v?.via !== via) return false;
+            if (noreply && (!v || a)) return false;
+            if (q && !`${v?.text ?? ''} ${a?.text ?? ''}`.toLowerCase().includes(q.toLowerCase())) return false;
+            return true;
+        });
+
+        const html = [];
+        let lastT = 0,
+            lastSession = null;
+        for (const { v, a } of shown) {
+            const r = v || a;
+            if (r.session !== lastSession) {
+                html.push(`<tr class="session"><td colspan="6">페이지 열림 ${hhmm(new Date(r.session).getTime())}</td></tr>`);
+                lastSession = r.session;
+                lastT = r.t;
+            }
+            const gap = lastT && r.t - lastT > GAP_MS ? ' class="gap"' : '';
+            lastT = (a || v).t;
+            const c = `--c: var(--${r.receiver})`;
+            const modes = Object.entries(r.modes || {})
+                .filter(([, on]) => on)
+                .map(([k]) => `<span class="tag">${MODES[k] ?? k}</span>`)
+                .join('');
+            const say = v
+                ? `${hl(v.text, q)}${v.dup > 1 ? `<span class="x2">×${v.dup}</span>` : ''}${v.original ? `<div class="none">${esc(v.original)}</div>` : ''}`
+                : '<span class="none">—</span>';
+            const reply = a ? hl(a.text, q) : '<span class="none">(대답 없음)</span>';
+            const lat = v && a ? `${Math.round((a.t - v.t) / 1000)}초` : '';
+            html.push(`<tr${gap}>
+                <td class="time">${hhmm(r.t)}</td>
+                <td class="rc" style="${c}"><span class="dot"></span><span class="rc-name">${r.receiver}</span></td>
+                <td class="via">${v ? `<span class="${v.via === 'typed' ? 'typed' : ''}">${VIA[v.via] ?? v.via}</span>` : ''}${modes}</td>
+                <td class="say">${say}</td>
+                <td class="reply">${reply}</td>
+                <td class="lat">${lat}</td>
+            </tr>`);
+        }
+        $('rows').innerHTML = html.join('');
+        $('empty').hidden = shown.length > 0;
+
+        const vis = shown.filter(t => t.v);
+        const count = k => vis.filter(t => t.v.via === k).length;
+        const answered = vis.filter(t => t.a);
+        const lats = answered.map(t => (t.a.t - t.v.t) / 1000).sort((x, y) => x - y);
+        const med = lats.length ? Math.round(lats[lats.length >> 1]) : '-';
+        $('stats').innerHTML =
+            `관람객 <b>${vis.length}</b> (직접 ${count('typed')} · 버튼 ${count('preset')} · 번역 ${count('translated')})` +
+            ` · 대답 <b>${answered.length}</b> · 대답 없음 ${vis.length - answered.length}` +
+            ` · 걸린 시간 중앙값 ${med}초`;
+    }
+
+    // 필터는 이 브라우저에만 기억
+    for (const id of ['rc', 'via', 'noreply', 'live']) {
+        const el = $(id),
+            saved = store(id);
+        if (saved != null) el.type === 'checkbox' ? (el.checked = saved === '1') : (el.value = saved);
+        el.addEventListener('change', () => {
+            store(id, el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value);
+            render();
+        });
+    }
+    $('q').addEventListener('input', () => render());
+    $('day').addEventListener('change', () => load(true));
+
+    await loadDays();
+    await load(true);
+    setInterval(() => $('live').checked && load(false), 5000);
+</script>
+</body>
+</html>

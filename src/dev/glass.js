@@ -15,6 +15,8 @@
 //
 // 다시 그리는 건 모양이 바뀔 때(draw)·배경 전환(setMix) 때뿐 — 가만히 있으면 GPU를 안 쓴다.
 
+import { renderDpr } from '../js/renderRes.js';
+
 const VERT = `#version 300 es
 in vec2 a_pos;
 out vec2 v_uv;
@@ -116,38 +118,79 @@ const DPR_CAP = 1.5;
  * @returns null(WebGL2 없음) 또는 { canvas, setShape(d, params), setMix(on, {instant}) }
  */
 export function createGlass(images) {
-    const canvas = document.createElement('canvas');
+    const GL_OPTS = { premultipliedAlpha: true, antialias: false };
+    let canvas = document.createElement('canvas');
     canvas.style.cssText = 'display:block;width:100%;height:100%';
-    const gl = canvas.getContext('webgl2', { premultipliedAlpha: true, antialias: false });
+    let gl = canvas.getContext('webgl2', GL_OPTS);
     if (!gl) return null;
 
-    const prog = gl.createProgram();
-    gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
-    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-    const U = n => gl.getUniformLocation(prog, n);
-    const loc = {
-        bgA: U('u_bgA'),
-        bgB: U('u_bgB'),
-        mask: U('u_mask'),
-        mix: U('u_mix'),
-        res: U('u_res'),
-        maskTexel: U('u_maskTexel'),
-        refract: U('u_refract'),
-        disp: U('u_disp'),
-        light: U('u_light'),
-        lightAmt: U('u_lightAmt'),
-        lift: U('u_lift'),
-    };
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-    const aPos = gl.getAttribLocation(prog, 'a_pos');
+    // GL 자원 — 컨텍스트를 잃었다 되찾으면(webglcontextrestored) 전부 새로 만든다 (2026-11-13).
+    // 전시 중 다른 캔버스가 컨텍스트 한도를 넘기면 크롬이 가장 오래된 이 유리를 버렸고, 예전엔 새로고침 전까지 비어 있었다
+    let prog, loc, buf, aPos, texA, texB, texMask;
+    function setupGL() {
+        prog = gl.createProgram();
+        gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
+        gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+        const U = n => gl.getUniformLocation(prog, n);
+        loc = {
+            bgA: U('u_bgA'),
+            bgB: U('u_bgB'),
+            mask: U('u_mask'),
+            mix: U('u_mix'),
+            res: U('u_res'),
+            maskTexel: U('u_maskTexel'),
+            refract: U('u_refract'),
+            disp: U('u_disp'),
+            light: U('u_light'),
+            lightAmt: U('u_lightAmt'),
+            lift: U('u_lift'),
+        };
+        buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        aPos = gl.getAttribLocation(prog, 'a_pos');
+        texA = makeTex(gl);
+        texB = makeTex(gl);
+        texMask = makeTex(gl);
+    }
+    setupGL();
+    // 잃으면 유리 자리가 하얀 판 + 왼쪽 위 찡그린 문서 아이콘이 된다(전시 '하얀 배경'의 정체, 2026-11-13 재현).
+    // 크롬이 되돌려 주면(restored) 그 컨텍스트로 다시 만들고, 한도 초과로 버려져 안 돌아오면 RESTORE_WAIT_MS 뒤 캔버스째 갈아 끼운다
+    const RESTORE_WAIT_MS = 1500;
+    let lost = false;
+    let lostTimer = 0;
+    function revive() {
+        lost = false;
+        clearTimeout(lostTimer);
+        setupGL();
+        frostKey = ''; // 배경·모양 텍스처를 다시 올린다
+        bakeMask();
+        render();
+    }
+    function watch(cv) {
+        cv.addEventListener('webglcontextlost', e => {
+            e.preventDefault(); // 이게 있어야 크롬이 되돌려 줄 수 있다(restored)
+            lost = true;
+            clearTimeout(lostTimer);
+            lostTimer = setTimeout(() => {
+                if (!lost) return;
+                const fresh = document.createElement('canvas');
+                fresh.style.cssText = canvas.style.cssText;
+                const g = fresh.getContext('webgl2', GL_OPTS);
+                if (!g) return; // 새로 못 얻으면 그대로 — 다음 restored를 기다린다
+                canvas.replaceWith(fresh);
+                canvas = fresh;
+                gl = g;
+                watch(fresh);
+                revive();
+            }, RESTORE_WAIT_MS);
+        });
+        cv.addEventListener('webglcontextrestored', () => cv === canvas && revive());
+    }
+    watch(canvas);
 
-    const texA = makeTex(gl);
-    const texB = makeTex(gl);
-    const texMask = makeTex(gl);
     const imgs = [null, null];
     images.forEach((src, i) => src && loadImage(src).then(im => ((imgs[i] = im), (frostKey = ''), render())).catch(() => {}));
 
@@ -193,6 +236,7 @@ export function createGlass(images) {
     }
 
     function bakeMask() {
+        if (lost) return;
         const mw = Math.max(1, Math.round(W * MASK_SCALE));
         const mh = Math.max(1, Math.round(H * MASK_SCALE));
         for (const c of [mSharp, mBlur, mOut]) {
@@ -244,7 +288,8 @@ export function createGlass(images) {
     }
 
     function render() {
-        const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+        if (lost) return;
+        const dpr = renderDpr(DPR_CAP, W, H); // 전시 4K 픽셀 상한 — renderRes.js
         const cw = Math.round(W * dpr);
         const ch = Math.round(H * dpr);
         if (canvas.width !== cw) canvas.width = cw;

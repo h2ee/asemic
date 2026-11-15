@@ -49,37 +49,74 @@ void main(){
 
 // → { open(), close() } — 셰이더는 한 번만 만들고, 카메라 스트림만 열고 닫는다(임시 끄기 버튼용)
 function startCam(canvas, px) {
-    const gl = canvas.getContext('webgl', { premultipliedAlpha: false });
+    const GL_OPTS = { premultipliedAlpha: false };
+    let gl = canvas.getContext('webgl', GL_OPTS);
     if (!gl || !navigator.mediaDevices?.getUserMedia) return null;
-    const sh = (type, src) => {
-        const s = gl.createShader(type);
-        gl.shaderSource(s, src);
-        gl.compileShader(s);
-        return s;
-    };
-    const prog = gl.createProgram();
-    gl.attachShader(prog, sh(gl.VERTEX_SHADER, VERT));
-    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FRAG));
-    gl.bindAttribLocation(prog, 0, 'a');
-    gl.linkProgram(prog);
-    gl.useProgram(prog);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
-    for (const [k, v] of [
-        [gl.TEXTURE_MIN_FILTER, gl.LINEAR],
-        [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
-        [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE],
-        [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE],
-    ])
-        gl.texParameteri(gl.TEXTURE_2D, k, v);
-    const U = n => gl.getUniformLocation(prog, n);
-    gl.uniform1f(U('u_k'), FISHEYE);
-    gl.uniform1f(U('u_px'), px);
-    gl.uniform1f(U('u_spec'), SPECULAR);
-    gl.uniform1f(U('u_rim'), RIM);
+    // GL 자원 — 컨텍스트를 잃었다 되찾으면 다시 만든다 (2026-11-13, 전시 중 웹캠 원이 비던 것 — glass.js와 같은 사정)
+    let U;
+    function setupGL() {
+        const sh = (type, src) => {
+            const s = gl.createShader(type);
+            gl.shaderSource(s, src);
+            gl.compileShader(s);
+            return s;
+        };
+        const prog = gl.createProgram();
+        gl.attachShader(prog, sh(gl.VERTEX_SHADER, VERT));
+        gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FRAG));
+        gl.bindAttribLocation(prog, 0, 'a');
+        gl.linkProgram(prog);
+        gl.useProgram(prog);
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+        for (const [k, v] of [
+            [gl.TEXTURE_MIN_FILTER, gl.LINEAR],
+            [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+            [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE],
+            [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE],
+        ])
+            gl.texParameteri(gl.TEXTURE_2D, k, v);
+        U = n => gl.getUniformLocation(prog, n);
+        gl.uniform1f(U('u_k'), FISHEYE);
+        gl.uniform1f(U('u_px'), px);
+        gl.uniform1f(U('u_spec'), SPECULAR);
+        gl.uniform1f(U('u_rim'), RIM);
+    }
+    setupGL();
+    // 크롬이 되돌려 주면 그 컨텍스트로, 한도 초과로 버려져 안 돌아오면 1.5초 뒤 캔버스째 갈아 끼운다(같은 id·class)
+    let lost = false;
+    let lostTimer = 0;
+    function watch(cv) {
+        cv.addEventListener('webglcontextlost', e => {
+            e.preventDefault();
+            lost = true;
+            clearTimeout(lostTimer);
+            lostTimer = setTimeout(() => {
+                if (!lost) return;
+                const fresh = document.createElement('canvas');
+                fresh.id = canvas.id;
+                fresh.className = canvas.className;
+                const g = fresh.getContext('webgl', GL_OPTS);
+                if (!g) return;
+                canvas.replaceWith(fresh);
+                canvas = fresh;
+                gl = g;
+                watch(fresh);
+                setupGL();
+                lost = false;
+            }, 1500);
+        });
+        cv.addEventListener('webglcontextrestored', () => {
+            if (cv !== canvas) return;
+            clearTimeout(lostTimer);
+            setupGL();
+            lost = false;
+        });
+    }
+    watch(canvas);
 
     const video = document.createElement('video');
     video.muted = true;
@@ -117,7 +154,7 @@ function startCam(canvas, px) {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
             const w = Math.round(canvas.clientWidth * dpr);
             if (canvas.width !== w) canvas.width = canvas.height = w;
-            if (video.readyState >= 2) {
+            if (!lost && video.readyState >= 2) {
                 gl.viewport(0, 0, w, w);
                 gl.uniform1f(U('u_aspect'), video.videoWidth / video.videoHeight);
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
